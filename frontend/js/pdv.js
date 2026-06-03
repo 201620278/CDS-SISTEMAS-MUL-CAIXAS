@@ -18,6 +18,19 @@ function normalizarTexto(texto) {
         .toLowerCase();
 }
 
+// Buscar promoção ativa de um produto
+async function buscarPromocaoAtivaProduto(produtoId) {
+    try {
+        const response = await fetch(`${API_URL}/produtos/${produtoId}/promocao-ativa`);
+        if (!response.ok) return null;
+        const promocao = await response.json();
+        return promocao;
+    } catch (e) {
+        console.warn(`Erro ao buscar promoção para produto ${produtoId}:`, e);
+        return null;
+    }
+}
+
 function loadPDV() {
     console.log('Carregando PDV...');
 
@@ -658,29 +671,38 @@ function abrirCadastroCliente() {
 
 function renderCarrinhoItens() {
     if (!Array.isArray(carrinho) || carrinho.length === 0) {
-        return '<tr><td colspan="5" class="text-center">Nenhum item no carrinho</td></tr>';
+        return '<tr><td colspan="6" class="text-center">Nenhum item no carrinho</td></tr>';
     }
 
-    return carrinho.map((item, index) => `
-        <tr>
-            <td>
-                <input type="number"
-                       class="form-control form-control-sm quantidade-item"
-                       value="${Number(item.quantidade)}"
-                       min="0.01"
-                       step="0.001"
-                       data-index="${index}">
-            </td>
-            <td>${escapeHtml(item.nome)}</td>
-            <td>${formatCurrency(item.preco_unitario)}</td>
-            <td>${formatCurrency(item.subtotal)}</td>
-            <td class="text-center">
-                <button type="button" class="btn btn-sm btn-outline-danger item-remover" data-index="${index}">
-                    <i class="fas fa-trash"></i>
-                </button>
-            </td>
-        </tr>
-    `).join('');
+    return carrinho.map((item, index) => {
+        const temDesconto = Number(item.desconto_percentual || 0) > 0;
+        const classe = temDesconto ? 'table-warning' : '';
+        const badgeDesconto = temDesconto ? `<small class="badge bg-danger">-${Number(item.desconto_percentual).toFixed(2)}%</small>` : '';
+        
+        return `
+            <tr ${classe ? `class="${classe}"` : ''}>
+                <td>
+                    <input type="number"
+                           class="form-control form-control-sm quantidade-item"
+                           value="${Number(item.quantidade)}"
+                           min="0.01"
+                           step="0.001"
+                           data-index="${index}">
+                </td>
+                <td>
+                    ${escapeHtml(item.nome)}
+                    ${badgeDesconto}
+                </td>
+                <td>${formatCurrency(item.preco_unitario)}</td>
+                <td>${formatCurrency(item.subtotal)}</td>
+                <td class="text-center">
+                    <button type="button" class="btn btn-sm btn-outline-danger item-remover" data-index="${index}">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
 }
 
 function escapeHtml(text) {
@@ -741,7 +763,7 @@ function encontrarProdutoPorCodigoOuNome(termo) {
     });
 }
 
-function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra = '') {
+function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra = '', promocao = null) {
     quantidade = Number(quantidade || 0);
     precoUnitario = Number(precoUnitario || 0);
 
@@ -755,6 +777,9 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         return;
     }
 
+    const precoFinal = promocao ? Number(promocao.preco_promocional || precoUnitario) : precoUnitario;
+    const desconto = promocao ? Number(promocao.desconto_percentual || 0) : 0;
+    
     const itemExistente = carrinho.find(item => Number(item.id) === Number(produto.id));
 
     if (itemExistente) {
@@ -766,20 +791,25 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         }
 
         itemExistente.quantidade = Number(novaQuantidade.toFixed(3));
-        itemExistente.preco_unitario = precoUnitario;
-        itemExistente.subtotal = Number((itemExistente.quantidade * precoUnitario).toFixed(2));
+        itemExistente.preco_unitario = precoFinal;
+        itemExistente.desconto_percentual = desconto;
+        itemExistente.promocao_id = promocao?.id || null;
+        itemExistente.subtotal = Number((itemExistente.quantidade * precoFinal).toFixed(2));
     } else {
         carrinho.push({
             id: produto.id,
             nome: produto.nome,
             quantidade: Number(quantidade.toFixed(3)),
-            preco_unitario: precoUnitario,
-            subtotal: Number((quantidade * precoUnitario).toFixed(2))
+            preco_unitario: precoFinal,
+            desconto_percentual: desconto,
+            promocao_id: promocao?.id || null,
+            subtotal: Number((quantidade * precoFinal).toFixed(2))
         });
     }
 
     atualizarCarrinho();
-    showNotification(`${produto.nome} adicionado ao carrinho${mensagemExtra}.`, 'success');
+    const msgDesconto = desconto > 0 ? ` (Promoção -${desconto}%)` : '';
+    showNotification(`${produto.nome} adicionado ao carrinho${msgDesconto}${mensagemExtra}.`, 'success');
     focarCampoCodigo();
 }
 
@@ -818,12 +848,15 @@ function adicionarProdutoPorCodigo(codigo) {
 
         const peso = dadosBalanca.valorTotal / precoKg;
 
-        adicionarItemNoCarrinho(
-            produtoBalanca,
-            peso,
-            precoKg,
-            ` - Peso: ${peso.toFixed(3)} KG - Total: ${formatCurrency(dadosBalanca.valorTotal)}`
-        );
+        buscarPromocaoAtivaProduto(produtoBalanca.id).then(promocao => {
+            adicionarItemNoCarrinho(
+                produtoBalanca,
+                peso,
+                precoKg,
+                ` - Peso: ${peso.toFixed(3)} KG - Total: ${formatCurrency(dadosBalanca.valorTotal)}`,
+                promocao
+            );
+        });
 
         return;
     }
@@ -841,22 +874,26 @@ function adicionarProdutoPorCodigo(codigo) {
         return;
     }
 
-    // 3) Produto KG digitado manualmente
-    if (unidadeEhKg(produto)) {
-        abrirModalQuantidadeProduto(produto, function (peso) {
-            adicionarItemNoCarrinho(
-                produto,
-                peso,
-                Number(produto.preco_venda || 0),
-                ` - Peso: ${peso.toFixed(3)} KG`
-            );
-        });
-        return;
-    }
+    // Buscar promoção do produto
+    buscarPromocaoAtivaProduto(produto.id).then(promocao => {
+        // 3) Produto KG digitado manualmente
+        if (unidadeEhKg(produto)) {
+            abrirModalQuantidadeProduto(produto, function (peso) {
+                adicionarItemNoCarrinho(
+                    produto,
+                    peso,
+                    Number(produto.preco_venda || 0),
+                    ` - Peso: ${peso.toFixed(3)} KG`,
+                    promocao
+                );
+            });
+            return;
+        }
 
-    // 4) Produto unidade continua igual
-    abrirModalQuantidadeProduto(produto, function (quantidade) {
-        adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0));
+        // 4) Produto unidade
+        abrirModalQuantidadeProduto(produto, function (quantidade) {
+            adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0), '', promocao);
+        });
     });
 }
 
@@ -1872,6 +1909,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             produto_id: Number(item.id),
             quantidade: Number(item.quantidade),
             preco_unitario: Number(item.preco_unitario),
+            desconto_percentual: Number(item.desconto_percentual || 0),
+            promocao_id: item.promocao_id || null,
             subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100
         }))
     };
@@ -3524,21 +3563,25 @@ function adicionarProdutoConsultaPDV(produtoId) {
         return;
     }
 
-    // Se for KG, abrir modal de quantidade
-    if (unidadeEhKg(produto)) {
-        abrirModalQuantidadeProduto(produto, function (peso) {
-            adicionarItemNoCarrinho(
-                produto,
-                peso,
-                Number(produto.preco_venda || 0),
-                ` - Peso: ${peso.toFixed(3)} KG`
-            );
-        });
-    } else {
-        abrirModalQuantidadeProduto(produto, function (quantidade) {
-            adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0));
-        });
-    }
+    // Buscar promoção do produto
+    buscarPromocaoAtivaProduto(produto.id).then(promocao => {
+        // Se for KG, abrir modal de quantidade
+        if (unidadeEhKg(produto)) {
+            abrirModalQuantidadeProduto(produto, function (peso) {
+                adicionarItemNoCarrinho(
+                    produto,
+                    peso,
+                    Number(produto.preco_venda || 0),
+                    ` - Peso: ${peso.toFixed(3)} KG`,
+                    promocao
+                );
+            });
+        } else {
+            abrirModalQuantidadeProduto(produto, function (quantidade) {
+                adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0), '', promocao);
+            });
+        }
+    });
 }
 
 function buscarProdutosConsultaPDV() {
@@ -3592,19 +3635,28 @@ function renderizarProdutosConsultaPDV(produtos) {
         const preco = Number(p.preco_venda || 0);
         const estoqueBaixo = estoque <= Number(p.estoque_minimo || 0);
         const semEstoque = estoque <= 0;
+        const temPromocao = p.tem_promocao === 1 || p.tem_promocao === true;
+        const precoPromocional = Number(p.preco_promocional || 0);
+        const descontoPercentual = Number(p.desconto_percentual || 0);
+        
+        const precoExibido = temPromocao && precoPromocional > 0 ? precoPromocional : preco;
+        const marcaPromocao = temPromocao ? `<span class="badge bg-danger ms-2"><i class="fas fa-tag"></i> -${descontoPercentual}%</span>` : '';
+        const linhaDescontoPreco = temPromocao && precoPromocional > 0 
+            ? `<del class="text-muted small">${formatCurrency(preco)}</del> ${formatCurrency(precoPromocional)}`
+            : formatCurrency(preco);
 
         return `
-            <tr>
+            <tr ${temPromocao ? 'class="table-warning"' : ''}>
                 <td>${p.id}</td>
                 <td>
-                    <strong>${escapeHtml(p.nome)}</strong><br>
+                    <strong>${escapeHtml(p.nome)}</strong>${marcaPromocao}<br>
                     <small class="text-muted">
                         Código: ${escapeHtml(p.codigo || '-')} |
                         Barras: ${escapeHtml(p.codigo_barras || '-')}
                     </small>
                 </td>
                 <td>${escapeHtml(p.unidade || 'UN')}</td>
-                <td class="fw-bold text-success">${formatCurrency(preco)}</td>
+                <td class="fw-bold ${temPromocao ? 'text-danger' : 'text-success'}">${linhaDescontoPreco}</td>
                 <td>
                     <span class="badge ${semEstoque ? 'bg-danger' : estoqueBaixo ? 'bg-warning text-dark' : 'bg-success'}">
                         ${estoque}
@@ -3658,8 +3710,10 @@ function adicionarProdutoConsultaPDV(idProduto) {
         return;
     }
 
-    abrirModalQuantidadeProduto(produto, function (quantidade) {
-        adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0));
+    buscarPromocaoAtivaProduto(produto.id).then(promocao => {
+        abrirModalQuantidadeProduto(produto, function (quantidade) {
+            adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0), '', promocao);
+        });
     });
 }
 

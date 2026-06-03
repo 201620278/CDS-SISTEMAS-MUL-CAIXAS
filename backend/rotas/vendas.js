@@ -426,9 +426,9 @@ router.post('/', bloquearVendaSemCaixaAberto, (req, res) => {
           let itensProcessados = 0;
           itens.forEach(item => {
             db.run(`
-              INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, subtotal)
-              VALUES (?, ?, ?, ?, ?)
-            `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.subtotal], (itemErr) => {
+              INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, subtotal)
+              VALUES (?, ?, ?, ?, ?, ?, ?)
+            `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.subtotal], (itemErr) => {
               if (itemErr) {
                 db.run('ROLLBACK');
                 res.status(500).json({ error: itemErr.message });

@@ -162,27 +162,46 @@ router.get('/consulta-pdv/buscar', (req, res) => {
 
   const buscaLike = `%${termo}%`;
   const buscaNumero = termo.replace(/\D/g, '') || termo;
+  const hoje = new Date().toISOString().split('T')[0];
 
   db.all(`
     SELECT
-      id,
-      codigo,
-      codigo_barras,
-      nome,
-      unidade,
-      preco_venda,
-      estoque_atual,
-      estoque_minimo,
-      vendido_por_peso
-    FROM produtos
+      p.id,
+      p.codigo,
+      p.codigo_barras,
+      p.nome,
+      p.unidade,
+      p.preco_venda,
+      p.estoque_atual,
+      p.estoque_minimo,
+      p.vendido_por_peso,
+      CASE 
+        WHEN promo.id IS NOT NULL THEN 1 
+        ELSE 0 
+      END AS tem_promocao,
+      CASE 
+        WHEN promo.id IS NOT NULL THEN promo.preco_promocional 
+        ELSE NULL 
+      END AS preco_promocional,
+      CASE 
+        WHEN promo.id IS NOT NULL THEN promo.desconto_percentual 
+        ELSE NULL 
+      END AS desconto_percentual
+    FROM produtos p
+    LEFT JOIN promocoes promo ON promo.produto_id = p.id 
+      AND promo.status = 'ativa'
+      AND date(promo.data_inicio) <= date(?)
+      AND date(promo.data_fim) >= date(?)
     WHERE
-      CAST(id AS TEXT) = ?
-      OR codigo LIKE ?
-      OR codigo_barras LIKE ?
-      OR nome LIKE ?
-    ORDER BY nome ASC
+      CAST(p.id AS TEXT) = ?
+      OR p.codigo LIKE ?
+      OR p.codigo_barras LIKE ?
+      OR p.nome LIKE ?
+    ORDER BY p.nome ASC
     LIMIT 30
   `, [
+    hoje,
+    hoje,
     buscaNumero,
     buscaLike,
     buscaLike,
@@ -824,6 +843,42 @@ router.get('/estoque/baixo', (req, res) => {
       return;
     }
     res.json(rows);
+  });
+});
+
+// Buscar promoção ativa de um produto específico
+router.get('/:id/promocao-ativa', (req, res) => {
+  const { id } = req.params;
+  const hoje = new Date().toISOString().split('T')[0];
+  
+  db.get(`
+    SELECT 
+      p.id,
+      p.produto_id,
+      p.preco_original,
+      p.preco_promocional,
+      p.desconto_percentual,
+      p.data_inicio,
+      p.data_fim,
+      p.status
+    FROM promocoes p
+    WHERE p.produto_id = ?
+      AND p.status = 'ativa'
+      AND date(p.data_inicio) <= date(?)
+      AND date(p.data_fim) >= date(?)
+    LIMIT 1
+  `, [id, hoje, hoje], (err, row) => {
+    if (err) {
+      console.error('Erro ao buscar promoção ativa:', err.message);
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    
+    if (row) {
+      res.json(row);
+    } else {
+      res.json(null);
+    }
   });
 });
 
