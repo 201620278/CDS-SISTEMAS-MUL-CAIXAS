@@ -1337,13 +1337,19 @@ router.post('/receber/agrupado/:clienteId/pagamento-parcial', async (req, res) =
                       forma_pagamento = ?,
                       observacao = ?,
                       pessoa_nome = ?,
-                      baixado_em = CASE WHEN ? = 'recebido' THEN ? ELSE NULL END
+                      baixado_em = CASE WHEN ? = 'recebido' THEN ? ELSE NULL END,
+                      data_movimento = CASE WHEN ? = 'recebido' THEN ? ELSE data_movimento END,
+                      vencimento = CASE WHEN ? = 'recebido' THEN ? ELSE vencimento END
                     WHERE id = ?
                   `, [
                     novoStatus,
                     forma_pagamento || 'dinheiro',
                     observacao || `Pagamento parcial registrado em ${data_pagamento}`,
                     cliente.nome || null,
+                    novoStatus,
+                    data_pagamento,
+                    novoStatus,
+                    data_pagamento,
                     novoStatus,
                     data_pagamento,
                     movFinanceiro.id
@@ -1399,7 +1405,7 @@ router.post('/receber/agrupado/:clienteId/pagamento-parcial', async (req, res) =
                     novoStatus,
                     'duplicata',
                     null,
-                    conta.data_vencimento,
+                    novoStatus === 'recebido' ? data_pagamento : conta.data_vencimento,
                     conta.numero_parcela || null,
                     conta.total_parcelas || null,
                     conta.venda_id,

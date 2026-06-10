@@ -18,6 +18,32 @@
   align-items: center;
   margin-bottom: 16px;
   box-shadow: 0 8px 24px rgba(0,0,0,.15);
+  position: relative;
+}
+
+.pdv-topo-central-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  display: none;
+}
+
+body.modo-fiscal-ativo .pdv-topo-central-label {
+  display: block;
+}
+
+.pdv-topo-central-label span {
+  display: inline-block;
+  background: #16a34a;
+  color: #f4f2f2;
+  font-weight: 900;
+  padding: 6px 14px;
+  border-radius: 12px;
+  letter-spacing: 0.5px;
+  font-size: 0.95rem;
+  text-transform: uppercase;
 }
 
 .pdv-topo h1 {
@@ -596,6 +622,12 @@ body.modo-fiscal-ativo .pdv-topo {
   border-top: 0;
   border-top-left-radius: 0;
   border-top-right-radius: 0;
+}
+
+body.modo-fiscal-ativo #btnFinalizarVendaPdv {
+  background: #16a34a !important;
+}
+  font-weight: 900;
 }
 
 body.modo-fiscal-ativo #btnFinalizarVendaPdv {

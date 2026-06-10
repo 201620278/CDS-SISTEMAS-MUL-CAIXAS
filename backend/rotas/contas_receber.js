@@ -143,10 +143,10 @@ router.post('/pagar/:id', (req, res) => {
             db.run(
               `
                 UPDATE financeiro
-                SET data_movimento = ?, status = 'recebido', baixado_em = ?
+                SET data_movimento = ?, vencimento = ?, status = 'recebido', baixado_em = ?
                 WHERE referencia_id = ? AND referencia_tipo = 'venda' AND status = 'pendente'
               `,
-              [data, data, conta.venda_id],
+              [data, data, data, conta.venda_id],
               (updateErr) => {
                 if (updateErr) {
                   console.log('Aviso: Não foi possível atualizar registro anterior de financeiro (pode não existir):', updateErr.message);

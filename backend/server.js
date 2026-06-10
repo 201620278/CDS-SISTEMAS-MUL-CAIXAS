@@ -112,6 +112,7 @@ app.get('/login', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/login.html'));
 });
 
+
 // Rotas protegidas (API)
 const produtosRoutes = require('./rotas/produtos');
 const clientesRoutes = require('./rotas/clientes');
@@ -129,6 +130,8 @@ const backupRoutes = require('./rotas/backup');
 const tefRoutes = require('./rotas/tef');
 const pixRoutes = require('./rotas/pix');
 const dashboardRoutes = require('./rotas/dashboard');
+const licencaRoutes = require('./rotas/licenca');
+const licencaMiddleware = require('./middleware/licencaMiddleware');
 // const usuariosRoutes = require('./rotas/usuarios');
 
 app.use('/api/produtos', verificarToken, produtosRoutes);
@@ -148,6 +151,12 @@ app.use('/api/backup', verificarToken, backupRoutes);
 app.use('/api/tef', tefRoutes);
 app.use('/api/pix', verificarToken, pixRoutes);
 // app.use('/api/usuarios', verificarToken, usuariosRoutes);
+
+// Rotas de licença (públicas)
+app.use('/api/licenca', licencaRoutes);
+
+// Middleware de licença para todas as APIs exceto auth e licença
+app.use('/api', licencaMiddleware);
 
 // Rota principal (protegida)
 app.get('/', verificarToken, (req, res) => {

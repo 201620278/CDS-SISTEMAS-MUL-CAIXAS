@@ -224,6 +224,59 @@ function criarTabelas() {
       )
     `);
 
+    db.run(`
+      CREATE TABLE IF NOT EXISTS licenca (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codigo_instalacao TEXT UNIQUE NOT NULL,
+        codigo_licenca TEXT,
+        data_ativacao DATETIME,
+        data_expiracao DATETIME,
+        ultima_verificacao DATETIME,
+        ultima_execucao DATETIME,
+        status TEXT DEFAULT 'pendente',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela licenca:', err);
+      else console.log('Tabela licenca criada/verificada');
+    });
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS licenca_historico (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        acao TEXT NOT NULL,
+        observacao TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela licenca_historico:', err);
+      else console.log('Tabela licenca_historico criada/verificada');
+    });
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS licenca_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        evento TEXT NOT NULL,
+        detalhes TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela licenca_logs:', err);
+      else console.log('Tabela licenca_logs criada/verificada');
+    });
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS licenca_execucao (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data_execucao DATETIME NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela licenca_execucao:', err);
+      else console.log('Tabela licenca_execucao criada/verificada');
+    });
+
     // Tabela de sugestões de promoções (Promoções Inteligentes)
     db.run(`
       CREATE TABLE IF NOT EXISTS promocoes_sugestoes (

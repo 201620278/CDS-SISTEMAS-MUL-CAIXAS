@@ -518,6 +518,8 @@ function loadPage(page) {
                     $('#page-content').html('<div class="alert alert-danger">Erro ao carregar financeiro.</div>');
                 }
             });
+        case 'licenca':
+            return typeof loadLicenca === 'function' ? loadLicenca() : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar licença.</div>');
         case 'caixa':
             return typeof loadCaixa === 'function' ? loadCaixa() : $('#page-content').html('<div class="alert alert-danger">Erro ao carregar caixa.</div>');
         case 'configuracoes':
