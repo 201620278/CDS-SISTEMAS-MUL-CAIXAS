@@ -1106,7 +1106,7 @@ function showProdutoModal(produto = null) {
                                         class="list-group position-absolute w-100"
                                         style="z-index: 9999; display: none;"
                                     ></div>
-                                </div>
+                                    <div class="col-12">
 
                                 <div class="col-12">
                                     <div class="row g-3 border rounded p-3 mb-2 bg-light">
@@ -1204,6 +1204,37 @@ function showProdutoModal(produto = null) {
                                             </div>
                                         </div>
                                     </div>
+                                    <!-- Venda em Atacado -->
+                                    <div class="col-12">
+                                        <div class="card mt-2">
+                                            <div class="card-header d-flex align-items-center justify-content-between">
+                                                <strong>Venda em Atacado</strong>
+                                                <div class="form-check form-switch mb-0">
+                                                    <input class="form-check-input" type="checkbox" id="venda_atacado" ${isEdit && Number(produto.venda_atacado || 0) === 1 ? 'checked' : ''}>
+                                                </div>
+                                            </div>
+                                            <div class="card-body" id="areaVendaAtacado" style="display: none;">
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm table-striped" id="tabelaAtacado">
+                                                        <thead>
+                                                            <tr>
+                                                                <th>Quantidade</th>
+                                                                <th>%</th>
+                                                                <th>Preço Atacado</th>
+                                                                <th></th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <!-- Faixas serão carregadas dinamicamente -->
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <div class="d-flex gap-2">
+                                                    <button type="button" class="btn btn-success btn-sm" id="btnAdicionarFaixa">+ Adicionar Faixa</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </form>
@@ -1221,12 +1252,16 @@ function showProdutoModal(produto = null) {
     $('#modal-container').html(modalHtml);
 
     $('#produtoModal').modal('show');
+    // inicializar armazenamento temporário de faixas (para produto novo)
+    const faixasInit = (produto && Array.isArray(produto.atacado_faixas)) ? produto.atacado_faixas : [];
+    $('#produtoModal').data('faixasTemp', faixasInit);
     // Remove botão flutuante se existir ao restaurar
     $('#btn-restaurar-produtoModal').remove();
 
     inicializarCategoriasESubcategorias(produto, isEdit);
     inicializarAutocompleteFornecedor();
     inicializarCalculoPreco(produto, isEdit);
+    inicializarVendaAtacado(produto, isEdit);
 
     if (isEdit && produto) {
         $('#data_validade').val(produto.data_validade || '');
@@ -1397,6 +1432,346 @@ function inicializarAutocompleteFornecedor() {
     });
 }
 
+// ---------- Venda em Atacado (frontend helpers) ----------
+function inicializarVendaAtacado(produto, isEdit) {
+    const produtoId = produto && produto.id ? String(produto.id) : null;
+    const ativo = isEdit && Number(produto.venda_atacado || 0) === 1;
+
+    $('#venda_atacado').off('change').on('change', function() {
+        const checked = $(this).is(':checked');
+        $('#areaVendaAtacado').toggle(checked);
+        // atualizar flag local no produto (quando existir)
+        if (produto && produto.id) produto.venda_atacado = checked ? 1 : 0;
+    });
+
+    // Botão adicionar faixa
+    $('#btnAdicionarFaixa').off('click').on('click', function() {
+        adicionarFaixaPrompt(produtoId);
+    });
+
+    if (ativo) {
+        $('#areaVendaAtacado').show();
+        renderFaixasAtacado(produtoId);
+    } else {
+        $('#areaVendaAtacado').hide();
+    }
+}
+
+function renderFaixasAtacado(produtoId) {
+    const $tbody = $('#tabelaAtacado tbody');
+    $tbody.html('');
+    if (!produtoId) {
+        // carregar faixas temporárias do modal
+        const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
+        faixasTemp.forEach((r, idx) => {
+            const tr = `
+                <tr data-temp-index="${idx}">
+                    <td>${r.quantidade_minima}</td>
+                    <td>${formatarPercentualPorPrecoAtacado(r.preco_atacado)}</td>
+                    <td>${formatCurrency(r.preco_atacado)}</td>
+                    <td class="text-end">
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="editarFaixaPromptTemp(${idx})">Editar</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="excluirFaixaTemp(${idx})">Excluir</button>
+                    </td>
+                </tr>
+            `;
+            $tbody.append(tr);
+        });
+        return;
+    }
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/atacado`,
+        method: 'GET',
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+        success: function(rows) {
+            (rows || []).forEach(r => {
+                const tr = `
+                    <tr data-id="${r.id}">
+                        <td>${r.quantidade_minima}</td>
+                        <td>${formatarPercentualPorPrecoAtacado(r.preco_atacado)}</td>
+                        <td>${formatCurrency(r.preco_atacado)}</td>
+                        <td class="text-end">
+                            <button class="btn btn-sm btn-outline-primary me-1" onclick="editarFaixaPrompt(${r.id})">Editar</button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="excluirFaixa(${r.id}, ${produtoId})">Excluir</button>
+                        </td>
+                    </tr>
+                `;
+                $tbody.append(tr);
+            });
+        },
+        error: function() {
+            showNotification('Erro ao carregar faixas de atacado.', 'danger');
+        }
+    });
+}
+
+function adicionarFaixaPrompt(produtoId) {
+    // Abre uma linha de inserção embutida na tabela de faixas (não usa prompt())
+    const $tbody = $('#tabelaAtacado tbody');
+    if ($tbody.find('tr[data-editing="nova"]').length) return; // já aberta
+
+    const tr = $(
+        `
+        <tr data-editing="nova">
+            <td><input type="number" min="1" class="form-control form-control-sm input-quantidade" placeholder="Quantidade mínima"></td>
+            <td><input type="number" min="0" step="0.01" class="form-control form-control-sm input-percentual" placeholder="% Atacado"></td>
+            <td><input type="text" class="form-control form-control-sm input-preco" placeholder="Preço atacado"></td>
+            <td class="text-end">
+                <button type="button" class="btn btn-sm btn-secondary btn-cancelar-nova">Cancelar</button>
+            </td>
+        </tr>
+    `);
+
+    $tbody.prepend(tr);
+    fixarEventosFaixaRow(tr);
+
+    // marcar o tr com o produtoId para que handlers genéricos o encontrem
+    if (produtoId) tr.attr('data-produto-id', produtoId);
+
+    // salvar ao pressionar Enter na linha ou ao sair do campo de preço; Esc cancela (remove a linha)
+    function salvarNova() {
+        const q = parseInt(tr.find('.input-quantidade').val(), 10);
+        const percentual = parseNumero(tr.find('.input-percentual').val());
+        const precoStr = tr.find('.input-preco').val() || '';
+        const precoManual = parseFloat(precoStr.replace(',', '.'));
+        let preco = (!isNaN(precoManual) && precoManual > 0) ? precoManual : 0;
+        if ((!preco || preco <= 0) && percentual > 0) {
+            preco = obterPrecoPorPercentual(percentual);
+        }
+        if (!q || q <= 0) { showNotification('Quantidade inválida', 'warning'); return; }
+        if (isNaN(preco) || preco <= 0) { showNotification('Preço inválido', 'warning'); return; }
+
+        const pid = tr.data('produto-id');
+        if (!pid) {
+            const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
+            faixasTemp.push({ quantidade_minima: q, preco_atacado: preco });
+            $('#produtoModal').data('faixasTemp', faixasTemp);
+            renderFaixasAtacado(null);
+            showNotification('Faixa adicionada localmente. Salve o produto para persistir.', 'success');
+            return;
+        }
+
+        $.ajax({
+            url: `${API_URL}/produtos/${pid}/atacado`,
+            method: 'POST',
+            global: false,
+            headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+            contentType: 'application/json',
+            data: JSON.stringify({ quantidade_minima: q, preco_atacado: preco }),
+            success: function() {
+                renderFaixasAtacado(pid);
+                showNotification('Faixa adicionada com sucesso', 'success');
+            },
+            error: function(xhr) {
+                console.error('Erro ao adicionar faixa:', xhr.status, xhr.responseJSON);
+                let err = xhr.responseJSON?.error || 'Erro ao adicionar faixa';
+                if (xhr.status === 403) {
+                    err = 'Você não tem permissão para gerenciar faixas de atacado';
+                } else if (xhr.status === 401) {
+                    err = 'Sua sessão expirou. Faça login novamente';
+                }
+                showNotification(err, 'danger');
+            }
+        });
+    }
+
+    tr.find('input').on('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            salvarNova();
+        } else if (e.key === 'Escape') {
+            tr.remove();
+        }
+    });
+
+    tr.find('.btn-cancelar-nova').on('click', function() {
+        tr.remove();
+    });
+
+    tr.find('.input-preco').on('blur', function() {
+        // salvar ao sair do campo de preço
+        salvarNova();
+    });
+}
+
+function editarFaixaPrompt(faixaId) {
+    // Editar faixa existente no servidor inline na tabela
+    const $tr = $(`#tabelaAtacado tr[data-id='${faixaId}']`);
+    if ($tr.length === 0) return showNotification('Faixa não encontrada', 'danger');
+    // buscar dados atuais
+    $.ajax({ url: `${API_URL}/produtos/atacado/${faixaId}`, method: 'GET', headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(faixa) {
+        if (!faixa) return showNotification('Faixa não encontrada', 'danger');
+        const originalHtml = $tr.html();
+        $tr.html(`
+            <td><input type="number" min="1" class="form-control form-control-sm input-quantidade" value="${faixa.quantidade_minima}"></td>
+            <td><input type="number" min="0" step="0.01" class="form-control form-control-sm input-percentual" value="${calcularPercentualPorPrecoAtacado(faixa.preco_atacado).toFixed(2)}"></td>
+            <td><input type="text" class="form-control form-control-sm input-preco" value="${faixa.preco_atacado}"></td>
+            <td class="text-end">
+                <button class="btn btn-sm btn-success me-1 btn-salvar-edicao">Salvar</button>
+                <button class="btn btn-sm btn-secondary btn-cancelar-edicao">Cancelar</button>
+            </td>
+        `);
+
+        $tr.find('.btn-cancelar-edicao').on('click', function() { $tr.html(originalHtml); });
+        fixarEventosFaixaRow($tr);
+
+        $tr.find('.btn-salvar-edicao').on('click', function() {
+            const q = parseInt($tr.find('.input-quantidade').val(), 10);
+            const percentual = parseNumero($tr.find('.input-percentual').val());
+            const precoStr = $tr.find('.input-preco').val() || '';
+            const precoManual = parseFloat(precoStr.replace(',', '.'));
+            let preco = (!isNaN(precoManual) && precoManual > 0) ? precoManual : 0;
+            if ((!preco || preco <= 0) && percentual > 0) {
+                preco = obterPrecoPorPercentual(percentual);
+            }
+            if (!q || q <= 0) { showNotification('Quantidade inválida', 'warning'); return; }
+            if (isNaN(preco) || preco <= 0) { showNotification('Preço inválido', 'warning'); return; }
+
+            $.ajax({
+                url: `${API_URL}/produtos/atacado/${faixaId}`,
+                method: 'PUT',
+                global: false,
+                headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+                contentType: 'application/json',
+                data: JSON.stringify({ quantidade_minima: q, preco_atacado: preco }),
+                success: function() {
+                    const pid = $('#produtoId').val();
+                    renderFaixasAtacado(pid);
+                    showNotification('Faixa atualizada', 'success');
+                },
+                error: function(xhr) {
+                    console.error('Erro ao atualizar faixa:', xhr.status, xhr.responseJSON);
+                    let err = xhr.responseJSON?.error || 'Erro ao atualizar faixa';
+                    if (xhr.status === 403) {
+                        err = 'Você não tem permissão para gerenciar faixas de atacado';
+                    } else if (xhr.status === 401) {
+                        err = 'Sua sessão expirou. Faça login novamente';
+                    }
+                    showNotification(err, 'danger');
+                }
+            });
+        });
+    }, error: function() { showNotification('Erro ao buscar faixa', 'danger'); } });
+}
+
+function editarFaixaPromptTemp(index) {
+    const $tr = $(`#tabelaAtacado tr[data-temp-index='${index}']`);
+    const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
+    const faixa = faixasTemp[index];
+    if (!$tr.length || !faixa) return showNotification('Faixa não encontrada localmente', 'danger');
+    const originalHtml = $tr.html();
+    $tr.html(`
+        <td><input type="number" min="1" class="form-control form-control-sm input-quantidade" value="${faixa.quantidade_minima}"></td>
+        <td><input type="number" min="0" step="0.01" class="form-control form-control-sm input-percentual" value="${calcularPercentualPorPrecoAtacado(faixa.preco_atacado).toFixed(2)}"></td>
+        <td><input type="text" class="form-control form-control-sm input-preco" value="${faixa.preco_atacado}"></td>
+        <td class="text-end"></td>
+    `);
+
+    fixarEventosFaixaRow($tr);
+
+    function salvarEdicaoTemp() {
+        const q = parseInt($tr.find('.input-quantidade').val(), 10);
+        const percentual = parseNumero($tr.find('.input-percentual').val());
+        const precoStr = $tr.find('.input-preco').val() || '';
+        const precoManual = parseFloat(precoStr.replace(',', '.'));
+        let preco = (!isNaN(precoManual) && precoManual > 0) ? precoManual : 0;
+        if ((!preco || preco <= 0) && percentual > 0) {
+            preco = obterPrecoPorPercentual(percentual);
+        }
+        if (!q || q <= 0) { showNotification('Quantidade inválida', 'warning'); return; }
+        if (isNaN(preco) || preco <= 0) { showNotification('Preço inválido', 'warning'); return; }
+
+        faixasTemp[index] = { quantidade_minima: q, preco_atacado: preco };
+        $('#produtoModal').data('faixasTemp', faixasTemp);
+        renderFaixasAtacado(null);
+        showNotification('Faixa atualizada localmente. Salve o produto para persistir.', 'success');
+    }
+
+    $tr.find('input').on('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            salvarEdicaoTemp();
+        } else if (e.key === 'Escape') {
+            $tr.html(originalHtml);
+        }
+    });
+
+    $tr.find('.input-preco').on('blur', function() {
+        salvarEdicaoTemp();
+    });
+}
+
+function excluirFaixaTemp(index) {
+    if (!confirm('Deseja realmente excluir esta faixa temporária?')) return;
+    const faixasTemp = $('#produtoModal').data('faixasTemp') || [];
+    faixasTemp.splice(index, 1);
+    $('#produtoModal').data('faixasTemp', faixasTemp);
+    renderFaixasAtacado(null);
+}
+
+function excluirFaixa(faixaId, produtoId) {
+    if (!confirm('Deseja realmente excluir esta faixa de atacado?')) return;
+    $.ajax({
+        url: `${API_URL}/produtos/atacado/${faixaId}`,
+        method: 'DELETE',
+        global: false,
+        headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') },
+        success: function() {
+            renderFaixasAtacado(produtoId || $('#produtoId').val());
+            showNotification('Faixa excluída', 'success');
+        },
+        error: function() {
+            showNotification('Erro ao excluir faixa', 'danger');
+        }
+    });
+}
+
+function parseNumero(valor) {
+    return parseFloat(String(valor || '0').replace(',', '.')) || 0;
+}
+
+function calcularPercentualPorPrecoAtacado(precoAtacado) {
+    const precoVenda = parseNumero($('#preco_venda').val());
+    if (precoVenda <= 0) return 0;
+    const precoAtacadoConvertido = parseNumero(precoAtacado);
+    return ((precoVenda - precoAtacadoConvertido) / precoVenda) * 100;
+}
+
+function formatarPercentualPorPrecoAtacado(precoAtacado) {
+    const percentual = calcularPercentualPorPrecoAtacado(precoAtacado);
+    return `${percentual.toFixed(2)}%`;
+}
+
+function obterPrecoPorPercentual(percentual) {
+    const precoVenda = parseNumero($('#preco_venda').val());
+    if (precoVenda <= 0) return 0;
+    return precoVenda * (1 - (parseNumero(percentual) / 100));
+}
+
+function fixarEventosFaixaRow($row) {
+    const $percentual = $row.find('.input-percentual');
+    const $preco = $row.find('.input-preco');
+
+    $percentual.off('input').on('input', function() {
+        const valor = parseNumero($percentual.val());
+        const preco = obterPrecoPorPercentual(valor);
+        if (preco > 0) {
+            $preco.val(preco.toFixed(2));
+        }
+    });
+
+    $preco.off('input').on('input', function() {
+        const valor = parseNumero($preco.val());
+        if (valor <= 0) {
+            $percentual.val('0.00');
+            return;
+        }
+        const percentual = calcularPercentualPorPrecoAtacado(valor);
+        $percentual.val(percentual.toFixed(2));
+    });
+}
+
 
 // Inicializa cálculo automático do preço de venda
 function inicializarCalculoPreco(produto, isEdit) {
@@ -1542,6 +1917,7 @@ function saveProduto() {
         peso_total_compra: parseFloat($('#peso_total_compra').val()) || 0,
         valor_total_compra: parseFloat($('#valor_total_compra').val()) || 0,
         custo_por_kg: parseFloat($('#custo_por_kg').val()) || 0
+        , venda_atacado: $('#venda_atacado').is(':checked') ? 1 : 0
     };
 
     if (data.controlar_validade === 1 && !data.data_validade) {
@@ -1602,6 +1978,11 @@ function saveProduto() {
 
     const url = id ? `${API_URL}/produtos/${id}` : `${API_URL}/produtos`;
     const method = id ? 'PUT' : 'POST';
+    // incluir faixas temporárias (se houver) para salvar junto com o produto
+    const faixasTemp = $('#produtoModal').data('faixasTemp');
+    if (Array.isArray(faixasTemp) && faixasTemp.length > 0) {
+        data.atacado_faixas = faixasTemp;
+    }
 
     $.ajax({
         url: url,
@@ -1970,6 +2351,9 @@ async function abrirModalPromocoesProdutos() {
                     </div>
 
                     <div class="modal-footer">
+                        <button type="button" class="btn btn-warning" onclick="verificarPromocoeExpiradas()">
+                            <i class="fas fa-exclamation-triangle"></i> Verificar Expiradas
+                        </button>
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
                         <button type="button" class="btn btn-primary" onclick="abrirModalGerarSugestoesAvancado()">
                             <i class="fas fa-magic"></i> Gerar Sugestões
@@ -2404,6 +2788,33 @@ async function carregarPromocoes(tipo) {
             const desconto = Number(p.desconto_percentual || 0).toFixed(2);
             const dataInicio = new Date(p.data_inicio).toLocaleDateString('pt-BR');
             const dataFim = new Date(p.data_fim).toLocaleDateString('pt-BR');
+            
+            // Calcular status real
+            const hoje = new Date();
+            hoje.setHours(0, 0, 0, 0);
+            const fimDate = new Date(p.data_fim);
+            fimDate.setHours(0, 0, 0, 0);
+            const inicioDate = new Date(p.data_inicio);
+            inicioDate.setHours(0, 0, 0, 0);
+            
+            let statusReal = p.status;
+            let badgeClass = 'bg-secondary';
+            
+            if (p.status === 'ativa') {
+                if (fimDate < hoje) {
+                    statusReal = '⚠️ EXPIRADA';
+                    badgeClass = 'bg-danger';
+                } else if (inicioDate > hoje) {
+                    statusReal = '🕐 NÃO INICIADA';
+                    badgeClass = 'bg-warning text-dark';
+                } else {
+                    statusReal = '✅ VIGENTE';
+                    badgeClass = 'bg-success';
+                }
+            } else if (p.status === 'encerrada') {
+                statusReal = '❌ ENCERRADA';
+                badgeClass = 'bg-secondary';
+            }
 
             html += `
                 <tr>
@@ -2412,7 +2823,7 @@ async function carregarPromocoes(tipo) {
                     <td>${formatCurrency(p.preco_promocional || 0)}</td>
                     <td>${desconto}%</td>
                     <td>${dataInicio} até ${dataFim}</td>
-                    <td><span class="badge ${p.status === 'ativa' ? 'bg-success' : 'bg-secondary'}">${p.status}</span></td>
+                    <td><span class="badge ${badgeClass}">${statusReal}</span></td>
                     ${tipo === 'ativas' ? `
                         <td>
                             <button class="btn btn-sm btn-danger" onclick="encerrarPromocao(${p.id})">
@@ -2723,8 +3134,39 @@ async function encerrarPromocao(promocaoId) {
 window.encerrarPromocao = encerrarPromocao;
 
 /**
- * Gera sugestões de promoções automaticamente
+ * Verifica e encerra promoções expiradas manualmente
  */
+async function verificarPromocoeExpiradas() {
+    try {
+        const response = await fetch(`${API_URL}/produtos/verificar-expiradas-agora`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+            }
+        });
+
+        if (!response.ok) {
+            throw new Error('Erro ao verificar promoções expiradas');
+        }
+
+        const resultado = await response.json();
+        
+        showNotification(resultado.message, 'success');
+        
+        // Recarregar as listas de promoções
+        carregarPromocoes('ativas');
+        carregarPromocoes('encerradas');
+        carregarDashboardPromocoes();
+        carregarEstatisticasPromocoes();
+        
+    } catch (error) {
+        console.error('Erro ao verificar promoções expiradas:', error);
+        showNotification('Erro ao verificar promoções expiradas', 'danger');
+    }
+}
+
+window.verificarPromocoeExpiradas = verificarPromocoeExpiradas;
 /**
  * Gera sugestões automáticas (versão simples - sem parâmetros)
  * @deprecated Use gerarSugestoesAvancado() em vez disso

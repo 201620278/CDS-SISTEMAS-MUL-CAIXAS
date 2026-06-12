@@ -19,7 +19,8 @@ const PERMISSOES_DISPONIVEIS = [
   'configuracoes',
   'usuarios',
   'relatorios',
-  'categorias'
+  'categorias',
+  'gerenciar_faixa_atacado'
 ];
 
 function extrairToken(req) {
@@ -84,6 +85,87 @@ function buscarPermissoesUsuario(usuarioId, callback) {
   );
 }
 
+function isSupervisorPerfil(usuario) {
+  const perfil = String(usuario?.perfil || '').trim().toUpperCase();
+  return usuario?.role === 'admin' || ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'].includes(perfil);
+}
+
+function verificarSupervisorToken(token) {
+  return new Promise((resolve, reject) => {
+    if (!token) {
+      return reject(new Error('Token de supervisor ausente.'));
+    }
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (err) {
+        return reject(new Error('Token de supervisor inválido ou expirado.'));
+      }
+
+      if (!isSupervisorPerfil(user)) {
+        return reject(new Error('Usuário não possui permissão de supervisor.'));
+      }
+
+      resolve(user);
+    });
+  });
+}
+
+router.post('/supervisor/authorize', (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Usuário e senha são obrigatórios' });
+  }
+
+  db.get(
+    `SELECT * FROM usuarios WHERE username = ? AND COALESCE(ativo, 1) = 1`,
+    [username],
+    (err, usuario) => {
+      if (err) {
+        console.error('Erro ao consultar usuário:', err);
+        return res.status(500).json({ error: 'Erro interno do servidor' });
+      }
+
+      if (!usuario) {
+        return res.status(401).json({ error: 'Usuário ou senha inválidos' });
+      }
+
+      const senhaValida = bcrypt.compareSync(password, usuario.password_hash);
+
+      if (!senhaValida) {
+        return res.status(401).json({ error: 'Usuário ou senha inválidos' });
+      }
+
+      if (!isSupervisorPerfil(usuario)) {
+        return res.status(403).json({ error: 'Apenas supervisor pode autorizar este desconto.' });
+      }
+
+      const token = jwt.sign(
+        {
+          id: usuario.id,
+          username: usuario.username,
+          nome: usuario.nome || usuario.username,
+          role: usuario.role,
+          perfil: usuario.perfil || 'USUARIO'
+        },
+        JWT_SECRET,
+        { expiresIn: '15m' }
+      );
+
+      res.json({
+        token,
+        user: {
+          id: usuario.id,
+          username: usuario.username,
+          nome: usuario.nome || usuario.username,
+          role: usuario.role,
+          perfil: usuario.perfil || 'USUARIO'
+        }
+      });
+    }
+  );
+});
+
 router.post('/login', (req, res) => {
   const { username, password } = req.body;
 
@@ -123,6 +205,7 @@ router.post('/login', (req, res) => {
           {
             id: usuario.id,
             username: usuario.username,
+            nome: usuario.nome || usuario.username,
             role: usuario.role,
             perfil: usuario.perfil || 'USUARIO',
             permissoes
@@ -611,9 +694,41 @@ function salvarPermissoes(usuarioId, permissoes, callback) {
   });
 }
 
+// Função para verificar se o usuário tem uma permissão específica
+// Retorna um middleware que verifica: admin/supervisor role OU permissão específica
+function verificarPermissaoEspecifica(nomeDaPermissao) {
+  return (req, res, next) => {
+    verificarToken(req, res, () => {
+      // Admin e supervisor sempre têm acesso
+      if (req.user?.role === 'admin' || req.user?.role === 'supervisor') {
+        return next();
+      }
+
+      // Verificar permissão específica para operadores
+      buscarPermissoesUsuario(req.user?.id, (err, permissoes) => {
+        if (err) {
+          return res.status(500).json({ error: 'Erro ao verificar permissões' });
+        }
+
+        if (Array.isArray(permissoes) && permissoes.includes(nomeDaPermissao)) {
+          return next();
+        }
+
+        return res.status(403).json({
+          error: `Acesso restrito: permissão "${nomeDaPermissao}" necessária.`
+        });
+      });
+    });
+  };
+}
+
 module.exports = {
   router,
   verificarToken,
   exigirAdmin,
-  PERMISSOES_DISPONIVEIS
+  verificarSupervisorToken,
+  isSupervisorPerfil,
+  PERMISSOES_DISPONIVEIS,
+  buscarPermissoesUsuario,
+  verificarPermissaoEspecifica
 };

@@ -9,6 +9,8 @@ let pdvClockInterval = null;
 let caixaAberto = false;
 let pagamentosMistos = [];
 let formaPagamentoSelecionadaPDV = null;
+let supervisorAuthToken = null;
+const DESCONTO_MANUAL_LIMITE = 50;
 
 function normalizarTexto(texto) {
     return String(texto || '')
@@ -72,6 +74,94 @@ function nomePerfilUsuario(usuario) {
     if (perfil === 'OPERADOR' || perfil === 'USUARIO') return 'OPERADOR';
 
     return perfil || 'USUÁRIO';
+}
+
+function usuarioEhSupervisor() {
+    try {
+        const usuario = JSON.parse(localStorage.getItem('user') || '{}');
+        const perfil = String(usuario?.perfil || usuario?.nivel || '')
+            .trim()
+            .toUpperCase();
+
+        return usuario?.role === 'admin' || ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'].includes(perfil);
+    } catch (e) {
+        return false;
+    }
+}
+
+function mostrarModalAutorizacaoSupervisor(onAuthorized) {
+    $('#modal-container').html(`
+        <div class="modal fade" id="supervisorAuthModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog modal-sm modal-dialog-centered">
+                <div class="modal-content border-0 shadow">
+                    <div class="modal-header bg-primary">
+                        <h5 class="modal-title text-white mb-0">Autorização de Supervisor</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Desconto manual acima de R$ ${DESCONTO_MANUAL_LIMITE.toFixed(2)} exige autorização de supervisor.</p>
+                        <div class="mb-3">
+                            <label for="supervisorUsername" class="form-label">Usuário</label>
+                            <input type="text" class="form-control" id="supervisorUsername" autocomplete="username">
+                        </div>
+                        <div class="mb-3">
+                            <label for="supervisorPassword" class="form-label">Senha</label>
+                            <input type="password" class="form-control" id="supervisorPassword" autocomplete="current-password">
+                        </div>
+                        <div id="supervisorAuthError" class="text-danger small mb-2" style="display:none;"></div>
+                        <div class="d-grid gap-2">
+                            <button type="button" class="btn btn-primary" id="supervisorAuthSubmit">Autorizar</button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    const modalEl = document.getElementById('supervisorAuthModal');
+    const modal = new bootstrap.Modal(modalEl, { backdrop: 'static' });
+    modal.show();
+
+    $('#supervisorAuthSubmit').off('click').on('click', async function() {
+        const username = $('#supervisorUsername').val().trim();
+        const password = $('#supervisorPassword').val().trim();
+        const errorEl = $('#supervisorAuthError');
+
+        errorEl.hide();
+
+        if (!username || !password) {
+            errorEl.text('Informe usuário e senha.').show();
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_URL}/auth/supervisor/authorize`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                errorEl.text(data?.error || 'Erro ao autorizar supervisão.').show();
+                return;
+            }
+
+            supervisorAuthToken = data.token;
+            modal.hide();
+
+            if (typeof onAuthorized === 'function') {
+                onAuthorized();
+            }
+        } catch (error) {
+            errorEl.text('Falha na autorização. Tente novamente.').show();
+            console.error('Erro de autorização de supervisor:', error);
+        }
+    });
 }
 
 async function processarPagamentoTEF(tipo, valor, parcelas = 1) {
@@ -684,7 +774,10 @@ function renderCarrinhoItens() {
         const temDesconto = Number(item.desconto_percentual || 0) > 0;
         const classe = temDesconto ? 'table-warning' : '';
         const badgeDesconto = temDesconto ? `<small class="badge bg-danger">-${Number(item.desconto_percentual).toFixed(2)}%</small>` : '';
+        const descontoAtacadoValor = Number(item.desconto_atacado || 0);
+        const badgeDescontoAtacado = descontoAtacadoValor > 0 ? `<div><small class="text-success">Desconto atacado: -${formatCurrency(descontoAtacadoValor)}</small></div>` : '';
         
+        const modoAtacadoBadge = item.tipo_preco === 'atacado' ? `<div><small class="badge bg-info">ATACADO</small></div>` : '';
         return `
             <tr ${classe ? `class="${classe}"` : ''}>
                 <td>
@@ -696,10 +789,27 @@ function renderCarrinhoItens() {
                            data-index="${index}">
                 </td>
                 <td>
+                    <input type="number"
+                           class="form-control form-control-sm percentual-item"
+                           value="${Number(item.desconto_percentual || 0).toFixed(2)}"
+                           min="-100"
+                           step="0.01"
+                           data-index="${index}">
+                </td>
+                <td>
                     ${escapeHtml(item.nome)}
                     ${badgeDesconto}
+                    ${badgeDescontoAtacado}
+                    ${modoAtacadoBadge}
                 </td>
-                <td>${formatCurrency(item.preco_unitario)}</td>
+                <td>
+                    <input type="number"
+                           class="form-control form-control-sm valor-item text-end"
+                           value="${Number(item.preco_unitario).toFixed(2)}"
+                           min="0.01"
+                           step="0.01"
+                           data-index="${index}">
+                </td>
                 <td>${formatCurrency(item.subtotal)}</td>
                 <td class="text-center">
                     <button type="button" class="btn btn-sm btn-outline-danger item-remover" data-index="${index}">
@@ -783,8 +893,43 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         return;
     }
 
-    const precoFinal = promocao ? Number(promocao.preco_promocional || precoUnitario) : precoUnitario;
-    const desconto = promocao ? Number(promocao.desconto_percentual || 0) : 0;
+    const precoPromocional = promocao ? Number(promocao.preco_promocional || precoUnitario) : precoUnitario;
+    const percentualPromocao = promocao ? Number(promocao.desconto_percentual || 0) : 0;
+
+    // Aplica preço atacado se ativo: obtém faixas e escolhe maior faixa atendida
+    function obterPrecoAtacado(produtoId, quantidadeTotal, precoBase) {
+        try {
+            let faixas = [];
+            $.ajax({ url: `${API_URL}/produtos/${produtoId}/atacado`, method: 'GET', async: false, headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(res) { faixas = res || []; } });
+
+            if (!Array.isArray(faixas) || faixas.length === 0) return { preco: precoBase, descontoAtacado: 0 };
+
+            // escolher maior faixa com quantidade_minima <= quantidadeTotal
+            let escolhida = null;
+            faixas.forEach(f => {
+                const qmin = Number(f.quantidade_minima || 0);
+                if (quantidadeTotal >= qmin) {
+                    if (!escolhida || qmin > Number(escolhida.quantidade_minima || 0)) escolhida = f;
+                }
+            });
+
+            if (!escolhida) return { preco: precoBase, descontoAtacado: 0 };
+
+            const precoAtacado = Number(escolhida.preco_atacado || 0);
+            if (precoAtacado <= 0) return { preco: precoBase, descontoAtacado: 0 };
+
+            const descontoAtacadoTotal = Math.max(0, (Number(produto.preco_venda || precoBase) - precoAtacado) * quantidadeTotal);
+            // Aplicar atacado somente se for menor que o preço já calculado (promoções permanecem se forem menores)
+            const precoAplicado = Math.min(precoBase, precoAtacado);
+            return { preco: precoAplicado, descontoAtacado: Number(descontoAtacadoTotal.toFixed(2)), isAtacado: true };
+        } catch (err) {
+            return { preco: precoBase, descontoAtacado: 0, isAtacado: false };
+        }
+    }
+
+    // calcula preco final considerando promoção primeiro, depois atacado (se mais vantajoso)
+    let precoFinal = precoPromocional;
+    let descontoAtacadoItem = 0;
     
     const itemExistente = carrinho.find(item => Number(item.id) === Number(produto.id));
 
@@ -796,25 +941,50 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
             return;
         }
 
+        // reavaliar preço atacado com a nova quantidade total
+            if (Number(produto.venda_atacado || 0) === 1) {
+                const atac = obterPrecoAtacado(produto.id, novaQuantidade, precoFinal);
+                precoFinal = atac.preco;
+                descontoAtacadoItem = atac.descontoAtacado;
+                itemExistente.tipo_preco = atac.isAtacado ? 'atacado' : 'varejo';
+            }
+
+        const precoBase = Number(produto.preco_venda || precoFinal);
+        const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
+
         itemExistente.quantidade = Number(novaQuantidade.toFixed(3));
         itemExistente.preco_unitario = precoFinal;
-        itemExistente.desconto_percentual = desconto;
+        itemExistente.desconto_percentual = descontoPercentual;
         itemExistente.promocao_id = promocao?.id || null;
+        itemExistente.desconto_atacado = descontoAtacadoItem;
         itemExistente.subtotal = Number((itemExistente.quantidade * precoFinal).toFixed(2));
     } else {
-        carrinho.push({
+        // avaliar atacado para quantidade inicial
+            if (Number(produto.venda_atacado || 0) === 1) {
+                const atac = obterPrecoAtacado(produto.id, quantidade, precoFinal);
+                precoFinal = atac.preco;
+                descontoAtacadoItem = atac.descontoAtacado;
+            }
+
+            const precoBase = Number(produto.preco_venda || precoFinal);
+            const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
+
+            carrinho.push({
             id: produto.id,
             nome: produto.nome,
             quantidade: Number(quantidade.toFixed(3)),
             preco_unitario: precoFinal,
-            desconto_percentual: desconto,
+            preco_base: precoBase,
+            desconto_percentual: descontoPercentual,
             promocao_id: promocao?.id || null,
+            desconto_atacado: descontoAtacadoItem,
+                tipo_preco: (Number(produto.venda_atacado || 0) === 1 && descontoAtacadoItem > 0) ? 'atacado' : 'varejo',
             subtotal: Number((quantidade * precoFinal).toFixed(2))
         });
     }
 
     atualizarCarrinho();
-    const msgDesconto = desconto > 0 ? ` (Promoção -${desconto}%)` : '';
+    const msgDesconto = percentualPromocao > 0 ? ` (Promoção -${percentualPromocao}%)` : '';
     showNotification(`${produto.nome} adicionado ao carrinho${msgDesconto}${mensagemExtra}.`, 'success');
     focarCampoCodigo();
 }
@@ -926,8 +1096,75 @@ function atualizarQuantidade(index, quantidade) {
         return;
     }
 
+    // reavaliar preço atacado quando a quantidade mudar
+    let precoAplicado = Number(item.preco_unitario || 0);
+    let descontoAtacadoItem = Number(item.desconto_atacado || 0);
+    if (Number(produto.venda_atacado || 0) === 1) {
+        try {
+            let faixas = [];
+            $.ajax({ url: `${API_URL}/produtos/${produto.id}/atacado`, method: 'GET', async: false, headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(res) { faixas = res || []; } });
+            if (Array.isArray(faixas) && faixas.length > 0) {
+                let escolhida = null;
+                faixas.forEach(f => {
+                    const qmin = Number(f.quantidade_minima || 0);
+                    if (novaQuantidade >= qmin) {
+                        if (!escolhida || qmin > Number(escolhida.quantidade_minima || 0)) escolhida = f;
+                    }
+                });
+                if (escolhida) {
+                    const precoAtacado = Number(escolhida.preco_atacado || 0);
+                    const precoBase = Number(produto.preco_venda || precoAplicado);
+                    const novoPreco = Math.min(precoAplicado, precoAtacado, precoBase);
+                    precoAplicado = novoPreco;
+                    descontoAtacadoItem = Math.max(0, (Number(produto.preco_venda || precoBase) - novoPreco) * novaQuantidade);
+                }
+            }
+        } catch (err) {
+            // ignore
+        }
+    }
+
     item.quantidade = novaQuantidade;
-    item.subtotal = Number(item.preco_unitario) * novaQuantidade;
+    item.preco_unitario = precoAplicado;
+    item.desconto_atacado = Number((descontoAtacadoItem || 0).toFixed(2));
+    const precoBase = Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
+    item.desconto_percentual = precoBase > 0 ? Number(((1 - precoAplicado / precoBase) * 100).toFixed(2)) : 0;
+    item.subtotal = Number((item.preco_unitario * novaQuantidade).toFixed(2));
+    atualizarCarrinho();
+}
+
+function atualizarPercentual(index, percentual) {
+    const item = carrinho[index];
+    if (!item) return;
+
+    const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
+    const precoBase = Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
+    if (precoBase <= 0) return;
+
+    const precoAplicado = Number((precoBase * (1 - Number(percentual || 0) / 100)).toFixed(2));
+    item.desconto_percentual = Number(percentual.toFixed(2));
+    item.preco_unitario = precoAplicado > 0 ? precoAplicado : 0.01;
+    item.preco_base = precoBase;
+    item.subtotal = Number((item.preco_unitario * Number(item.quantidade || 0)).toFixed(2));
+    atualizarCarrinho();
+}
+
+function atualizarPrecoUnitario(index, valor) {
+    const item = carrinho[index];
+    if (!item) return;
+
+    const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
+    const precoBase = Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
+    if (precoBase <= 0) return;
+
+    const precoUnitario = Number(valor || 0);
+    if (precoUnitario <= 0) return;
+
+    const percentual = Number(((1 - precoUnitario / precoBase) * 100).toFixed(2));
+    item.desconto_percentual = percentual;
+    item.preco_unitario = precoUnitario;
+    item.preco_base = precoBase;
+    item.subtotal = Number((precoUnitario * Number(item.quantidade || 0)).toFixed(2));
     atualizarCarrinho();
 }
 
@@ -976,6 +1213,26 @@ function atualizarCarrinho() {
                 atualizarQuantidade(index, novaQtd);
             }
         });
+
+        tbody.on('change', '.percentual-item', function() {
+            const index = $(this).data('index');
+            const percentual = parseFloat($(this).val());
+            if (isNaN(percentual)) {
+                atualizarCarrinho();
+                return;
+            }
+            atualizarPercentual(index, percentual);
+        });
+
+        tbody.on('change', '.valor-item', function() {
+            const index = $(this).data('index');
+            const valor = parseFloat($(this).val());
+            if (isNaN(valor) || valor <= 0) {
+                atualizarCarrinho();
+                return;
+            }
+            atualizarPrecoUnitario(index, valor);
+        });
     }
 
     calcularTotal();
@@ -1005,6 +1262,9 @@ function calcularTotal() {
     const subtotal = calcularSubtotal();
     const total = calcularTotalValor();
     $('#subtotalPdv').text(formatCurrency(subtotal));
+    // exibe desconto atacado (informativo)
+    const descontoAtacadoTotal = carrinho.reduce((acc, it) => acc + (Number(it.desconto_atacado || 0)), 0);
+    $('#descontoAtacadoPdv').text(formatCurrency(descontoAtacadoTotal));
     $('#totalPdv').text(formatCurrency(total));
 
     calcularTrocoPDV();
@@ -1919,8 +2179,11 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             preco_unitario: Number(item.preco_unitario),
             desconto_percentual: Number(item.desconto_percentual || 0),
             promocao_id: item.promocao_id || null,
+            desconto_atacado: Number(item.desconto_atacado || 0),
+            tipo_preco: item.tipo_preco || 'varejo',
             subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100
-        }))
+        })),
+        supervisor_token: supervisorAuthToken || null
     };
 
     if (formaPagamento === 'dinheiro') {
@@ -2074,6 +2337,7 @@ function finalizarPosVenda() {
     clienteSelecionado = null;
     vendaPrazoInfo = null;
     pagamentosMistos = [];
+    supervisorAuthToken = null;
     $('#descontoPdv').val(0);
     $('#formaPagamentoPdv').val('');
     $('#valorRecebidoPDV').val('');

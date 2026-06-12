@@ -2,12 +2,16 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
+const { verificarPermissaoEspecifica } = require('./auth');
+
 
 // LISTAR PRODUTOS
 router.get('/', (req, res) => {
   db.all(`
     SELECT 
-      p.*,
+      p.*, 
+      (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
+      (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       c.nome AS categoria_nome,
       s.nome AS subcategoria_nome,
       CAST(julianday(date(p.data_validade)) - julianday(date('now', 'localtime')) AS INTEGER) AS dias_para_vencer,
@@ -172,6 +176,8 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       p.nome,
       p.unidade,
       p.preco_venda,
+      (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
+      (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       p.estoque_atual,
       p.estoque_minimo,
       p.vendido_por_peso,
@@ -360,22 +366,22 @@ router.get('/promocoes/dashboard', (req, res) => {
         return res.status(500).json({ error: err.message });
       }
 
-      // Promoções ativas
+      // Promoções ativas (realmente vigentes: iniciadas e não expiradas)
       db.get(`
         SELECT COUNT(*) as total
         FROM promocoes
-        WHERE status = 'ativa' AND data_fim >= date('now', 'localtime')
+        WHERE status = 'ativa' AND date(data_inicio) <= date('now') AND date(data_fim) > date('now')
       `, (err2, ativas) => {
         if (err2) {
           console.error('Erro ao contar promoções ativas:', err2.message);
           return res.status(500).json({ error: err2.message });
         }
 
-        // Promoções encerradas
+        // Promoções encerradas (manualmente OU expiradas)
         db.get(`
           SELECT COUNT(*) as total
           FROM promocoes
-          WHERE status IN ('encerrada', 'cancelada') OR (status = 'ativa' AND data_fim < date('now', 'localtime'))
+          WHERE status = 'encerrada' OR (status = 'ativa' AND date(data_fim) <= date('now'))
         `, (err3, encerradas) => {
           if (err3) {
             console.error('Erro ao contar promoções encerradas:', err3.message);
@@ -457,7 +463,13 @@ router.get('/promocoes', (req, res) => {
       p.*,
       pr.nome AS nome_produto,
       pr.codigo,
-      pr.preco_venda
+      pr.preco_venda,
+      CASE 
+        WHEN date(p.data_fim) < date('now') THEN 'expirada'
+        WHEN date(p.data_inicio) > date('now') THEN 'nao_iniciada'
+        WHEN p.status = 'ativa' THEN 'vigente'
+        ELSE p.status
+      END AS status_real
     FROM promocoes p
     LEFT JOIN produtos pr ON pr.id = p.produto_id
   `;
@@ -465,9 +477,11 @@ router.get('/promocoes', (req, res) => {
   const params = [];
 
   if (status === 'ativas') {
-    query += ` WHERE p.status = 'ativa' AND p.data_fim >= date('now', 'localtime')`;
+    // Mostra apenas promoções que estão realmente vigentes (iniciadas e não expiradas)
+    query += ` WHERE p.status = 'ativa' AND date(p.data_inicio) <= date('now') AND date(p.data_fim) > date('now')`;
   } else if (status === 'encerradas') {
-    query += ` WHERE p.status IN ('encerrada', 'cancelada') OR (p.status = 'ativa' AND p.data_fim < date('now', 'localtime'))`;
+    // Mostra promoções encerradas manualmente OU expiradas
+    query += ` WHERE p.status = 'encerrada' OR (p.status = 'ativa' AND date(p.data_fim) <= date('now'))`;
   }
 
   query += ` ORDER BY p.criado_em DESC`;
@@ -702,6 +716,8 @@ router.get('/:id', (req, res) => {
   db.get(`
     SELECT 
       p.*, 
+      (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
+      (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       c.nome AS categoria_nome,
       s.nome AS subcategoria_nome
     FROM produtos p
@@ -732,7 +748,8 @@ router.post('/', (req, res) => {
     ncm, cfop, csosn, origem, cest, codigo_barras,
     aliquota_icms, aliquota_pis, aliquota_cofins,
     data_validade, lote, dias_alerta_validade, controlar_validade,
-    vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg
+    vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
+    venda_atacado
   } = req.body;
 
   db.run(`
@@ -743,9 +760,10 @@ router.post('/', (req, res) => {
       ncm, cfop, csosn, origem, cest, codigo_barras,
       aliquota_icms, aliquota_pis, aliquota_cofins,
       data_validade, lote, dias_alerta_validade, controlar_validade,
-      vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg
+      vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
+      venda_atacado
     )
-    VALUES (${Array(28).fill('?').join(', ')})
+    VALUES (${Array(29).fill('?').join(', ')})
   `, [
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
@@ -759,7 +777,8 @@ router.post('/', (req, res) => {
     vendido_por_peso || 0,
     peso_total_compra || 0,
     valor_total_compra || 0,
-    custo_por_kg || 0
+    custo_por_kg || 0,
+    venda_atacado ? 1 : 0
   ],
     function(err) {
       if (err) {
@@ -904,7 +923,6 @@ router.get('/estoque/baixo', (req, res) => {
 // Buscar promoção ativa de um produto específico
 router.get('/:id/promocao-ativa', (req, res) => {
   const { id } = req.params;
-  const hoje = new Date().toISOString().split('T')[0];
   
   db.get(`
     SELECT 
@@ -919,10 +937,10 @@ router.get('/:id/promocao-ativa', (req, res) => {
     FROM promocoes p
     WHERE p.produto_id = ?
       AND p.status = 'ativa'
-      AND date(p.data_inicio) <= date(?)
-      AND date(p.data_fim) >= date(?)
+      AND date(p.data_inicio) <= date('now')
+      AND date(p.data_fim) > date('now')
     LIMIT 1
-  `, [id, hoje, hoje], (err, row) => {
+  `, [id], (err, row) => {
     if (err) {
       console.error('Erro ao buscar promoção ativa:', err.message);
       res.status(500).json({ error: err.message });
@@ -934,6 +952,195 @@ router.get('/:id/promocao-ativa', (req, res) => {
     } else {
       res.json(null);
     }
+  });
+});
+
+// ==========================
+// ENDPOINTS VENDA ATACADO
+// ==========================
+
+// Listar faixas de atacado de um produto
+router.get('/:id/atacado', (req, res) => {
+  const { id } = req.params;
+  db.all(`
+    SELECT * FROM produto_atacado
+    WHERE produto_id = ?
+    ORDER BY quantidade_minima ASC
+  `, [id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows || []);
+  });
+});
+
+// Criar faixa de atacado para um produto
+router.post('/:id/atacado', verificarPermissaoEspecifica('gerenciar_faixa_atacado'), (req, res) => {
+  const { id } = req.params;
+  const quantidade_minima = parseInt(req.body.quantidade_minima, 10);
+  const preco_atacado = parseFloat(req.body.preco_atacado);
+
+  if (!quantidade_minima || quantidade_minima <= 0) {
+    return res.status(400).json({ error: 'Quantidade mínima deve ser maior que zero' });
+  }
+  if (isNaN(preco_atacado) || preco_atacado <= 0) {
+    return res.status(400).json({ error: 'Preço atacado inválido' });
+  }
+
+  // Verificar duplicata
+  db.get('SELECT COUNT(*) AS total FROM produto_atacado WHERE produto_id = ? AND quantidade_minima = ?', [id, quantidade_minima], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (row && row.total > 0) return res.status(400).json({ error: 'Já existe uma faixa com essa quantidade' });
+
+    // Buscar faixa inferior e superior para validar preços
+    db.get('SELECT * FROM produto_atacado WHERE produto_id = ? AND quantidade_minima < ? ORDER BY quantidade_minima DESC LIMIT 1', [id, quantidade_minima], (err2, lower) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      db.get('SELECT * FROM produto_atacado WHERE produto_id = ? AND quantidade_minima > ? ORDER BY quantidade_minima ASC LIMIT 1', [id, quantidade_minima], (err3, higher) => {
+        if (err3) return res.status(500).json({ error: err3.message });
+
+        if (lower && preco_atacado > lower.preco_atacado) {
+          return res.status(400).json({ error: 'Preço da faixa não pode ser maior que a faixa inferior' });
+        }
+        if (higher && preco_atacado < higher.preco_atacado) {
+          return res.status(400).json({ error: 'Preço da faixa não pode ser menor que a faixa superior' });
+        }
+
+        db.run('INSERT INTO produto_atacado (produto_id, quantidade_minima, preco_atacado) VALUES (?, ?, ?)', [id, quantidade_minima, preco_atacado], function(insertErr) {
+          if (insertErr) return res.status(500).json({ error: insertErr.message });
+          db.get('SELECT * FROM produto_atacado WHERE id = ?', [this.lastID], (e, created) => {
+            if (e) return res.status(500).json({ error: e.message });
+            res.json(created);
+          });
+        });
+      });
+    });
+  });
+});
+
+// Atualizar faixa de atacado
+router.put('/atacado/:faixaId', verificarPermissaoEspecifica('gerenciar_faixa_atacado'), (req, res) => {
+  const { faixaId } = req.params;
+  const quantidade_minima = parseInt(req.body.quantidade_minima, 10);
+  const preco_atacado = parseFloat(req.body.preco_atacado);
+
+  if (!quantidade_minima || quantidade_minima <= 0) {
+    return res.status(400).json({ error: 'Quantidade mínima deve ser maior que zero' });
+  }
+  if (isNaN(preco_atacado) || preco_atacado <= 0) {
+    return res.status(400).json({ error: 'Preço atacado inválido' });
+  }
+
+  db.get('SELECT * FROM produto_atacado WHERE id = ?', [faixaId], (err, faixa) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!faixa) return res.status(404).json({ error: 'Faixa não encontrada' });
+
+    const produtoId = faixa.produto_id;
+
+    // Verificar duplicata em outra faixa
+    db.get('SELECT COUNT(*) AS total FROM produto_atacado WHERE produto_id = ? AND quantidade_minima = ? AND id != ?', [produtoId, quantidade_minima, faixaId], (err2, row) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      if (row && row.total > 0) return res.status(400).json({ error: 'Já existe outra faixa com essa quantidade' });
+
+      // Buscar faixa inferior e superior para validar preços
+      db.get('SELECT * FROM produto_atacado WHERE produto_id = ? AND quantidade_minima < ? ORDER BY quantidade_minima DESC LIMIT 1', [produtoId, quantidade_minima], (err3, lower) => {
+        if (err3) return res.status(500).json({ error: err3.message });
+        db.get('SELECT * FROM produto_atacado WHERE produto_id = ? AND quantidade_minima > ? ORDER BY quantidade_minima ASC LIMIT 1', [produtoId, quantidade_minima], (err4, higher) => {
+          if (err4) return res.status(500).json({ error: err4.message });
+
+          if (lower && preco_atacado > lower.preco_atacado) {
+            return res.status(400).json({ error: 'Preço da faixa não pode ser maior que a faixa inferior' });
+          }
+          if (higher && preco_atacado < higher.preco_atacado) {
+            return res.status(400).json({ error: 'Preço da faixa não pode ser menor que a faixa superior' });
+          }
+
+          db.run('UPDATE produto_atacado SET quantidade_minima = ?, preco_atacado = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [quantidade_minima, preco_atacado, faixaId], function(updateErr) {
+            if (updateErr) return res.status(500).json({ error: updateErr.message });
+            db.get('SELECT * FROM produto_atacado WHERE id = ?', [faixaId], (e, updated) => {
+              if (e) return res.status(500).json({ error: e.message });
+              res.json(updated);
+            });
+          });
+        });
+      });
+    });
+  });
+});
+
+// Buscar faixa por id
+router.get('/atacado/:faixaId', (req, res) => {
+  const { faixaId } = req.params;
+  db.get('SELECT * FROM produto_atacado WHERE id = ?', [faixaId], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(row || null);
+  });
+});
+
+// Excluir faixa de atacado
+router.delete('/atacado/:faixaId', verificarPermissaoEspecifica('gerenciar_faixa_atacado'), (req, res) => {
+  const { faixaId } = req.params;
+  db.run('DELETE FROM produto_atacado WHERE id = ?', [faixaId], function(err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ message: 'Faixa excluída com sucesso' });
+  });
+});
+
+// Listar todas as promoções com informações de status
+router.get('/listar-todas-promocoes', (req, res) => {
+  db.all(`
+    SELECT 
+      p.id,
+      p.produto_id,
+      pr.codigo,
+      pr.nome,
+      p.preco_original,
+      p.preco_promocional,
+      p.desconto_percentual,
+      p.data_inicio,
+      p.data_fim,
+      p.status,
+      p.criado_em,
+      p.encerrado_em,
+      p.motivo_encerramento,
+      CASE 
+        WHEN p.status = 'ativa' AND date(p.data_fim) <= date('now') THEN 'expirada'
+        WHEN p.status = 'ativa' AND date(p.data_inicio) > date('now') THEN 'nao_iniciada'
+        WHEN p.status = 'ativa' THEN 'vigente'
+        ELSE p.status
+      END AS status_real,
+      CAST(julianday(date(p.data_fim)) - julianday(date('now')) AS INTEGER) AS dias_restantes
+    FROM promocoes p
+    LEFT JOIN produtos pr ON pr.id = p.produto_id
+    ORDER BY p.data_fim DESC
+  `, [], (err, rows) => {
+    if (err) {
+      console.error('Erro ao listar promoções:', err.message);
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
+
+// Endpoint para verificar e encerrar promoções expiradas (chamável da interface)
+router.post('/verificar-expiradas-agora', (req, res) => {
+  const hoje = new Date().toISOString().split('T')[0];
+  
+  db.run(`
+    UPDATE promocoes
+    SET status = 'encerrada', 
+        encerrado_em = CURRENT_TIMESTAMP,
+        motivo_encerramento = 'Encerrada automaticamente - data de vigência expirada'
+    WHERE status = 'ativa' AND date(data_fim) < date(?)
+  `, [hoje], function(err) {
+    if (err) {
+      console.error('Erro ao encerrar promoções expiradas:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+    
+    res.json({
+      success: true,
+      message: `${this.changes} promoção(ões) expirada(s) encerrada(s)`,
+      quantidade_encerrada: this.changes
+    });
   });
 });
 

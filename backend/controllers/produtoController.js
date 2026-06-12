@@ -1,4 +1,24 @@
 const db = require('../database');
+const { buscarPermissoesUsuario } = require('../rotas/auth');
+
+// Função para verificar permissão de gerenciar faixas de atacado
+function podeGerenciarFaixaAtacado(req) {
+  const role = req.user?.role || 'operador';
+  // Admin e supervisor têm acesso automático
+  if (['admin', 'supervisor'].includes(role)) {
+    return Promise.resolve(true);
+  }
+  // Operadores precisam ter a permissão específica
+  return new Promise((resolve) => {
+    buscarPermissoesUsuario(req.user?.id, (err, permissoes) => {
+      if (err) {
+        resolve(false);
+        return;
+      }
+      resolve(Array.isArray(permissoes) && permissoes.includes('gerenciar_faixa_atacado'));
+    });
+  });
+}
 
 // Função para calcular valor por KG
 const calcularValorKg = (preco, unidade, vendido_por_peso) => {
@@ -217,6 +237,51 @@ exports.criarProduto = (req, res) => {
           res.status(500).json({ error: err2.message });
           return;
         }
+        // Se vierem faixas de atacado no payload, persistir
+        const faixas = req.body.atacado_faixas;
+        if (Array.isArray(faixas) && faixas.length > 0) {
+          // Verificar permissão: admin/supervisor OU tendo a permissão específica
+          podeGerenciarFaixaAtacado(req).then((podeGerir) => {
+            if (!podeGerir) {
+              return res.status(403).json({ error: 'Você não tem permissão para gerenciar faixas de atacado.' });
+            }
+
+            const produtoId = this.lastID;
+            // inserir faixas
+            const stmt = db.prepare('INSERT INTO produto_atacado (produto_id, quantidade_minima, preco_atacado) VALUES (?, ?, ?)');
+            faixas.forEach(f => {
+              const q = parseInt(f.quantidade_minima, 10) || 0;
+              const p = parseFloat(f.preco_atacado) || 0;
+              if (q > 0 && p > 0) {
+                stmt.run(produtoId, q, p);
+              }
+            });
+            stmt.finalize(() => {
+              db.get(`
+                SELECT 
+                  p.*, 
+                  c.nome AS categoria_nome, 
+                  s.nome AS subcategoria_nome
+                FROM produtos p
+                LEFT JOIN categorias c ON c.id = p.categoria_id
+                LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
+                WHERE p.id = ?
+              `, [produtoId], (err3, row2) => {
+                if (err3) return res.status(500).json({ error: err3.message });
+                res.json({
+                  ...row2,
+                  categoria: row2.categoria_nome || '',
+                  subcategoria: row2.subcategoria_nome || '',
+                  message: 'Produto criado com sucesso'
+                });
+              });
+            });
+          }).catch(() => {
+            res.status(500).json({ error: 'Erro ao verificar permissões' });
+          });
+          return;
+        }
+
         res.json({
           ...row,
           categoria: row.categoria_nome || '',
@@ -309,10 +374,47 @@ exports.atualizarProduto = (req, res) => {
           if (histErr) {
             console.error('Erro ao registrar histórico de preços:', histErr);
           }
-          responderComProdutoAtualizado();
+          // após registrar histórico, tratar faixas (se houver) e então responder
+          const faixas = req.body.atacado_faixas;
+          function handleFaixasThenRespond(done) {
+            if (!Array.isArray(faixas)) return done();
+            podeGerenciarFaixaAtacado(req).then((podeGerir) => {
+              if (!podeGerir) return done();
+              db.run('DELETE FROM produto_atacado WHERE produto_id = ?', [id], (delErr) => {
+                if (delErr) console.error('Erro ao deletar faixas antigas:', delErr);
+                const stmt = db.prepare('INSERT INTO produto_atacado (produto_id, quantidade_minima, preco_atacado) VALUES (?, ?, ?)');
+                faixas.forEach(f => {
+                  const q = parseInt(f.quantidade_minima, 10) || 0;
+                  const p = parseFloat(f.preco_atacado) || 0;
+                  if (q > 0 && p > 0) stmt.run(id, q, p);
+                });
+                stmt.finalize(done);
+              });
+            }).catch(() => done());
+          }
+
+          handleFaixasThenRespond(responderComProdutoAtualizado);
         });
       } else {
-        responderComProdutoAtualizado();
+        const faixas = req.body.atacado_faixas;
+        function handleFaixasThenRespond(done) {
+          if (!Array.isArray(faixas)) return done();
+          podeGerenciarFaixaAtacado(req).then((podeGerir) => {
+            if (!podeGerir) return done();
+            db.run('DELETE FROM produto_atacado WHERE produto_id = ?', [id], (delErr) => {
+              if (delErr) console.error('Erro ao deletar faixas antigas:', delErr);
+              const stmt = db.prepare('INSERT INTO produto_atacado (produto_id, quantidade_minima, preco_atacado) VALUES (?, ?, ?)');
+              faixas.forEach(f => {
+                const q = parseInt(f.quantidade_minima, 10) || 0;
+                const p = parseFloat(f.preco_atacado) || 0;
+                if (q > 0 && p > 0) stmt.run(id, q, p);
+              });
+              stmt.finalize(done);
+            });
+          }).catch(() => done());
+        }
+
+        handleFaixasThenRespond(responderComProdutoAtualizado);
       }
     });
   });

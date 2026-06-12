@@ -151,6 +151,99 @@ Encerra uma promoção ativa.
 #### 7. POST `/api/produtos/promocoes`
 Cria uma nova promoção.
 
+#### 8. POST `/api/produtos/promocoes/verificar-expiradas-agora` ⭐ **NOVO**
+Verifica e encerra manualmente promoções expiradas.
+
+**Resposta:**
+```json
+{
+    "success": true,
+    "message": "2 promoção(ões) expirada(s) encerrada(s)",
+    "quantidade_encerrada": 2
+}
+```
+
+#### 9. GET `/api/produtos/listar-todas-promocoes` ⭐ **NOVO**
+Lista todas as promoções com informação de status real (vigente, expirada, não iniciada).
+
+**Resposta:**
+```json
+[
+    {
+        "id": 1,
+        "produto_id": 123,
+        "codigo": "P001",
+        "nome": "Leite Integral",
+        "preco_original": 3.50,
+        "preco_promocional": 2.97,
+        "desconto_percentual": 15.00,
+        "data_inicio": "2026-06-01",
+        "data_fim": "2026-06-30",
+        "status": "ativa",
+        "status_real": "vigente",
+        "dias_restantes": 20
+    }
+]
+```
+
+## ⚙️ Encerramento Automático de Promoções ⭐ **NOVO**
+
+### Como Funciona
+
+O sistema **encerra automaticamente** promoções quando a data de fim é atingida, sem necessidade de ação manual do usuário.
+
+### Mecanismo
+
+1. **Verificação ao Iniciar**: Quando o servidor inicia, o sistema verifica e encerra todas as promoções expiradas
+2. **Verificação Periódica**: A cada **1 hora**, o sistema verifica automaticamente se há promoções expiradas
+3. **Verificação sob Demanda**: Você pode forçar a verificação a qualquer momento
+
+### Endpoints para Verificação
+
+#### Forçar Verificação Imediata
+```bash
+POST /api/promocoes/verificar-expiradas
+
+# Resposta
+{
+    "success": true,
+    "message": "Verificação de promoções expiradas realizada com sucesso"
+}
+```
+
+#### Ou via rota de produtos
+```bash
+POST /api/produtos/verificar-expiradas-agora
+
+# Resposta
+{
+    "success": true,
+    "message": "2 promoção(ões) expirada(s) encerrada(s)",
+    "quantidade_encerrada": 2
+}
+```
+
+### Registro Automático
+
+Quando uma promoção é encerrada automaticamente, o sistema registra:
+- **status**: Alterado para `'encerrada'`
+- **encerrado_em**: Timestamp do encerramento automático
+- **motivo_encerramento**: `'Encerrada automaticamente - data de vigência expirada'`
+
+### Logs do Sistema
+
+Você verá mensagens no console do servidor como:
+```
+✅ 2 promoção(ões) expirada(s) encerrada(s) automaticamente em 10/06/2026 15:30:45
+```
+
+### Benefícios
+
+- ✅ **Sem necessidade de ação manual**: Promoções expiram automaticamente
+- ✅ **Dados consistentes**: Eliminadas promoções "fantasma" expiradas
+- ✅ **Histórico mantido**: Promoções encerradas permanecem no banco de dados para auditoria
+- ✅ **Flexibilidade**: Pode verificar manualmente a qualquer momento
+
 ## 💻 Frontend
 
 ### Arquivos Modificados

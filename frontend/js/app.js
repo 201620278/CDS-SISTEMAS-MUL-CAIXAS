@@ -241,8 +241,14 @@ function handleUnauthorized() {
     window.location.href = '/login';
 }
 
-$(document).ajaxError(function(event, xhr) {
+$(document).ajaxError(function(event, xhr, settings) {
+    // Não processar se o AJAX foi configurado com global: false
+    if (settings.global === false) {
+        return;
+    }
+    
     if (xhr && (xhr.status === 401 || xhr.status === 403)) {
+        console.warn('Erro de autenticação/autorização:', xhr.status, settings.url);
         handleUnauthorized();
     }
 });

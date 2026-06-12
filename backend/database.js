@@ -53,9 +53,11 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN status TEXT DEFAULT 'aberto'`);
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN caixa_id INTEGER REFERENCES caixa(id)`);
 
-  // Adicionar colunas faltantes na tabela vendas_itens (para suportar promoções)
+  // Adicionar colunas faltantes na tabela vendas_itens (para suportar promoções e desconto atacado)
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_percentual DECIMAL(5,2) DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN promocao_id INTEGER`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_atacado DECIMAL(10,2) DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN tipo_preco TEXT DEFAULT 'varejo'`);
 
   // Adicionar colunas faltantes na tabela configuracoes
   aplicarAlteracaoSegura('configuracoes', `ALTER TABLE configuracoes ADD COLUMN fiscal_emitente_logradouro TEXT DEFAULT ''`);
@@ -94,6 +96,7 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE produtos ADD COLUMN aliquota_pis REAL DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN aliquota_cofins REAL DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN lucro_percentual DECIMAL(10,2)`
+    , `ALTER TABLE produtos ADD COLUMN venda_atacado INTEGER DEFAULT 0`
   ];
 
   const alteracoesCompras = [
@@ -158,7 +161,10 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE vendas ADD COLUMN status TEXT DEFAULT 'concluida'`,
     `ALTER TABLE vendas ADD COLUMN cpf_cnpj_nota TEXT`,
     `ALTER TABLE vendas ADD COLUMN cancelada INTEGER DEFAULT 0`,
-    `ALTER TABLE vendas ADD COLUMN data_cancelamento DATETIME`
+    `ALTER TABLE vendas ADD COLUMN data_cancelamento DATETIME`,
+    `ALTER TABLE vendas ADD COLUMN desconto_autorizado_por_id INTEGER`,
+    `ALTER TABLE vendas ADD COLUMN desconto_autorizado_por TEXT`,
+    `ALTER TABLE vendas ADD COLUMN desconto_autorizado_em DATETIME`
   ];
 
   const alteracoesContasReceber = [
@@ -443,6 +449,22 @@ function criarTabelas() {
       else console.log('Tabela produtos criada/verificada');
     });
 
+      // Tabela de faixas de atacado por produto
+      db.run(`
+        CREATE TABLE IF NOT EXISTS produto_atacado (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          produto_id INTEGER NOT NULL,
+          quantidade_minima INTEGER NOT NULL,
+          preco_atacado DECIMAL(10,2) NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE
+        )
+      `, (err) => {
+        if (err) console.error('Erro ao criar tabela produto_atacado:', err);
+        else console.log('Tabela produto_atacado criada/verificada');
+      });
+
     const colunasProdutoPeso = [
       "ALTER TABLE produtos ADD COLUMN vendido_por_peso INTEGER DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN peso_total_compra DECIMAL(10,3) DEFAULT 0",
@@ -559,8 +581,17 @@ function criarTabelas() {
         desconto DECIMAL(10,2) DEFAULT 0,
         forma_pagamento VARCHAR(50),
         status VARCHAR(20) DEFAULT 'concluida',
+        valor_recebido DECIMAL(10,2),
+        caixa_id INTEGER,
+        cpf_cnpj_nota TEXT,
+        cancelada INTEGER DEFAULT 0,
+        data_cancelamento DATETIME,
+        desconto_autorizado_por_id INTEGER,
+        desconto_autorizado_por TEXT,
+        desconto_autorizado_em DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (cliente_id) REFERENCES clientes(id)
+        FOREIGN KEY (cliente_id) REFERENCES clientes(id),
+        FOREIGN KEY (caixa_id) REFERENCES caixa(id)
       )
     `, (err) => {
       if (err) console.error('Erro ao criar tabela vendas:', err);
@@ -575,6 +606,10 @@ function criarTabelas() {
         produto_id INTEGER,
         quantidade DECIMAL(10,2) NOT NULL,
         preco_unitario DECIMAL(10,2) NOT NULL,
+        desconto_percentual DECIMAL(5,2) DEFAULT 0,
+        promocao_id INTEGER,
+        desconto_atacado DECIMAL(10,2) DEFAULT 0,
+        tipo_preco TEXT DEFAULT 'varejo',
         subtotal DECIMAL(10,2) NOT NULL,
         FOREIGN KEY (venda_id) REFERENCES vendas(id) ON DELETE CASCADE,
         FOREIGN KEY (produto_id) REFERENCES produtos(id)
