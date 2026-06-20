@@ -207,7 +207,7 @@ app.use((err, req, res, next) => {
 });
 
 // Iniciar servidor
-const server = app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, () => {
     console.log(`Servidor rodando na porta ${PORT}`);
     console.log(`Acesse: http://localhost:${PORT}/login`);
     console.log('Configuração avançada:', configService.getRecursos());
