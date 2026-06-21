@@ -1,0 +1,27 @@
+<!--
+  Fragmento de referência da aba Produtos.
+  A tela é montada dinamicamente em frontend/js/produtos.js (renderProdutos / showProdutoModal).
+-->
+<div class="row mb-3 g-3">
+  <div class="col-md-6">
+    <!-- Card estoque baixo: id="cardEstoqueBaixoProdutos" -->
+  </div>
+  <div class="col-md-6">
+    <div class="card-dashboard card-vencimentos" id="cardVencimentosProdutos">
+      <div class="card-icon">⏰</div>
+      <div class="card-info">
+        <h3>Vencimentos</h3>
+        <p>
+          <strong id="qtdProdutosVencidos">0</strong> vencidos |
+          <strong id="qtdProdutosProximos">0</strong> próximos
+        </p>
+        <button type="button" class="btn btn-warning btn-sm" onclick="abrirModalVencimentosProdutos()">
+          Ver produtos
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Campos no modal de produto (showProdutoModal) -->
+<!-- Modal vencimentos: injetado por inicializarModalVencimentosProdutos() em produtos.js -->

@@ -1,0 +1,99 @@
+<div class="card">
+    <div class="card-header">
+        <i class="fas fa-key"></i> Licença do Sistema
+    </div>
+    <div class="card-body">
+        <div id="licenca-alert-container"></div>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Código de Instalação</label>
+                    <div class="input-group">
+                        <input type="text" id="licencaCodigoInstalacao" class="form-control" readonly>
+                        <button type="button" class="btn btn-outline-secondary" onclick="copiarCodigoInstalacao()">
+                            <i class="fas fa-copy"></i> Copiar Código
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Status</label>
+                    <input type="text" id="licencaStatus" class="form-control" readonly>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Data de Ativação</label>
+                    <input type="text" id="licencaDataAtivacao" class="form-control" readonly>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Data de Vencimento</label>
+                    <input type="text" id="licencaDataVencimento" class="form-control" readonly>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Dias Restantes</label>
+                    <input type="text" id="licencaDiasRestantes" class="form-control" readonly>
+                </div>
+            </div>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Última Verificação</label>
+                    <input type="text" id="licencaUltimaVerificacao" class="form-control" readonly>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Última Execução</label>
+                    <input type="text" id="licencaUltimaExecucao" class="form-control" readonly>
+                </div>
+            </div>
+        </div>
+
+        <button type="button" class="btn btn-success me-2" onclick="abrirModalAtivarLicenca()">
+            <i class="fas fa-key"></i> Inserir Licença
+        </button>
+        <button type="button" class="btn btn-primary" onclick="abrirModalAtivarLicenca()">
+            <i class="fas fa-sync-alt"></i> Atualizar Licença
+        </button>
+    </div>
+</div>
+
+<div class="modal fade" id="modalAtivarLicenca" tabindex="-1" aria-labelledby="modalAtivarLicencaLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modalAtivarLicencaLabel">ATIVAR LICENÇA</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+            </div>
+            <div class="modal-body">
+                <div id="modalLicencaAlert"></div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Código da Instalação</label>
+                    <input type="text" id="modalCodigoInstalacao" class="form-control" readonly>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label fw-bold">Código de Licença</label>
+                    <input type="text" id="modalCodigoLicenca" class="form-control" placeholder="Digite o código de licença">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                <button type="button" class="btn btn-success" onclick="validarLicenca()">
+                    <i class="fas fa-check"></i> VALIDAR LICENÇA
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

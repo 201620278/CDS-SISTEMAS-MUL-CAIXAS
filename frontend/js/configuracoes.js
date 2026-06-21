@@ -1554,126 +1554,111 @@ async function carregarImpressoraCupom() {
 // Função para configurar impressora de cupom
 async function configurarImpressoraCupom() {
     try {
-        let impressoraSelecionada = null;
+        let impressoras = [];
+        let usarLista = false;
 
-        // No Electron, listar impressoras disponíveis
+        console.log('[CONFIG IMPRESSORA] Iniciando configuração');
+        console.log('[CONFIG IMPRESSORA] window.electronAPI:', !!window.electronAPI);
+
+        // Tentar listar impressoras via Electron API
         if (window.electronAPI && window.electronAPI.listarImpressoras) {
             try {
-                const impressoras = await window.electronAPI.listarImpressoras();
-
-                if (impressoras.length === 0) {
-                    showNotification('Nenhuma impressora encontrada no sistema', 'warning');
-                    return;
+                console.log('[CONFIG IMPRESSORA] Chamando listarImpressoras...');
+                impressoras = await window.electronAPI.listarImpressoras();
+                console.log('[CONFIG IMPRESSORA] Impressoras recebidas:', impressoras);
+                if (impressoras && impressoras.length > 0) {
+                    usarLista = true;
                 }
-
-                // Criar modal customizado
-                const modalId = 'modalImpressoraCupom';
-
-                // Remover modal anterior se existir
-                const modalExistente = document.getElementById(modalId);
-                if (modalExistente) modalExistente.remove();
-
-                // Construir opções do select
-                const opcoesHtml = impressoras.map(imp => {
-                    const destaque = imp.name.toLowerCase().includes('cupom') ? ' ⭐' : '';
-                    const padrao = imp.isDefault ? ' (padrão)' : '';
-                    return `<option value="${escapeHtml(imp.name)}">${escapeHtml(imp.name)}${destaque}${padrao}</option>`;
-                }).join('');
-
-                const html = `
-                    <div id="${modalId}" style="
-                        position: fixed;
-                        inset: 0;
-                        background: rgba(0,0,0,.5);
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        z-index: 99999;
-                    ">
-                        <div style="
-                            background: #fff;
-                            padding: 25px;
-                            border-radius: 8px;
-                            width: 450px;
-                            max-width: 90%;
-                            box-shadow: 0 10px 30px rgba(0,0,0,.25);
-                        ">
-                            <h5 style="margin-top:0; margin-bottom:20px;">
-                                <i class="fas fa-print"></i> Configurar impressora de cupom
-                            </h5>
-
-                            <div class="mb-3">
-                                <label class="form-label">Selecione a impressora:</label>
-                                <select id="selectImpressoraCupom" class="form-select">
-                                    <option value="">-- Automático (detectar) --</option>
-                                    ${opcoesHtml}
-                                </select>
-                                <small class="text-muted">⭐ = impressora de cupom detectada</small>
-                            </div>
-
-                            <div class="d-flex gap-2 justify-content-end">
-                                <button type="button" class="btn btn-secondary" id="btnCancelarImpressora">
-                                    Cancelar
-                                </button>
-                                <button type="button" class="btn btn-primary" id="btnSalvarImpressora">
-                                    <i class="fas fa-save"></i> Salvar
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-
-                document.body.insertAdjacentHTML('beforeend', html);
-
-                // Evento cancelar
-                document.getElementById('btnCancelarImpressora').onclick = () => {
-                    document.getElementById(modalId).remove();
-                };
-
-                // Evento salvar
-                document.getElementById('btnSalvarImpressora').onclick = async () => {
-                    const impressora = document.getElementById('selectImpressoraCupom').value;
-
-                    try {
-                        const resp = await fetch(`${API_URL}/configuracoes/impressora_cupom`, {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${localStorage.getItem('token')}`,
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({ caminho: impressora })
-                        });
-
-                        const data = await resp.json();
-
-                        if (data.sucesso) {
-                            showNotification('Impressora configurada com sucesso!', 'success');
-                            document.getElementById(modalId).remove();
-                            carregarImpressoraCupom();
-                        } else {
-                            showNotification(data.mensagem || 'Erro ao configurar impressora', 'danger');
-                        }
-                    } catch (err) {
-                        showNotification('Erro ao salvar impressora', 'danger');
-                    }
-                };
-
-                // Fechar ao clicar fora
-                document.getElementById(modalId).onclick = (e) => {
-                    if (e.target.id === modalId) {
-                        document.getElementById(modalId).remove();
-                    }
-                };
-
             } catch (err) {
-                console.error('Erro ao listar impressoras:', err);
-                showNotification('Erro ao listar impressoras: ' + err.message, 'danger');
+                console.error('[CONFIG IMPRESSORA] Erro ao listar impressoras:', err);
             }
-        } else {
-            // Fallback: usar prompt no navegador ou input simples
-            const impressora = prompt('Digite o nome exato da impressora de cupom (deixe em branco para automático):');
+        }
 
-            if (impressora === null) return; // Cancelado
+        // Criar modal customizado
+        const modalId = 'modalImpressoraCupom';
+
+        // Remover modal anterior se existir
+        const modalExistente = document.getElementById(modalId);
+        if (modalExistente) modalExistente.remove();
+
+        let htmlContent = '';
+
+        if (usarLista) {
+            // Construir opções do select
+            const opcoesHtml = impressoras.map(imp => {
+                const destaque = imp.name.toLowerCase().includes('cupom') ? ' ⭐' : '';
+                const padrao = imp.isDefault ? ' (padrão)' : '';
+                return `<option value="${escapeHtml(imp.name)}">${escapeHtml(imp.name)}${destaque}${padrao}</option>`;
+            }).join('');
+
+            htmlContent = `
+                <div class="mb-3">
+                    <label class="form-label">Selecione a impressora:</label>
+                    <select id="selectImpressoraCupom" class="form-select">
+                        <option value="">-- Automático (detectar) --</option>
+                        ${opcoesHtml}
+                    </select>
+                    <small class="text-muted">⭐ = impressora de cupom detectada</small>
+                </div>
+            `;
+        } else {
+            htmlContent = `
+                <div class="mb-3">
+                    <label class="form-label">Nome da impressora (deixe em branco para automático):</label>
+                    <input type="text" id="inputImpressoraCupom" class="form-control" placeholder="Ex: EPSON TM-T20">
+                </div>
+            `;
+        }
+
+        const html = `
+            <div id="${modalId}" style="
+                position: fixed;
+                inset: 0;
+                background: rgba(0,0,0,.5);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 99999;
+            ">
+                <div style="
+                    background: #fff;
+                    padding: 25px;
+                    border-radius: 8px;
+                    width: 450px;
+                    max-width: 90%;
+                    box-shadow: 0 10px 30px rgba(0,0,0,.25);
+                ">
+                    <h5 style="margin-top:0; margin-bottom:20px;">
+                        <i class="fas fa-print"></i> Configurar impressora de cupom
+                    </h5>
+                    ${htmlContent}
+                    <div class="d-flex gap-2 justify-content-end">
+                        <button type="button" class="btn btn-secondary" id="btnCancelarImpressora">
+                            Cancelar
+                        </button>
+                        <button type="button" class="btn btn-primary" id="btnSalvarImpressora">
+                            <i class="fas fa-save"></i> Salvar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.insertAdjacentHTML('beforeend', html);
+
+        // Evento cancelar
+        document.getElementById('btnCancelarImpressora').onclick = () => {
+            document.getElementById(modalId).remove();
+        };
+
+        // Evento salvar
+        document.getElementById('btnSalvarImpressora').onclick = async () => {
+            let impressora = '';
+            if (usarLista) {
+                impressora = document.getElementById('selectImpressoraCupom').value;
+            } else {
+                impressora = document.getElementById('inputImpressoraCupom').value;
+            }
 
             try {
                 const resp = await fetch(`${API_URL}/configuracoes/impressora_cupom`, {
@@ -1682,13 +1667,14 @@ async function configurarImpressoraCupom() {
                         'Authorization': `Bearer ${localStorage.getItem('token')}`,
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ caminho: impressora || '' })
+                    body: JSON.stringify({ caminho: impressora })
                 });
 
                 const data = await resp.json();
 
                 if (data.sucesso) {
                     showNotification('Impressora configurada com sucesso!', 'success');
+                    document.getElementById(modalId).remove();
                     carregarImpressoraCupom();
                 } else {
                     showNotification(data.mensagem || 'Erro ao configurar impressora', 'danger');
@@ -1696,7 +1682,14 @@ async function configurarImpressoraCupom() {
             } catch (err) {
                 showNotification('Erro ao salvar impressora', 'danger');
             }
-        }
+        };
+
+        // Fechar ao clicar fora
+        document.getElementById(modalId).onclick = (e) => {
+            if (e.target.id === modalId) {
+                document.getElementById(modalId).remove();
+            }
+        };
     } catch (error) {
         showNotification('Erro ao configurar impressora', 'danger');
         console.error(error);

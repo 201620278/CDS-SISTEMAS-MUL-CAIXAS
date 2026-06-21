@@ -662,6 +662,73 @@ function criarTabelas() {
       else console.log('Tabela promocoes criada/verificada');
     });
 
+    // Tabela de lotes de produtos (FEFO - First Expire, First Out)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS produtos_lotes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        produto_id INTEGER NOT NULL,
+        lote TEXT NOT NULL,
+        quantidade_inicial DECIMAL(10,2) NOT NULL,
+        quantidade_atual DECIMAL(10,2) NOT NULL,
+        data_fabricacao DATE,
+        data_validade DATE NOT NULL,
+        data_entrada DATE NOT NULL,
+        origem TEXT NOT NULL DEFAULT 'COMPRA',
+        compra_id INTEGER,
+        ativo INTEGER DEFAULT 1,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (produto_id) REFERENCES produtos(id) ON DELETE CASCADE,
+        FOREIGN KEY (compra_id) REFERENCES compras(id)
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela produtos_lotes:', err);
+      else console.log('Tabela produtos_lotes criada/verificada');
+    });
+
+    // Tabela de rastreamento de lotes em vendas
+    db.run(`
+      CREATE TABLE IF NOT EXISTS venda_lotes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        venda_item_id INTEGER NOT NULL,
+        produto_lote_id INTEGER NOT NULL,
+        quantidade DECIMAL(10,2) NOT NULL,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (venda_item_id) REFERENCES vendas_itens(id) ON DELETE CASCADE,
+        FOREIGN KEY (produto_lote_id) REFERENCES produtos_lotes(id)
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela venda_lotes:', err);
+      else console.log('Tabela venda_lotes criada/verificada');
+    });
+
+    // Tabela de configurações de validade
+    db.run(`
+      CREATE TABLE IF NOT EXISTS configuracoes_validade (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dias_aviso_vencimento INTEGER DEFAULT 30,
+        bloquear_venda_vencido INTEGER DEFAULT 0,
+        alertar_venda_proximo_vencimento INTEGER DEFAULT 1,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela configuracoes_validade:', err);
+      else console.log('Tabela configuracoes_validade criada/verificada');
+      
+      // Inserir configuração padrão se não existir
+      if (!err) {
+        db.run(`
+          INSERT OR IGNORE INTO configuracoes_validade (dias_aviso_vencimento, bloquear_venda_vencido, alertar_venda_proximo_vencimento)
+          VALUES (30, 0, 1)
+        `, (insertErr) => {
+          if (insertErr && !insertErr.message.includes('UNIQUE')) {
+            console.error('Erro ao inserir configuração padrão de validade:', insertErr);
+          }
+        });
+      }
+    });
+
     // Adicionar colunas TEF à tabela venda_pagamentos
     db.all(`PRAGMA table_info(venda_pagamentos)`, (err, columns) => {
       if (err) return console.error('Erro ao verificar venda_pagamentos:', err.message);

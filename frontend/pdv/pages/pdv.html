@@ -1,0 +1,185 @@
+<div class="pdv-profissional pdv-fullscreen">
+
+  <header class="pdv-topo">
+    <div class="pdv-header-left">
+      <button id="btnMenuPdv" class="btn-menu-pdv" title="Abrir Menu">
+        <i class="fas fa-bars"></i>
+      </button>
+      <div>
+        <h1>CDS SISTEMAS</h1>
+        <span>PDV - Frente de Caixa</span>
+      </div>
+    </div>
+
+    <div class="pdv-topo-central-label">
+      <span>SISTEMA FISCAL</span>
+    </div>
+
+    <div class="pdv-status">
+      <span id="statusCaixaPdv" class="caixa-fechado">� Caixa Fechado</span>
+      <button id="btnFechamentoCaixaPdv" class="btn-fechamento-caixa" title="Fechamento de Caixa (F7)">
+        <i class="fas fa-cash-register"></i> Fechar Caixa
+      </button>
+      <span id="operadorPdv">Operador: Admin</span>
+      <span id="dataHoraPdv"></span>
+    </div>
+  </header>
+
+  <main class="pdv-grid">
+
+    <section class="pdv-card pdv-busca">
+      <h2>Buscar Produto</h2>
+
+      <input 
+        type="text" 
+        id="buscaProdutoPdv" 
+        placeholder="Código de barras ou nome do produto"
+        autocomplete="off"
+      >
+
+      <button id="btnBuscarProdutoPdv">Buscar</button>
+
+      <div id="listaProdutosPdv" class="lista-produtos">
+        <p class="vazio">Digite para buscar produtos...</p>
+      </div>
+
+      <!-- Calculadora -->
+      <div class="pdv-calculadora">
+        <h3><i class="fas fa-calculator"></i> Calculadora</h3>
+        <div class="calc-display" id="calcDisplay">0</div>
+        <div class="calc-botoes">
+          <button class="calc-btn" data-value="7">7</button>
+          <button class="calc-btn" data-value="8">8</button>
+          <button class="calc-btn" data-value="9">9</button>
+          <button class="calc-btn calc-op" data-value="/">÷</button>
+
+          <button class="calc-btn" data-value="4">4</button>
+          <button class="calc-btn" data-value="5">5</button>
+          <button class="calc-btn" data-value="6">6</button>
+          <button class="calc-btn calc-op" data-value="*">×</button>
+
+          <button class="calc-btn" data-value="1">1</button>
+          <button class="calc-btn" data-value="2">2</button>
+          <button class="calc-btn" data-value="3">3</button>
+          <button class="calc-btn calc-op" data-value="-">−</button>
+
+          <button class="calc-btn" data-value="0">0</button>
+          <button class="calc-btn" data-value=".">.</button>
+          <button class="calc-btn calc-clear" data-value="C">C</button>
+          <button class="calc-btn calc-op" data-value="+">+</button>
+          <button class="calc-btn calc-igual" data-value="=">=</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="pdv-card pdv-itens">
+      <div class="pdv-card-header">
+        <h2>Itens da Venda</h2>
+        <button id="btnLimparVendaPdv" class="btn-secundario">Limpar</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Qtd</th>
+            <th>%</th>
+            <th>Produto</th>
+            <th>Valor</th>
+            <th>Total</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="tabelaItensVendaPdv">
+          <tr>
+            <td colspan="5" class="vazio">Nenhum item adicionado</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <aside class="pdv-card pdv-resumo">
+      <h2>Resumo</h2>
+
+      <div class="linha-resumo">
+        <span>Subtotal</span>
+        <strong id="subtotalPdv">R$ 0,00</strong>
+      </div>
+
+      <div class="linha-resumo">
+        <span>Desconto Atacado</span>
+        <strong id="descontoAtacadoPdv">R$ 0,00</strong>
+      </div>
+
+      <div class="linha-resumo">
+        <span>Itens</span>
+        <strong id="itensPdv">0</strong>
+      </div>
+
+      <div class="linha-resumo">
+        <span>Desconto</span>
+        <input type="number" id="descontoPdv" value="0" min="0" step="0.01">
+      </div>
+
+      <div class="linha-resumo">
+        <span>Acréscimo</span>
+        <input type="number" id="acrescimoPdv" value="0" min="0" step="0.01">
+      </div>
+
+      <div class="total-pdv">
+        <span>Total</span>
+        <strong id="totalPdv">R$ 0,00</strong>
+      </div>
+
+      <div id="pdvDinheiroBox" style="display:none;">
+        <div class="linha-resumo">
+          <span>Valor recebido</span>
+          <input type="number" id="valorRecebidoPDV" value="" min="0" step="0.01" placeholder="ex: 20,00">
+        </div>
+        <div class="linha-resumo">
+          <span>Troco</span>
+          <strong id="trocoPDV">R$ 0,00</strong>
+        </div>
+      </div>
+
+      <div id="pdvClienteBox" style="display:none;">
+        <div class="linha-resumo">
+          <span>Cliente *</span>
+          <input type="text" id="clienteBuscaPrazo" class="form-control form-control-sm" placeholder="Buscar cliente..." autocomplete="off">
+          <input type="hidden" id="clientePrazoId">
+        </div>
+        <div id="clientePrazoSugestoes" class="list-group" style="position:absolute; z-index:9999; max-height:150px; overflow-y:auto; width:calc(100% - 24px);"></div>
+        <div id="clientePrazoSelecionado" style="display:none;" class="linha-resumo">
+          <span>Selecionado:</span>
+          <strong id="clientePrazoNome" style="font-size:0.8rem;"></strong>
+          <button type="button" id="btnRemoverClientePrazo" style="margin-left:auto; padding:0 4px; font-size:0.7rem; background:#dc3545; color:#fff; border:none; border-radius:3px; cursor:pointer;">✕</button>
+        </div>
+        <div class="linha-resumo">
+          <span>Parcelas</span>
+          <input type="number" id="parcelasPrazo" value="1" min="1" max="24" step="1" style="width:60px;">
+        </div>
+        <div class="linha-resumo">
+          <span>1º Vencimento</span>
+          <input type="date" id="dataVencimentoPrazo" style="width:100%;">
+        </div>
+      </div>
+
+      <button id="btnFinalizarVendaPdv" class="btn-finalizar">
+        Finalizar Venda
+      </button>
+
+      <button id="btnCancelarVendaPdv" class="btn-cancelar">
+        Cancelar Venda
+      </button>
+    </aside>
+
+  </main>
+
+  <footer class="pdv-atalhos">
+    <span>F1 Buscar</span>
+    <span>F4 Quantidade</span>
+    <span>F7 Fechar Caixa</span>
+    <span>F8 Desconto</span>
+    <span>F10 Finalizar Venda</span>
+    <span>ESC Cancelar</span>
+  </footer>
+</div>

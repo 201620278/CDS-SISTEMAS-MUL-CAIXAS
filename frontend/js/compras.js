@@ -239,7 +239,8 @@ function normalizeItemCompra(item = {}) {
         desconto_rateado: Number(item.desconto_rateado || 0),
         outras_despesas_rateado: Number(item.outras_despesas_rateado || 0),
         custo_unitario_final: Number(item.custo_unitario_final || custo || 0),
-        subtotal: Number((quantidade * custo).toFixed(2))
+        subtotal: Number((quantidade * custo).toFixed(2)),
+        data_validade: item.data_validade || null
     };
 }
 
@@ -412,6 +413,19 @@ function adicionarItemCompra() {
     }
 
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
+    
+    // Verificar se o produto controla validade e validar campos de lote
+    if (produto && Number(produto.controlar_validade || 0) === 1) {
+        const dataValidade = $('#data_validade_item').val();
+        
+        console.log('Produto controla validade:', produto.nome, 'data_validade:', dataValidade);
+        
+        if (!dataValidade) {
+            showNotification('Para produtos com controle de validade, informe a data de validade.', 'warning');
+            return;
+        }
+    }
+
     const item = normalizeItemCompra({
         produto_id: produto ? produto.id : '',
         produto_nome: produto ? produto.nome : descricaoLivre,
@@ -422,7 +436,9 @@ function adicionarItemCompra() {
         margem_lucro: margemFinal,
         preco_venda_sugerido: precoVenda,
         unidade: produto ? (produto.unidade || 'UN') : 'UN',
-        ncm: produto ? (produto.ncm || '') : ''
+        ncm: produto ? (produto.ncm || '') : '',
+        // Campos de lote
+        data_validade: $('#data_validade_item').val() || null
     });
 
     itensCompraAtual.push(item);
@@ -437,6 +453,9 @@ function limparFormularioItemCompra() {
     $('#preco_item').val('');
     $('#margem_padrao_item').val('30');
     $('#preco_venda_item').val('');
+    // Limpar campos de lote
+    $('#data_validade_item').val('');
+    $('#camposLoteCompra').hide();
     $('#codigo_barras_item').focus();
 }
 
@@ -466,6 +485,10 @@ function editarItemCompra(index) {
     $('#preco_item').val(formatNumberInput(item.preco_unitario));
     $('#margem_padrao_item').val(formatNumberInput(item.margem_lucro));
     $('#preco_venda_item').val(formatNumberInput(item.preco_venda_sugerido));
+    // Preencher campos de lote se existirem
+    $('#data_validade_item').val(item.data_validade || '');
+    // Mostrar campos de lote se o produto controlar validade
+    onProdutoSelecionado();
     // Recalcular para consistência
     calcularValorVendaItem();
     // Remover o item da lista
@@ -480,6 +503,19 @@ function onFornecedorInput() {
     const fornecedor = fornecedoresList.find(f => String(f.nome || '').toLowerCase() === inputValue.trim().toLowerCase());
     if (fornecedor) {
         $('#fornecedor').val(fornecedor.nome);
+    }
+}
+
+function onProdutoSelecionado() {
+    const produtoId = $('#produto_id_item').val();
+    const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
+    
+    console.log('onProdutoSelecionado - produtoId:', produtoId, 'produto:', produto, 'controlar_validade:', produto ? produto.controlar_validade : null);
+    
+    if (produto && Number(produto.controlar_validade || 0) === 1) {
+        $('#camposLoteCompra').show();
+    } else {
+        $('#camposLoteCompra').hide();
     }
 }
 
@@ -517,18 +553,30 @@ function onProdutoKeyDown(event) {
     const inputValue = $('#codigo_barras_item').val().trim();
     if (!inputValue) return;
     const produto = findProdutoByInput(inputValue);
-    if (!produto) return;
+    if (!produto) {
+        showNotification('Produto não encontrado', 'warning');
+        return;
+    }
 
     $('#produto_id_item').val(produto.id);
     $('#preco_item').val(produto.preco_compra || '');
     $('#margem_padrao_item').val(produto.lucro_percentual || 30);
     calcularValorVendaItem();
     $('#codigo_barras_item').val(`${produto.codigo_barras || produto.codigo || ''} - ${produto.nome}`);
-    if (parseFloat($('#quantidade_item').val()) > 0 && parseFloat($('#preco_item').val()) > 0) {
-        adicionarItemCompra();
-    } else {
-        $('#quantidade_item').focus();
+    
+    // Chamar onProdutoSelecionado para mostrar campos de lote se necessário
+    onProdutoSelecionado();
+    
+    // Se o produto controla validade, não adicionar automaticamente
+    // O usuário precisa preencher a data de validade manualmente
+    if (Number(produto.controlar_validade || 0) === 1) {
+        $('#data_validade_item').focus();
+        showNotification('Preencha a data de validade e pressione ENTER novamente para adicionar.', 'info');
+        return;
     }
+    
+    // Adicionar item automaticamente apenas para produtos sem controle de validade
+    adicionarItemCompra();
 }
 
 function findFornecedorByTerm(term) {
@@ -552,6 +600,7 @@ function findProdutoByInput(input) {
 }
 
 function showCompraModal() {
+    console.log('showCompraModal chamada - gerando modal');
     itensCompraAtual = [];
     compraImportadaXml = null;
     const hoje = new Date().toISOString().split('T')[0];
@@ -680,39 +729,55 @@ function showCompraModal() {
         <h6 class="border-bottom pb-2 mb-2">Itens da compra</h6>
     </div>
 </div>
-                        <div class="row g-2 align-items-end" id="adicionarItemRow">
-                            <div class="col-md-4">
-                                <label class="form-label">Código de barras / descrição rápida</label>
-                                <input type="text" class="form-control" id="codigo_barras_item" placeholder="Leitor, código ou nome" list="produtos-datalist" autocomplete="off" oninput="onProdutoInput()" onkeydown="onProdutoKeyDown(event)">
+                        <!-- Linha 1: Campo de busca destacado -->
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-12">
+                                <label class="form-label fw-bold">Código de barras / descrição rápida (Enter para adicionar)</label>
+                                <input type="text" class="form-control" id="codigo_barras_item" placeholder="Leitor, código ou nome" list="produtos-datalist" autocomplete="off" oninput="onProdutoInput()" onkeydown="onProdutoKeyDown(event)" style="font-size: 1.1em; font-weight: 500;">
                                 <datalist id="produtos-datalist">
                                     ${produtosCompraList.map(p => `<option value="${escapeHtml((p.codigo_barras || p.codigo || '') + ' - ' + p.nome)}"></option>`).join('')}
                                 </datalist>
                             </div>
-                            <div class="col-md-2">
+                        </div>
+
+                        <!-- Linha 2: Campos do item -->
+                        <div class="row g-2 align-items-end mb-3" id="adicionarItemRow">
+                            <div class="col-md-3">
                                 <label class="form-label">Produto</label>
-                                <select class="form-control" id="produto_id_item">
+                                <select class="form-control" id="produto_id_item" onchange="onProdutoSelecionado()">
                                     <option value="">Selecione</option>
-                                    ${produtosCompraList.map(p => `<option value="${p.id}">${escapeHtml(p.nome)}</option>`).join('')}
+                                    ${produtosCompraList.map(p => `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`).join('')}
                                 </select>
                             </div>
-                            <div class="col-md-1">
+                            <div class="col-md-2">
                                 <label class="form-label">Qtd</label>
                                 <input type="number" step="0.01" class="form-control" id="quantidade_item" value="1">
                             </div>
-                            <div class="col-md-1">
+                            <div class="col-md-2">
                                 <label class="form-label">Preço compra</label>
                                 <input type="number" step="0.01" class="form-control" id="preco_item" oninput="calcularValorVendaItem()">
                             </div>
-                            <div class="col-md-1">
+                            <div class="col-md-2">
                                 <label class="form-label">Margem %</label>
                                 <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="30" oninput="calcularValorVendaItem()">
                             </div>
-                            <div class="col-md-1">
+                            <div class="col-md-2">
                                 <label class="form-label">Valor venda</label>
                                 <input type="number" step="0.01" class="form-control" id="preco_venda_item" oninput="calcularMargemItem()">
                             </div>
                             <div class="col-md-1">
                                 <button class="btn btn-success w-100" onclick="adicionarItemCompra()"><i class="fas fa-plus"></i></button>
+                            </div>
+                        </div>
+
+                        <!-- Campos de lote para produtos com controle de validade -->
+                        <div class="row g-2 mt-2" id="camposLoteCompra" style="display: none;">
+                            <div class="col-md-6">
+                                <label class="form-label">Data Validade *</label>
+                                <input type="date" class="form-control" id="data_validade_item">
+                            </div>
+                            <div class="col-md-6">
+                                <small class="text-muted">Campo obrigatório para produtos com controle de validade. O lote será gerado automaticamente.</small>
                             </div>
                         </div>
                         <div class="table-responsive mt-3" id="itensCompraTable">
@@ -813,8 +878,10 @@ function showCompraModal() {
             </div>
         </div>
     `;
+    console.log('Modal HTML gerado, tamanho:', modalHtml.length);
     $('#modal-container').html(modalHtml);
     $('#compraModal').modal('show');
+    console.log('Modal exibido');
     renderItensCompraTabela();
     atualizarVisibilidadePagamentoCompra();
     recalcularTotaisCompraNota();
@@ -883,6 +950,7 @@ function saveCompra() {
             margem_lucro: Number(item.margem_lucro || 0),
             preco_venda_sugerido: Number(item.preco_venda_sugerido || 0),
             subtotal: Number(item.subtotal || 0),
+            data_validade: item.data_validade || null,
             vendido_por_peso: Number(item.vendido_por_peso || 0),
             peso_total_compra: Number(item.peso_total_compra || item.quantidade || 0),
             custo_por_kg: Number(item.custo_por_kg || item.preco_unitario || 0),
@@ -906,6 +974,8 @@ function saveCompra() {
         showNotification('Informe o fornecedor da nota.', 'warning');
         return;
     }
+
+    console.log('ITENS ENVIADOS:', JSON.stringify(itensCompraAtual, null, 2));
 
     $.ajax({
         url: `${API_URL}/compras`,

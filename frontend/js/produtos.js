@@ -1106,7 +1106,7 @@ function showProdutoModal(produto = null) {
                                         class="list-group position-absolute w-100"
                                         style="z-index: 9999; display: none;"
                                     ></div>
-                                    <div class="col-12">
+                                </div>
 
                                 <div class="col-12">
                                     <div class="row g-3 border rounded p-3 mb-2 bg-light">
@@ -1123,27 +1123,27 @@ function showProdutoModal(produto = null) {
                                                 </label>
                                             </div>
                                         </div>
+                                    </div>
+                                </div>
+
+                                <!-- Campos para lote inicial (apenas quando controlar_validade está marcado) -->
+                                <div class="col-12" id="areaLoteInicial" style="display: none;">
+                                    <div class="row g-3 border rounded p-3 mb-2 bg-info bg-opacity-10">
+                                        <div class="col-md-12">
+                                            <strong>Informações do Lote Inicial</strong>
+                                            <small class="text-muted d-block">Preencha estes campos para criar o lote inicial do estoque (apenas para novos produtos com estoque > 0). O lote será gerado automaticamente.</small>
+                                        </div>
                                         <div class="col-md-4">
-                                            <label for="data_validade" class="form-label">Data de validade</label>
+                                            <label for="data_validade_inicial" class="form-label">Data Validade *</label>
                                             <input
                                                 type="date"
-                                                id="data_validade"
+                                                id="data_validade_inicial"
                                                 class="form-control"
-                                                value="${isEdit ? (produto.data_validade || '') : ''}"
+                                                value="${isEdit ? (produto.data_validade_inicial || '') : ''}"
                                             >
                                         </div>
                                         <div class="col-md-4">
-                                            <label for="lote" class="form-label">Lote</label>
-                                            <input
-                                                type="text"
-                                                id="lote"
-                                                class="form-control"
-                                                placeholder="Ex: LOTE001"
-                                                value="${isEdit ? escapeHtml(produto.lote || '') : ''}"
-                                            >
-                                        </div>
-                                        <div class="col-md-4">
-                                            <label for="dias_alerta_validade" class="form-label">Alertar com quantos dias?</label>
+                                            <label for="dias_alerta_validade" class="form-label">Alertar (dias)</label>
                                             <input
                                                 type="number"
                                                 id="dias_alerta_validade"
@@ -1264,18 +1264,39 @@ function showProdutoModal(produto = null) {
     inicializarVendaAtacado(produto, isEdit);
 
     if (isEdit && produto) {
-        $('#data_validade').val(produto.data_validade || '');
-        $('#lote').val(produto.lote || '');
-        $('#dias_alerta_validade').val(produto.dias_alerta_validade || 30);
         $('#controlar_validade').prop('checked', produto.controlar_validade == 1);
     } else {
-        $('#data_validade').val('');
-        $('#lote').val('');
-        $('#dias_alerta_validade').val(30);
         $('#controlar_validade').prop('checked', false);
     }
 
+    // Inicializar controle de visibilidade do lote inicial
+    inicializarControleLoteInicial();
+
     // ...
+}
+
+// Função para controlar visibilidade dos campos de lote inicial
+function inicializarControleLoteInicial() {
+    const $controlarValidade = $('#controlar_validade');
+    const $areaLoteInicial = $('#areaLoteInicial');
+
+    function atualizarVisibilidadeLoteInicial() {
+        const controlarValidade = $controlarValidade.prop('checked');
+
+        console.log('Atualizando visibilidade lote inicial:', controlarValidade);
+
+        // Mostrar campos de lote inicial quando controlar_validade estiver marcado
+        if (controlarValidade) {
+            $areaLoteInicial.show();
+        } else {
+            $areaLoteInicial.hide();
+        }
+    }
+
+    $controlarValidade.on('change', atualizarVisibilidadeLoteInicial);
+
+    // Verificar estado inicial com delay
+    setTimeout(atualizarVisibilidadeLoteInicial, 100);
 }
 
 
@@ -1982,14 +2003,19 @@ async function saveProduto() {
         vendido_por_peso: $('#vendido_por_peso').is(':checked') ? 1 : 0,
         peso_total_compra: parseFloat($('#peso_total_compra').val()) || 0,
         valor_total_compra: parseFloat($('#valor_total_compra').val()) || 0,
-        custo_por_kg: parseFloat($('#custo_por_kg').val()) || 0
-        , venda_atacado: $('#venda_atacado').is(':checked') ? 1 : 0
+        custo_por_kg: parseFloat($('#custo_por_kg').val()) || 0,
+        venda_atacado: $('#venda_atacado').is(':checked') ? 1 : 0,
+        // Campos para lote inicial (apenas para novos produtos)
+        data_validade_inicial: ($('#data_validade_inicial').val() || '').trim() || null
     };
 
-    if (data.controlar_validade === 1 && !data.data_validade) {
-        showNotification('Informe a data de validade do produto ou desative o controle de validade.', 'warning');
-        $('#data_validade').focus();
-        return;
+    // Validação para produtos com controle de validade e estoque inicial
+    if (!id && data.controlar_validade === 1 && data.estoque_atual > 0) {
+        if (!data.data_validade_inicial) {
+            showNotification('Para produtos com controle de validade e estoque inicial, informe a data de validade.', 'warning');
+            $('#data_validade_inicial').focus();
+            return;
+        }
     }
 
     if (!data.nome) {

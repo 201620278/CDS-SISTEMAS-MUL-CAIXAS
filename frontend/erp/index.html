@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDS ERP — Retaguarda</title>
+    <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/financeiro.css">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <nav id="sidebar" class="col-md-2 col-lg-2 d-md-block bg-dark sidebar">
+                <div class="position-sticky pt-3">
+                    <div class="text-center mb-2" id="sidebar-brand">
+                        <h5 class="text-white">CDS</h5>
+                        <small class="text-muted">ERP</small>
+                    </div>
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link text-white active" href="#" data-page="dashboard">
+                                <i class="fas fa-chart-line"></i> Dashboard
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="produtos">
+                                <i class="fas fa-box"></i> Produtos
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="categorias">
+                                <i class="fas fa-tags"></i> Categorias
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="produtos">
+                                <i class="fas fa-warehouse"></i> Estoque
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="compras">
+                                <i class="fas fa-shopping-cart"></i> Compras
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="clientes">
+                                <i class="fas fa-users"></i> Clientes
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="fornecedores">
+                                <i class="fas fa-truck"></i> Fornecedores
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="financeiro">
+                                <i class="fas fa-coins"></i> Financeiro
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="vendas">
+                                <i class="fas fa-history"></i> Relatórios / Vendas
+                            </a>
+                        </li>
+                        <li class="nav-item" data-recurso="fiscal">
+                            <a class="nav-link text-white" href="#" data-page="fiscal">
+                                <i class="fas fa-receipt"></i> Fiscal
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="configuracoes">
+                                <i class="fas fa-cog"></i> Configurações
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="licenca">
+                                <i class="fas fa-key"></i> Licença
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="auditoria">
+                                <i class="fas fa-shield-alt"></i> Auditoria
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-white" href="#" data-page="caixa">
+                                <i class="fas fa-cash-register"></i> Fechamento de Caixa
+                            </a>
+                        </li>
+                        <li class="nav-item" id="nav-config-avancadas" data-recurso="configAvancadas">
+                            <a class="nav-link text-white" href="#" data-page="configuracoes-avancadas">
+                                <i class="fas fa-tools"></i> Config. Avançadas
+                            </a>
+                        </li>
+                        <li class="nav-item" data-recurso="multiCaixa">
+                            <a class="nav-link text-white" href="#" data-page="caixas">
+                                <i class="fas fa-desktop"></i> Gerenciar Caixas
+                            </a>
+                        </li>
+                        <li class="nav-item" id="nav-abrir-pdv">
+                            <a class="nav-link text-success" href="/pdv">
+                                <i class="fas fa-cash-register"></i> Abrir PDV
+                            </a>
+                        </li>
+                    </ul>
+
+                    <div class="sidebar-footer">
+                        <div class="text-white mb-2 small">
+                            <i class="fas fa-user"></i> <span id="user-nome">Carregando...</span>
+                            <br>
+                            <small id="user-perfil" class="text-muted">-</small>
+                        </div>
+                        <button class="btn btn-danger btn-sm w-100" onclick="logout()">
+                            <i class="fas fa-sign-out-alt"></i> Sair
+                        </button>
+                    </div>
+                </div>
+            </nav>
+
+            <main class="col-md-10 ms-sm-auto col-lg-10 px-md-4 position-relative">
+                <div id="page-content">
+                    <div class="text-center p-5">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-2">Carregando ERP...</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <div id="modal-container"></div>
+
+    <script src="/vendor/jquery/jquery.min.js"></script>
+    <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script src="/vendor/chart.js/chart.min.js"></script>
+    <script src="/shared/js/access-control.js"></script>
+    <script src="/shared/js/core.js"></script>
+    <script src="/erp/js/dashboard.js"></script>
+    <script src="/erp/js/produtos.js"></script>
+    <script src="/erp/js/subcategorias.js"></script>
+    <script src="/erp/js/clientes.js"></script>
+    <script src="/erp/js/fornecedores.js"></script>
+    <script src="/erp/js/compras.js"></script>
+    <script src="/erp/js/vendas.js"></script>
+    <script src="/erp/js/financeiro-dashboard.js"></script>
+    <script src="/erp/js/financeiro-receber.js"></script>
+    <script src="/erp/js/financeiro-pagar.js"></script>
+    <script src="/erp/js/financeiro-historico.js"></script>
+    <script src="/erp/js/financeiro-relatorios.js"></script>
+    <script src="/erp/js/financeiro.js"></script>
+    <script src="/erp/js/configuracoes.js"></script>
+    <script src="/erp/js/configuracao_tef.js"></script>
+    <script src="/erp/js/categorias.js"></script>
+    <script src="/erp/js/fiscal.js"></script>
+    <script src="/erp/js/caixa.js"></script>
+    <script src="/erp/js/licenca.js"></script>
+    <script src="/erp/js/auditoria.js"></script>
+    <script src="/erp/js/caixas.js"></script>
+    <script src="/erp/js/app.js"></script>
+
+    <div id="notification-container" style="position: fixed; top: 20px; right: 20px; z-index: 9999; pointer-events: none;"></div>
+
+    <footer style="position: fixed; bottom: 0; width: 100%; background: #111827; color: #9ca3af; text-align: center; padding: 6px; font-size: 12px; z-index: 1000;">
+        &copy; CDS Sistemas — ERP (Retaguarda)
+    </footer>
+</body>
+</html>

@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
 const { verificarPermissaoEspecifica } = require('./auth');
+const lotesService = require('../services/lotesService');
 
 function produtosTemColuna(nomeColuna, callback) {
   db.all(`PRAGMA table_info(produtos)`, [], (err, cols) => {
@@ -16,6 +17,9 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'id',
   'created_at',
   'updated_at',
+  'lote_inicial',
+  'data_fabricacao_inicial',
+  'data_validade_inicial',
   'atacado_faixas',
   'categoria',
   'subcategoria',
@@ -25,7 +29,10 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'quantidade_minima_atacado',
   'dias_para_vencer',
   'status_validade',
-  'message'
+  'message',
+  'data_validade',
+  'lote',
+  'dias_alerta_validade'
 ]);
 
 function inserirFaixasAtacadoProduto(produtoId, faixas, callback) {
@@ -1232,11 +1239,18 @@ router.post('/', (req, res) => {
     lucro_percentual, preco_venda, estoque_atual, estoque_minimo, fornecedor,
     ncm, cfop, csosn, origem, cest, codigo_barras,
     aliquota_icms, aliquota_pis, aliquota_cofins,
-    data_validade, lote, dias_alerta_validade, controlar_validade,
+    controlar_validade,
     vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
     venda_atacado,
-    atacado_faixas
+    atacado_faixas,
+    // Campos adicionais para lote inicial
+    lote_inicial,
+    data_fabricacao_inicial,
+    data_validade_inicial
   } = req.body;
+
+  const controlarValidade = controlar_validade ? 1 : 0;
+  const estoqueInicial = Number(estoque_atual) || 0;
 
   db.run(`
     INSERT INTO produtos (
@@ -1245,21 +1259,18 @@ router.post('/', (req, res) => {
       estoque_atual, estoque_minimo, fornecedor,
       ncm, cfop, csosn, origem, cest, codigo_barras,
       aliquota_icms, aliquota_pis, aliquota_cofins,
-      data_validade, lote, dias_alerta_validade, controlar_validade,
+      controlar_validade,
       vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
       venda_atacado
     )
-    VALUES (${Array(29).fill('?').join(', ')})
+    VALUES (${Array(26).fill('?').join(', ')})
   `, [
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
-    estoque_atual || 0, estoque_minimo || 0, fornecedor,
+    estoqueInicial, estoque_minimo || 0, fornecedor,
     ncm, cfop, csosn, origem, cest, codigo_barras,
     aliquota_icms, aliquota_pis, aliquota_cofins,
-    data_validade || null,
-    lote || '',
-    dias_alerta_validade || 30,
-    controlar_validade ? 1 : 0,
+    controlarValidade,
     vendido_por_peso || 0,
     peso_total_compra || 0,
     valor_total_compra || 0,
@@ -1275,35 +1286,194 @@ router.post('/', (req, res) => {
 
       const produtoId = this.lastID;
 
-      inserirFaixasAtacadoProduto(produtoId, atacado_faixas, (faixaErr) => {
-        if (faixaErr) {
-          console.error('Erro ao salvar faixas de atacado do produto:', faixaErr.message);
-          return res.status(500).json({ error: 'Produto criado, mas houve erro ao salvar faixas de atacado.' });
+      // Se controlar validade e tiver estoque inicial, criar lote inicial
+      if (controlarValidade && estoqueInicial > 0) {
+        if (!data_validade_inicial) {
+          return res.status(400).json({
+            error: 'Data de validade é obrigatória para o estoque inicial.'
+          });
         }
 
-        buscarProdutoCompleto(produtoId, (err2, row) => {
-          if (err2 || !row) {
-            return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
+        const hoje = new Date().toISOString().split('T')[0];
+
+        // Lote gerado automaticamente pelo serviço
+        lotesService.criarLote({
+          produto_id: produtoId,
+          quantidade_inicial: estoqueInicial,
+          data_validade: data_validade_inicial,
+          data_entrada: hoje,
+          origem: 'ESTOQUE_INICIAL',
+          compra_id: null
+        }, (loteErr) => {
+          if (loteErr) {
+            console.error('Erro ao criar lote inicial:', loteErr.message);
+            // Não falhar a criação do produto se o lote falhar, mas logar o erro
           }
 
-          res.json({
-            ...row,
-            message: 'Produto criado com sucesso'
-          });
+          continuarCriacaoProduto();
+        });
+      } else {
+        continuarCriacaoProduto();
+      }
 
-          gravarAuditoria({
-            usuario_id: req.user?.id || null,
-            usuario_nome: req.user?.username || req.user?.nome || null,
-            modulo: 'produtos',
-            acao: 'criar_produto',
-            referencia_tipo: 'produto',
-            referencia_id: produtoId,
-            detalhes: { nome, codigo, categoria_id, estoque_atual, preco_venda, faixas_atacado: (atacado_faixas || []).length },
-            ip_requisicao: req.ip || null
-          }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
+      function continuarCriacaoProduto() {
+        inserirFaixasAtacadoProduto(produtoId, atacado_faixas, (faixaErr) => {
+          if (faixaErr) {
+            console.error('Erro ao salvar faixas de atacado do produto:', faixaErr.message);
+            return res.status(500).json({ error: 'Produto criado, mas houve erro ao salvar faixas de atacado.' });
+          }
+
+          buscarProdutoCompleto(produtoId, (err2, row) => {
+            if (err2 || !row) {
+              return res.status(500).json({ error: err2?.message || 'Erro ao buscar produto criado' });
+            }
+
+            res.json({
+              ...row,
+              message: 'Produto criado com sucesso'
+            });
+
+            gravarAuditoria({
+              usuario_id: req.user?.id || null,
+              usuario_nome: req.user?.username || req.user?.nome || null,
+              modulo: 'produtos',
+              acao: 'criar_produto',
+              referencia_tipo: 'produto',
+              referencia_id: produtoId,
+              detalhes: { nome, codigo, categoria_id, estoque_atual, preco_venda, controlar_validade, faixas_atacado: (atacado_faixas || []).length },
+              ip_requisicao: req.ip || null
+            }).catch((auditErr) => console.error('Erro ao gravar auditoria de criação de produto:', auditErr));
+          });
+        });
+      }
+    });
+});
+
+// Obter estatísticas de vencimentos para o dashboard
+router.get('/vencimentos/estatisticas', (req, res) => {
+  lotesService.obterEstatisticasVencimentos((err, stats) => {
+    if (err) {
+      console.error('Erro ao obter estatísticas de vencimentos:', err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(stats);
+  });
+});
+
+// Obter configurações de validade
+router.get('/validade/configuracoes', (req, res) => {
+  lotesService.obterConfiguracoesValidade((err, config) => {
+    if (err) {
+      console.error('Erro ao obter configurações de validade:', err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(config);
+  });
+});
+
+// Atualizar configurações de validade
+router.put('/validade/configuracoes', (req, res) => {
+  const { dias_aviso_vencimento, bloquear_venda_vencido, alertar_venda_proximo_vencimento } = req.body;
+  
+  lotesService.atualizarConfiguracoesValidade({
+    dias_aviso_vencimento,
+    bloquear_venda_vencido,
+    alertar_venda_proximo_vencimento
+  }, (err) => {
+    if (err) {
+      console.error('Erro ao atualizar configurações de validade:', err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ message: 'Configurações atualizadas com sucesso' });
+  });
+});
+
+// Ajustar estoque com suporte a lotes (FEFO)
+router.put('/:id/ajustar-estoque', (req, res) => {
+  const { id } = req.params;
+  const { quantidade, motivo, lote, data_fabricacao, data_validade } = req.body;
+  
+  const quantidadeAjuste = Number(quantidade) || 0;
+  
+  if (quantidadeAjuste === 0) {
+    return res.status(400).json({ error: 'Quantidade de ajuste não pode ser zero' });
+  }
+
+  lotesService.produtoControlaValidade(id, (err, controlaValidade) => {
+    if (err) {
+      console.error('Erro ao verificar controle de validade:', err);
+      return res.status(500).json({ error: err.message });
+    }
+
+    if (!controlaValidade) {
+      // Produto não controla validade - ajustar estoque consolidado normal
+      db.run(`
+        UPDATE produtos
+        SET estoque_atual = estoque_atual + ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `, [quantidadeAjuste, id], (upErr) => {
+        if (upErr) {
+          return res.status(500).json({ error: upErr.message });
+        }
+        res.json({ message: 'Estoque ajustado com sucesso' });
+      });
+      return;
+    }
+
+    // Produto controla validade - ajustar lotes
+    const hoje = new Date().toISOString().split('T')[0];
+
+    if (quantidadeAjuste > 0) {
+      // Ajuste positivo - criar novo lote
+      if (!lote || !data_validade) {
+        return res.status(400).json({ 
+          error: 'Para produtos com controle de validade, informe o lote e data de validade para ajustes positivos' 
+        });
+      }
+
+      lotesService.criarLote({
+        produto_id: id,
+        lote: lote,
+        quantidade_inicial: quantidadeAjuste,
+        data_fabricacao: data_fabricacao || null,
+        data_validade: data_validade,
+        data_entrada: hoje,
+        origem: 'AJUSTE_ESTOQUE',
+        compra_id: null
+      }, (loteErr) => {
+        if (loteErr) {
+          console.error('Erro ao criar lote para ajuste:', loteErr);
+          return res.status(500).json({ error: loteErr.message });
+        }
+
+        // Atualizar estoque consolidado
+        lotesService.atualizarEstoqueConsolidado(id, (atualErr) => {
+          if (atualErr) {
+            return res.status(500).json({ error: atualErr.message });
+          }
+          res.json({ message: 'Estoque ajustado com sucesso (lote criado)' });
         });
       });
-    });
+    } else {
+      // Ajuste negativo - consumir lotes usando FEFO
+      const quantidadeConsumir = Math.abs(quantidadeAjuste);
+      
+      lotesService.consumirLotesFEFO(id, quantidadeConsumir, (consumoErr, consumoLotes) => {
+        if (consumoErr) {
+          return res.status(500).json({ error: consumoErr.message });
+        }
+
+        // Atualizar estoque consolidado
+        lotesService.atualizarEstoqueConsolidado(id, (atualErr) => {
+          if (atualErr) {
+            return res.status(500).json({ error: atualErr.message });
+          }
+          res.json({ message: 'Estoque ajustado com sucesso (lotes consumidos via FEFO)' });
+        });
+      });
+    }
+  });
 });
 
 // Atualizar produto

@@ -1,0 +1,164 @@
+<div class="financeiro-page">
+  <div class="financeiro-header">
+    <h3 align="left">Financeiro</h3>
+  </div>
+
+  <div class="financeiro-header-actions">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-2">
+        <label class="form-label">Período</label>
+        <select id="financeiroPeriodo" class="form-select">
+          <option value="hoje">Hoje</option>
+          <option value="7dias">Últimos 7 Dias</option>
+          <option value="mes-atual">Mês Atual</option>
+          <option value="personalizado">Personalizado</option>
+        </select>
+      </div>
+      <div class="col-md-2 d-none" id="financeiroPeriodoInicioWrapper">
+        <label class="form-label">Data Início</label>
+        <input type="date" id="financeiroDataInicio" class="form-control">
+      </div>
+      <div class="col-md-2 d-none" id="financeiroPeriodoFimWrapper">
+        <label class="form-label">Data Fim</label>
+        <input type="date" id="financeiroDataFim" class="form-control">
+      </div>
+      <div class="col-md-2">
+        <button type="button" id="btnAtualizarFinanceiro" class="btn btn-primary w-100">
+          <i class="fas fa-sync-alt"></i> Atualizar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="financeiro-tabs">
+    <button class="financeiro-tab active" data-aba="dashboard">Dashboard</button>
+    <button class="financeiro-tab" data-aba="receber">Contas a Receber</button>
+    <button class="financeiro-tab" data-aba="duplicata">Dívidas por Cliente</button>
+    <button class="financeiro-tab" data-aba="pagar">Contas a Pagar</button>
+    <button class="financeiro-tab" data-aba="historico">Histórico</button>
+    <button class="financeiro-tab" data-aba="relatorios">Relatórios</button>
+  </div>
+
+  <div id="financeiroConteudo" class="financeiro-conteudo">
+    <!-- Conteúdo das abas será carregado aqui -->
+  </div>
+
+  <div class="modal fade" id="modalDetalhesFinanceiro" tabindex="-1" aria-labelledby="modalDetalhesFinanceiroLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="modalDetalhesFinanceiroLabel">Detalhes</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+        <div class="modal-body" id="modalDetalhesFinanceiroBody">
+          <div class="text-center text-muted">Carregando...</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modalPagamentoParcial" tabindex="-1" aria-labelledby="modalPagamentoParcialLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-primary text-white">
+          <h5 class="modal-title" id="modalPagamentoParcialLabel">
+            <i class="fas fa-money-bill-wave"></i> Pagamento Parcial
+          </h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+        <div class="modal-body">
+          <div id="modalPagamentoParcialClienteInfo" class="mb-3 p-3 bg-light rounded">
+            <div class="text-muted small">Cliente:</div>
+            <strong id="modalPagamentoParcialClienteNome">-</strong>
+            <div class="text-muted small mt-2">Saldo em Aberto:</div>
+            <strong id="modalPagamentoParcialSaldo" class="text-danger">R$ 0,00</strong>
+          </div>
+
+          <form id="formPagamentoParcial">
+            <div class="mb-3">
+              <label for="pagamentoParcialValor" class="form-label">Valor do Pagamento *</label>
+              <div class="input-group">
+                <span class="input-group-text">R$</span>
+                <input 
+                  type="number" 
+                  id="pagamentoParcialValor" 
+                  class="form-control" 
+                  placeholder="0,00"
+                  step="0.01"
+                  min="0"
+                  required
+                >
+              </div>
+              <small class="text-muted">Use ponto como separador decimal (ex: 1.500,00 = 1500.00)</small>
+            </div>
+
+            <div class="mb-3">
+              <label for="pagamentoParcialData" class="form-label">Data do Pagamento *</label>
+              <input 
+                type="date" 
+                id="pagamentoParcialData" 
+                class="form-control"
+                required
+              >
+            </div>
+
+            <div class="mb-3">
+              <label for="pagamentoParcialForma" class="form-label">Forma de Pagamento</label>
+              <select id="pagamentoParcialForma" class="form-select">
+                <option value="dinheiro">Dinheiro</option>
+                <option value="pix">PIX</option>
+                <option value="cheque">Cheque</option>
+                <option value="cartao_credito">Cartão de Crédito</option>
+                <option value="cartao_debito">Cartão de Débito</option>
+                <option value="transferencia">Transferência Bancária</option>
+              </select>
+            </div>
+
+            <div class="mb-3">
+              <label for="pagamentoParcialObservacao" class="form-label">Observações (Opcional)</label>
+              <textarea 
+                id="pagamentoParcialObservacao" 
+                class="form-control" 
+                rows="2"
+                placeholder="Adicione observações sobre este pagamento..."
+              ></textarea>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+          <button type="button" class="btn btn-primary" id="btnConfirmarPagamentoParcial">
+            <i class="fas fa-check"></i> Confirmar Pagamento
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="modalConfirmacaoPagamentoParcial" tabindex="-1" aria-labelledby="modalConfirmacaoPagamentoParcialLabel" aria-hidden="true">
+    <div class="modal-dialog modal-sm modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header bg-secondary text-white">
+          <h5 class="modal-title" id="modalConfirmacaoPagamentoParcialLabel">
+            <i class="fas fa-question-circle"></i> Confirmar pagamento
+          </h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+        <div class="modal-body">
+          <p id="confirmacaoPagamentoParcialTexto" class="mb-0"></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Não</button>
+          <button type="button" class="btn btn-primary" id="btnConfirmacaoPagamentoParcialSim">Sim</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="js/financeiro-historico.js"></script>
+
+<!-- Conteúdo do Financeiro carregado dinamicamente.
+    Os scripts e estilos do módulo já são importados em index.html. -->

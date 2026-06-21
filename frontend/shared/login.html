@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login — CDS Sistemas</title>
+    <link href="/vendor/bootstrap/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/css/style.css">
+    <style>
+        body { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: linear-gradient(145deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); background-size: cover; background-position: center; background-attachment: fixed; }
+        .login-card { max-width: 420px; width: 100%; border: none; box-shadow: 0 12px 40px rgba(0,0,0,.5); border-radius: 12px; background: rgba(255, 255, 255, 0.95); }
+        .login-card .card-header { background: #212529; color: #fff; border-radius: 12px 12px 0 0 !important; padding: 1.25rem; }
+        body.has-background { background: none; }
+        body.has-background::before {
+            content: '';
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: inherit;
+            background-size: cover;
+            background-position: center;
+            z-index: -1;
+        }
+    </style>
+</head>
+<body>
+    <div class="card login-card">
+        <div class="card-header text-center">
+            <h4 class="mb-0"><i class="fas fa-store"></i> CDS SISTEMAS</h4>
+            <small class="text-white-50">ERP &amp; PDV</small>
+        </div>
+        <div class="card-body p-4">
+            <p class="text-muted small mb-3">Entre com seu usuário e senha para continuar.</p>
+            <form id="loginForm" autocomplete="on">
+                <div class="mb-3">
+                    <label for="username" class="form-label">Usuário</label>
+                    <input type="text" class="form-control" id="username" name="username" required autofocus tabindex="1" placeholder="Digite seu usuário">
+                </div>
+                <div class="mb-3">
+                    <label for="password" class="form-label">Senha</label>
+                    <input type="password" class="form-control" id="password" name="password" required tabindex="2" placeholder="Digite sua senha">
+                </div>
+                <div id="login-error" class="alert alert-danger py-2 d-none" role="alert"></div>
+                <button type="submit" class="btn btn-primary w-100" id="btn-entrar">
+                    <i class="fas fa-sign-in-alt"></i> Entrar
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script src="/vendor/jquery/jquery.min.js"></script>
+    <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script src="/shared/js/access-control.js"></script>
+    <script src="/shared/js/login.js"></script>
+    <script>
+        fetch('/api/configuracoes/login_background')
+            .then(r => r.json())
+            .then(config => {
+                if (config && config.valor) {
+                    document.body.style.backgroundImage = `url('${config.valor}')`;
+                    document.body.classList.add('has-background');
+                }
+            })
+            .catch(() => {});
+    </script>
+</body>
+</html>

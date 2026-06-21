@@ -5,6 +5,7 @@ const moment = require('moment');
 const multer = require('multer');
 const { gravarAuditoria } = require('../services/auditoria');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
+const lotesService = require('../services/lotesService');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const { emitirNFeDevolucaoCompra } = require('../services/fiscal/nfeDevolucaoCompra');
@@ -293,8 +294,11 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
     ensureProductForItem(item, (prodErr, produtoId) => {
       if (prodErr) return done(prodErr);
 
-      db.get('SELECT preco_compra, preco_venda FROM produtos WHERE id = ?', [produtoId], (getErr, antigo) => {
+      db.get('SELECT preco_compra, preco_venda, controlar_validade FROM produtos WHERE id = ?', [produtoId], (getErr, produto) => {
         if (getErr) return done(getErr);
+
+        const antigo = { preco_compra: produto?.preco_compra, preco_venda: produto?.preco_venda };
+        const controlarValidade = produto?.controlar_validade === 1;
 
         db.run(`
           INSERT INTO compras_itens (
@@ -372,14 +376,44 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
           ], (upErr) => {
             if (upErr) return done(upErr);
 
-            if (antigo && (Number(antigo.preco_compra) !== Number(item.preco_unitario) || Number(antigo.preco_venda) !== Number(item.preco_venda_sugerido || 0))) {
-              db.run(`
-                INSERT INTO produtos_preco_historico (
-                  produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
-                ) VALUES (?, ?, ?, ?, ?)
-              `, [produtoId, antigo.preco_compra, item.preco_unitario, antigo.preco_venda, item.preco_venda_sugerido || 0], () => next());
+            // Se o produto controla validade, criar lote
+            if (controlarValidade) {
+              if (!item.data_validade) {
+                return done(new Error(`Produto "${item.produto_nome || produtoId}" controla validade. Informe a data de validade.`));
+              }
+
+              const hoje = new Date().toISOString().split('T')[0];
+
+              // Lote gerado automaticamente pelo serviço
+              lotesService.criarLote({
+                produto_id: produtoId,
+                quantidade_inicial: Number(item.quantidade || 0),
+                data_validade: item.data_validade,
+                data_entrada: hoje,
+                origem: 'COMPRA',
+                compra_id: compraId
+              }, (loteErr) => {
+                if (loteErr) {
+                  console.error('Erro ao criar lote para compra:', loteErr.message);
+                  // Continuar mesmo se o lote falhar, mas logar o erro
+                }
+
+                continuarProcessamento();
+              });
             } else {
-              next();
+              continuarProcessamento();
+            }
+
+            function continuarProcessamento() {
+              if (antigo && (Number(antigo.preco_compra) !== Number(item.preco_unitario) || Number(antigo.preco_venda) !== Number(item.preco_venda_sugerido || 0))) {
+                db.run(`
+                  INSERT INTO produtos_preco_historico (
+                    produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
+                  ) VALUES (?, ?, ?, ?, ?)
+                `, [produtoId, antigo.preco_compra, item.preco_unitario, antigo.preco_venda, item.preco_venda_sugerido || 0], () => next());
+              } else {
+                next();
+              }
             }
           });
         });
@@ -855,8 +889,10 @@ router.post('/', (req, res) => {
           });
         } else {
           // Compra Normal: process items and create financial records
+          console.log('Processando itens da compra:', compraId, itensComRateio);
           processarItensCompra(compraId, itensComRateio, fornecedor, (itensErr) => {
             if (itensErr) {
+              console.error('Erro ao processar itens da compra:', itensErr);
               db.run('ROLLBACK');
               return res.status(500).json({ error: itensErr.message });
             }

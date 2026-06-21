@@ -21,6 +21,42 @@ app.commandLine.appendSwitch('disable-features', 'UseSkiaRenderer');
 
 let mainWindow;
 
+// Registrar handlers IPC globalmente (antes de criar a janela)
+ipcMain.removeHandler('listar-impressoras');
+ipcMain.handle('listar-impressoras', async (event) => {
+  try {
+    console.log('[IPC] listar-impressoras chamado');
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) {
+      console.error('[IPC] Não foi possível obter a janela do evento');
+      return [];
+    }
+    const impressoras = await win.webContents.getPrintersAsync();
+    console.log('[IPC] Impressoras encontradas:', impressoras.length);
+    return impressoras.map(imp => ({
+      name: imp.name,
+      description: imp.description,
+      status: imp.status,
+      isDefault: imp.isDefault
+    }));
+  } catch (error) {
+    console.error('[IPC] Erro ao listar impressoras:', error);
+    return [];
+  }
+});
+
+ipcMain.removeHandler('selecionar-pasta-backup');
+ipcMain.handle('selecionar-pasta-backup', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Selecione a pasta de backup'
+  });
+
+  if (result.canceled) return null;
+
+  return result.filePaths[0];
+});
+
 function obterPortaServidor() {
   const porta = Number.parseInt(process.env.PORT, 10);
   return Number.isFinite(porta) && porta > 0 ? porta : 3001;
@@ -212,6 +248,8 @@ function criarMainWindow() {
   });
 
   global.mainWindow = mainWindow;
+
+  console.log('[ELECTRON] mainWindow criada e definida como global.mainWindow');
 
   mainWindow.webContents.setWindowOpenHandler(() => {
     return {
@@ -422,30 +460,6 @@ function criarMainWindow() {
         }
       });
     });
-  });
-
-  ipcMain.removeHandler('selecionar-pasta-backup');
-  ipcMain.handle('selecionar-pasta-backup', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: 'Selecione a pasta de backup'
-    });
-
-    if (result.canceled) return null;
-
-    return result.filePaths[0];
-  });
-
-  ipcMain.removeHandler('listar-impressoras');
-  ipcMain.handle('listar-impressoras', async () => {
-    if (!mainWindow) return [];
-    const impressoras = await mainWindow.webContents.getPrintersAsync();
-    return impressoras.map(imp => ({
-      name: imp.name,
-      description: imp.description,
-      status: imp.status,
-      isDefault: imp.isDefault
-    }));
   });
 
   return mainWindow;

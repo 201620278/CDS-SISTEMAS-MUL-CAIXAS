@@ -1,0 +1,256 @@
+<!-- Página de Categorias -->
+<div class="container mt-4">
+  <h2>Categorias</h2>
+  <div class="mb-3 d-flex justify-content-between align-items-center gap-2">
+    <div>
+      <label for="filtro-tipo-categoria" class="form-label">Filtrar por tipo:</label>
+      <select id="filtro-tipo-categoria" class="form-select" style="width: auto; display: inline-block;">
+        <option value="">Todos</option>
+        <option value="produto">Produto</option>
+        <option value="despesa">Despesa</option>
+      </select>
+    </div>
+    <div class="d-flex gap-2">
+      <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#modal-categoria">Nova Categoria</button>
+      <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#modal-subcategoria">Nova Subcategoria</button>
+    </div>
+  </div>
+  <table class="table table-bordered table-hover">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Nome</th>
+        <th>Tipo</th>
+        <th>Descrição</th>
+        <th>Ações</th>
+      </tr>
+    </thead>
+    <tbody id="categorias-tbody">
+      <!-- Categorias serão carregadas aqui -->
+    </tbody>
+  </table>
+
+  <div id="subcategorias-section">
+    <hr>
+    <h4>Subcategorias</h4>
+    <table class="table table-bordered table-hover">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Nome</th>
+          <th>Categoria</th>
+          <th>Ações</th>
+        </tr>
+      </thead>
+      <tbody id="subcategorias-tbody">
+        <!-- Subcategorias serão carregadas aqui -->
+      </tbody>
+    </table>
+  </div>
+</div>
+
+
+
+<!-- Modal Nova Categoria -->
+<div class="modal fade" id="modal-categoria" tabindex="-1" aria-labelledby="modalCategoriaLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalCategoriaLabel">Nova Categoria</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="categoria-id">
+        <div class="mb-3">
+          <label for="categoria-nome" class="form-label">Nome</label>
+          <input type="text" id="categoria-nome" class="form-control">
+        </div>
+        <div class="mb-3">
+          <label for="categoria-descricao" class="form-label">Descrição</label>
+          <input type="text" id="categoria-descricao" class="form-control">
+        </div>
+        <div class="mb-3">
+          <label for="categoria-tipo" class="form-label">Tipo</label>
+          <select id="categoria-tipo" class="form-select">
+            <option value="produto">Produto</option>
+            <option value="despesa">Despesa</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success" id="btn-salvar-categoria">Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Nova Subcategoria -->
+<div class="modal fade" id="modal-subcategoria" tabindex="-1" aria-labelledby="modalSubcategoriaLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalSubcategoriaLabel">Nova Subcategoria</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="subcategoria-categoria-id" class="form-label">Categoria</label>
+          <select id="subcategoria-categoria-id" class="form-select"></select>
+        </div>
+        <div class="mb-3">
+          <label for="subcategoria-nome" class="form-label">Nome da subcategoria</label>
+          <input type="text" id="subcategoria-nome" class="form-control">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success" id="btn-salvar-subcategoria">Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="js/subcategorias.js"></script>
+<script>
+
+  // Atualizar select de categorias ao abrir o modal de subcategoria
+  $(document).ready(function() {
+    $('#modal-subcategoria').on('show.bs.modal', function () {
+      if (typeof atualizarSelectCategoriasSubcategoria === 'function') {
+        atualizarSelectCategoriasSubcategoria();
+      }
+    });
+
+    // Listener para filtro de tipo de categoria
+    $('#filtro-tipo-categoria').on('change', function() {
+      const tipoSelecionado = $(this).val();
+      
+      // Esconder subcategorias se estiver selecionado "despesa"
+      if (tipoSelecionado === 'despesa') {
+        $('#subcategorias-section').hide();
+        // Desabilitar botão de nova subcategoria também
+        $('button[data-bs-target="#modal-subcategoria"]').prop('disabled', true);
+      } else {
+        $('#subcategorias-section').show();
+        // Habilitar botão de nova subcategoria
+        $('button[data-bs-target="#modal-subcategoria"]').prop('disabled', false);
+      }
+      
+      loadCategorias();
+    });
+
+    // Inicializar visibilidade das subcategorias
+    const tipoInicial = $('#filtro-tipo-categoria').val();
+    if (tipoInicial === 'despesa') {
+      $('#subcategorias-section').hide();
+      $('button[data-bs-target="#modal-subcategoria"]').prop('disabled', true);
+    }
+  });
+
+  function atualizarSelectCategoriasSubcategoria() {
+    categoriasAPI.listar('produto').done(function(categorias) {
+      let options = '';
+      categorias.forEach(cat => {
+        options += `<option value="${cat.id}">${cat.nome}</option>`;
+      });
+      $('#subcategoria-categoria-id').html(options);
+    });
+  }
+
+  function loadCategoriasAndSubcategorias() {
+    loadCategorias();
+    loadSubcategorias();
+    atualizarSelectCategoriasSubcategoria();
+  }
+
+  function loadSubcategorias() {
+    // Buscar categorias para mapear id -> nome
+    categoriasAPI.listar('produto').done(function(categorias) {
+      const mapCat = {};
+      categorias.forEach(cat => { mapCat[cat.id] = cat.nome; });
+      subcategoriasAPI.listar().done(function(subcats) {
+        let html = '';
+        subcats.forEach(sub => {
+          html += `<tr>
+            <td>${sub.id}</td>
+            <td>${sub.nome}</td>
+            <td>${mapCat[sub.categoria_id] || '-'}</td>
+            <td>
+              <button class="btn btn-sm btn-primary" onclick="editarSubcategoria(${sub.id})">Editar</button>
+              <button class="btn btn-sm btn-danger" onclick="excluirSubcategoria(${sub.id})">Excluir</button>
+            </td>
+          </tr>`;
+        });
+        $('#subcategorias-tbody').html(html);
+      });
+    });
+  }
+
+  function criarOuSalvarSubcategoria() {
+    const id = $('#subcategoria-id').val();
+    const nome = $('#subcategoria-nome').val().trim();
+    const categoria_id = $('#subcategoria-categoria-id').val();
+    if (!nome || !categoria_id) {
+      alert('Nome e categoria são obrigatórios!');
+      return;
+    }
+    if (id) {
+      subcategoriasAPI.atualizar(id, { nome, categoria_id }).done(() => {
+        $('#modal-subcategoria').modal('hide');
+        $('#subcategoria-nome').val('');
+        $('#subcategoria-id').val('');
+        loadSubcategorias();
+      }).fail(err => {
+        alert('Erro ao atualizar subcategoria: ' + (err.responseJSON?.erro || err.statusText));
+      });
+    } else {
+      subcategoriasAPI.criar({ nome, categoria_id }).done(() => {
+        $('#modal-subcategoria').modal('hide');
+        $('#subcategoria-nome').val('');
+        $('#subcategoria-id').val('');
+        loadSubcategorias();
+      }).fail(err => {
+        alert('Erro ao criar subcategoria: ' + (err.responseJSON?.erro || err.statusText));
+      });
+    }
+  }
+
+  function editarSubcategoria(id) {
+    subcategoriasAPI.listar().done(function(subcats) {
+      const sub = subcats.find(s => s.id == id);
+      if (!sub) return;
+      $('#subcategoria-nome').val(sub.nome);
+      $('#subcategoria-categoria-id').val(sub.categoria_id);
+      $('#subcategoria-id').val(sub.id);
+      $('#modal-subcategoria').modal('show');
+    });
+  }
+
+  function excluirSubcategoria(id) {
+    if (!confirm('Deseja realmente excluir esta subcategoria?')) return;
+    subcategoriasAPI.excluir(id).done(() => {
+      loadSubcategorias();
+    }).fail(err => {
+      alert('Erro ao excluir subcategoria: ' + (err.responseJSON?.erro || err.statusText));
+    });
+  }
+
+  $(document).ready(function() {
+    // Adiciona campo hidden para id da subcategoria se não existir
+    if ($('#subcategoria-id').length === 0) {
+      $('<input type="hidden" id="subcategoria-id">').prependTo($('#modal-subcategoria .modal-body'));
+    }
+    // Botão salvar categoria: decide se cria ou atualiza
+    $('#btn-salvar-categoria').off('click').on('click', function() {
+      const id = $('#categoria-id').val();
+      if (id) {
+        salvarCategoria();
+      } else {
+        criarCategoria();
+      }
+    });
+    // Botão salvar subcategoria: decide se cria ou atualiza
+    $('#btn-salvar-subcategoria').off('click').on('click', criarOuSalvarSubcategoria);
+    loadCategoriasAndSubcategorias();
+  });
+</script>

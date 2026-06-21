@@ -1,0 +1,38 @@
+<div class="auditoria-page mt-3">
+  <h3>Logs de Auditoria</h3>
+
+  <div class="d-flex gap-2 align-items-center mb-3">
+    <input id="auditFiltroModulo" class="form-control form-control-sm" placeholder="Módulo">
+    <input id="auditFiltroAcao" class="form-control form-control-sm" placeholder="Ação">
+    <input id="auditFiltroUsuario" class="form-control form-control-sm" placeholder="Usuário">
+    <input id="auditDataInicio" type="date" class="form-control form-control-sm" style="width:150px">
+    <input id="auditDataFim" type="date" class="form-control form-control-sm" style="width:150px">
+    <button class="btn btn-sm btn-primary" id="auditBuscar">Buscar</button>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-striped">
+      <thead>
+        <tr>
+          <th>Data</th>
+          <th>Usuário</th>
+          <th>Módulo</th>
+          <th>Ação</th>
+          <th>Referência</th>
+          <th>Detalhes</th>
+        </tr>
+      </thead>
+      <tbody id="auditTabelaCorpo">
+      </tbody>
+    </table>
+  </div>
+
+  <div class="d-flex justify-content-between align-items-center">
+    <div id="auditResumo">&nbsp;</div>
+    <div>
+      <button id="auditPrev" class="btn btn-sm btn-outline-secondary">Anterior</button>
+      <button id="auditNext" class="btn btn-sm btn-outline-secondary">Próxima</button>
+    </div>
+  </div>
+</div>
+<script src="/js/auditoria.js"></script>

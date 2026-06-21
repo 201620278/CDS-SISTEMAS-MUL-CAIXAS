@@ -95,11 +95,12 @@ function montarListaValidadeProdutos(lista) {
     return lista.map(item => `
         <div class="d-flex justify-content-between border-bottom py-2">
             <div>
-                <strong>${item.nome}</strong><br>
-                <small>Estoque: ${item.estoque_atual ?? 0}</small>
+                <strong>${item.produto_nome || item.nome}</strong><br>
+                <small>Lote: ${item.lote || '-'} | Estoque: ${item.quantidade_atual ?? 0}</small>
             </div>
             <div class="text-end">
-                <strong>${item.data_validade || '-'}</strong>
+                <strong>${formatarDataBr(item.data_validade || '-')}</strong>
+                ${item.dias_para_vencer !== undefined ? `<br><small class="text-muted">${item.dias_para_vencer} dias</small>` : ''}
             </div>
         </div>
     `).join('');
@@ -332,9 +333,46 @@ async function carregarDashboard(inicio = null, fim = null) {
 
         preencherDashboard(data);
 
+        // Carregar dados de vencimentos usando o novo endpoint de lotes
+        carregarVencimentosDashboard(apiUrl);
+
     } catch (error) {
         console.error('Erro dashboard:', error);
         mostrarErroDashboard(error.message || 'Erro ao carregar dashboard.');
+    }
+}
+
+async function carregarVencimentosDashboard(apiUrl) {
+    try {
+        const response = await fetch(`${apiUrl}/produtos/vencimentos/alertas?dias=30`, {
+            headers: {
+                Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+            }
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Erro ao carregar vencimentos:', data.error);
+            return;
+        }
+
+        const proximoVencimento = document.getElementById('dashboardProdutosProximoVencimento');
+        const vencidos = document.getElementById('dashboardProdutosVencidos');
+
+        if (Array.isArray(data)) {
+            const proximos = data.filter(item => item.status_validade === 'proximo');
+            const vencidosList = data.filter(item => item.status_validade === 'vencido');
+
+            if (proximoVencimento) {
+                proximoVencimento.innerHTML = montarListaValidadeProdutos(proximos);
+            }
+            if (vencidos) {
+                vencidos.innerHTML = montarListaValidadeProdutos(vencidosList);
+            }
+        }
+    } catch (error) {
+        console.error('Erro ao carregar vencimentos:', error);
     }
 }
 

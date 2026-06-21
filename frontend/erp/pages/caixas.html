@@ -1,0 +1,141 @@
+<div class="page-container mt-3">
+  <h3 class="mb-4"><i class="fas fa-cash-register"></i> Gerenciamento de Caixas</h3>
+
+  <!-- Cards de resumo -->
+  <div class="row mb-4 g-3">
+    <div class="col-md-3">
+      <div class="card-dashboard">
+        <div class="card-icon">📊</div>
+        <div class="card-info">
+          <h3>Total</h3>
+          <p><strong id="totalCaixas">0</strong> caixas</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card-dashboard">
+        <div class="card-icon">✅</div>
+        <div class="card-info">
+          <h3>Ativos</h3>
+          <p><strong id="totalAtivos">0</strong> caixas</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card-dashboard">
+        <div class="card-icon">❌</div>
+        <div class="card-info">
+          <h3>Inativos</h3>
+          <p><strong id="totalInativos">0</strong> caixas</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card-dashboard">
+        <div class="card-icon">🖥️</div>
+        <div class="card-info">
+          <h3>Terminais</h3>
+          <p><strong id="totalTerminais">0</strong> vinculados</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filtros e Busca -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+          <label class="form-label">Pesquisar</label>
+          <input type="text" id="busca" class="form-control form-control-sm" placeholder="Nome, descrição...">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Status</label>
+          <select id="filtroStatus" class="form-select form-select-sm">
+            <option value="">Todos</option>
+            <option value="ativo">Ativos</option>
+            <option value="inativo">Inativos</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <button class="btn btn-primary btn-sm" onclick="buscarCaixas()">
+            <i class="fas fa-search"></i> Buscar
+          </button>
+        </div>
+        <div class="col-md-4 text-end">
+          <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#modalNovoCaixa" onclick="limparModalCaixa()">
+            <i class="fas fa-plus"></i> Novo Caixa
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabela de Caixas -->
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="table-dark">
+          <tr>
+            <th>ID</th>
+            <th>Nome</th>
+            <th>Descrição</th>
+            <th>Terminais</th>
+            <th>Status</th>
+            <th>Criado em</th>
+            <th>Ações</th>
+          </tr>
+        </thead>
+        <tbody id="tabelaCaixas">
+          <tr>
+            <td colspan="7" class="text-center text-muted py-4">Carregando...</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Novo/Editar Caixa -->
+<div class="modal fade" id="modalNovoCaixa" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="modalTitulo">Novo Caixa</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="caixaNome" class="form-label">Nome <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="caixaNome" placeholder="Ex: Caixa 01">
+          <small class="text-danger" id="erroCaixaNome"></small>
+        </div>
+        <div class="mb-3">
+          <label for="caixaDescricao" class="form-label">Descrição</label>
+          <input type="text" class="form-control" id="caixaDescricao" placeholder="Ex: Frente da Loja">
+          <small class="text-danger" id="erroCaixaDescricao"></small>
+        </div>
+        <div class="mb-3">
+          <label for="caixaTerminal" class="form-label">Terminal <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="caixaTerminal" placeholder="Ex: PDV-01">
+          <small class="text-danger" id="erroCaixaTerminal"></small>
+          <small class="text-muted d-block mt-1">Identificador do terminal a vincular</small>
+        </div>
+        <div class="mb-3">
+          <label for="caixaStatus" class="form-label">Status</label>
+          <select class="form-select" id="caixaStatus">
+            <option value="1">Ativo</option>
+            <option value="0">Inativo</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="btnSalvarCaixa" onclick="salvarCaixa()">Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Script -->
+<script src="js/caixas.js"></script>
