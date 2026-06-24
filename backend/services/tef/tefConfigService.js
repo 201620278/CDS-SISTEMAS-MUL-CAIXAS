@@ -1,4 +1,28 @@
 const repository = require('../../repositories/tefConfigRepository');
+const pinpadCatalog = require('./pinpads/pinpadCatalog');
+
+function resolverPinpadPayload(payload = {}) {
+  const codigo = normalizarTexto(payload.pinpadModelo || payload.pinpadCodigo) || null;
+  const meta = pinpadCatalog.resolver({
+    codigo,
+    fabricante: payload.fabricante,
+    modelo: payload.modelo
+  });
+
+  return {
+    habilitado: normalizarBoolean(payload.pinpadHabilitado),
+    codigo: meta?.codigo || codigo || null,
+    nome: meta?.nome || normalizarTexto(payload.pinpadNome) || null,
+    fabricante: meta?.fabricante || normalizarTexto(payload.fabricante) || null,
+    modelo: meta?.modelo || normalizarTexto(payload.modelo) || null,
+    tipo_conexao: inferirTipoConexaoPinpad(payload),
+    porta_com: normalizarTexto(payload.portaCom) || null,
+    ip: normalizarTexto(payload.pinpadIp) || null,
+    porta: normalizarNumero(payload.pinpadPorta),
+    serial: normalizarTexto(payload.serial) || null,
+    ativo: 1
+  };
+}
 
 function normalizarTexto(valor) {
   if (valor === null || valor === undefined) {
@@ -54,16 +78,7 @@ function mapearPayloadEntrada(payload = {}) {
       chave_comunicacao: normalizarTexto(payload.chaveComunicacao) || null,
       operador: normalizarTexto(payload.operador) || null
     },
-    pinpad: {
-      habilitado: normalizarBoolean(payload.pinpadHabilitado),
-      fabricante: normalizarTexto(payload.fabricante) || null,
-      modelo: normalizarTexto(payload.modelo) || null,
-      tipo_conexao: inferirTipoConexaoPinpad(payload),
-      porta_com: normalizarTexto(payload.portaCom) || null,
-      ip: normalizarTexto(payload.pinpadIp) || null,
-      porta: normalizarNumero(payload.pinpadPorta),
-      serial: normalizarTexto(payload.serial) || null
-    },
+    pinpad: resolverPinpadPayload(payload),
     operacoes: {
       debito: normalizarBoolean(payload.debito),
       credito_avista: normalizarBoolean(payload.creditoAvista),
@@ -100,6 +115,8 @@ function mapearPayloadLegado(payload = {}) {
     chaveComunicacao: payload.chaveComunicacao,
     operador: payload.operador,
     pinpadHabilitado: payload.pinpadHabilitado,
+    pinpadModelo: payload.pinpadModelo,
+    pinpadCodigo: payload.pinpadCodigo,
     fabricante: payload.fabricante,
     modelo: payload.modelo,
     portaCom: payload.portaCom,
@@ -151,6 +168,10 @@ function mapearConfiguracaoSaida(registro) {
     chaveComunicacao: servidor?.chave_comunicacao || '',
     operador: servidor?.operador || '',
     pinpadHabilitado: boolParaResposta(pinpad?.habilitado),
+    pinpadModelo: pinpad?.codigo || '',
+    pinpadCodigo: pinpad?.codigo || '',
+    pinpadNome: pinpad?.nome || '',
+    pinpadNomeExibicao: pinpadCatalog.resolverPorCodigo(pinpad?.codigo)?.nomeExibicao || pinpad?.nome || '',
     fabricante: pinpad?.fabricante || '',
     modelo: pinpad?.modelo || '',
     tipoConexao: pinpad?.tipo_conexao || '',
@@ -232,9 +253,15 @@ function validarServidorConfigurado(servidor) {
 }
 
 function validarPinpadConfigurado(pinpad) {
+  if (!repository.intToBool(pinpad?.habilitado)) {
+    return false;
+  }
+
   return Boolean(
-    repository.intToBool(pinpad?.habilitado) &&
-    (pinpad?.porta_com || pinpad?.ip || pinpad?.serial)
+    pinpad?.codigo ||
+    pinpad?.porta_com ||
+    pinpad?.ip ||
+    pinpad?.serial
   );
 }
 
@@ -270,6 +297,9 @@ async function obterStatus() {
     pinpad: {
       habilitado: repository.intToBool(pinpad?.habilitado),
       configurado: pinpadConfigurado,
+      codigo: pinpad?.codigo || '',
+      nome: pinpad?.nome || '',
+      nomeExibicao: pinpadCatalog.resolverPorCodigo(pinpad?.codigo)?.nomeExibicao || pinpad?.nome || '',
       status: pinpad?.status || 'desconhecido',
       fabricante: pinpad?.fabricante || '',
       modelo: pinpad?.modelo || '',

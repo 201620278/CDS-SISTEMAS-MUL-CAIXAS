@@ -7,11 +7,15 @@
   "scripts": {
     "start": ".\\node_modules\\.bin\\electron.cmd .",
     "build": "electron-builder",
-    "test:integration": "node tests/integration/flow_test.js"
+    "test:integration": "node tests/integration/flow_test.js",
+    "test:tef-fluxo": "node tests/tef/tef-fluxo-pagamento.test.js",
+    "test:tef-fluxo-api": "node scripts/test-tef-fluxo-api.js",
+    "test:tef": "node tests/tef/tef-fluxo-pagamento.test.js && node scripts/test-tef-fluxo-api.js"
   },
   "dependencies": {
     "acorn": "^8.17.0",
     "axios": "^1.15.0",
+    "archiver": "^5.3.2",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",

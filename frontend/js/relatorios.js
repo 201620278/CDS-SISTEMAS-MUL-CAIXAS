@@ -1,4 +1,11 @@
 // Relatórios de contas a receber e vendas a prazo
+function modoFiscalRelatorioParam() {
+    if (typeof modoFiscalQueryParam === 'function') {
+        return modoFiscalQueryParam();
+    }
+    return localStorage.getItem('pdv_modo_fiscal_ativo') === '1' ? '1' : '0';
+}
+
 function loadRelatorioContasReceber(tipo = 'em-aberto') {
     let url = `${API_URL}/contas-receber/${tipo}`;
     $.ajax({
@@ -314,7 +321,7 @@ async function carregarFechamentoCaixa() {
     const token = getToken();
 
     try {
-        const resCaixa = await fetch(`${API_URL}/vendas/relatorio/fechamento-caixa?data_inicio=${dataInicio}&data_fim=${dataFim}`, {
+        const resCaixa = await fetch(`${API_URL}/vendas/relatorio/fechamento-caixa?data_inicio=${dataInicio}&data_fim=${dataFim}&modo_fiscal=${modoFiscalRelatorioParam()}`, {
             headers: {
                 'Authorization': `Bearer ${token}` 
             }
@@ -370,44 +377,90 @@ async function carregarProdutosMaisVendidos() {
 
 async function carregarProdutosMaisVendidosInterno(dataInicio, dataFim, limite = 30) {
     const token = getToken();
+    const modoFiscal = modoFiscalRelatorioParam();
 
     try {
-        const resProdutos = await fetch(`${API_URL}/vendas/relatorio/produtos-mais-vendidos?data_inicio=${dataInicio}&data_fim=${dataFim}&limite=${limite}`, {
+        const resProdutos = await fetch(`${API_URL}/vendas/relatorio/produtos-mais-vendidos?data_inicio=${dataInicio}&data_fim=${dataFim}&limite=${limite}&modo_fiscal=${modoFiscal}`, {
             headers: {
                 'Authorization': `Bearer ${token}` 
             }
         });
 
-        const produtos = await resProdutos.json();
+        const body = await resProdutos.json();
+        const produtos = Array.isArray(body) ? body : (body.produtos || []);
+        const modoFiscalAtivo = Array.isArray(body) ? modoFiscal === '1' : Boolean(body.modo_fiscal_ativo);
 
         if (!resProdutos.ok) {
-            alert(produtos.error || 'Erro ao carregar produtos mais vendidos');
+            alert(body.error || 'Erro ao carregar produtos mais vendidos');
             return;
+        }
+
+        const thead = document.querySelector('#tabela_produtos')?.closest('table')?.querySelector('thead tr');
+        if (thead) {
+            thead.innerHTML = modoFiscalAtivo
+                ? `
+                    <th>Código</th>
+                    <th>Produto</th>
+                    <th>Unidade</th>
+                    <th>Qtd fiscal</th>
+                    <th>Valor fiscal</th>
+                    <th>Preço médio</th>
+                `
+                : `
+                    <th>Código</th>
+                    <th>Produto</th>
+                    <th>Unidade</th>
+                    <th>Qtd fiscal</th>
+                    <th>Qtd não fiscal</th>
+                    <th>Qtd total</th>
+                    <th>Valor fiscal</th>
+                    <th>Valor não fiscal</th>
+                    <th>Total</th>
+                    <th>Preço médio</th>
+                `;
         }
 
         const tabelaProdutos = document.getElementById('tabela_produtos');
         tabelaProdutos.innerHTML = '';
 
         if (!produtos || produtos.length === 0) {
+            const colspan = modoFiscalAtivo ? 6 : 10;
             tabelaProdutos.innerHTML = `
                 <tr>
-                    <td colspan="6">Nenhum produto vendido no período.</td>
+                    <td colspan="${colspan}">Nenhum produto vendido no período.</td>
                 </tr>
             `;
             return;
         }
 
         produtos.forEach(produto => {
-            tabelaProdutos.innerHTML += `
-                <tr>
-                    <td>${produto.produto_codigo || '-'}</td>
-                    <td>${produto.produto_nome || '-'}</td>
-                    <td>${produto.unidade || '-'}</td>
-                    <td>${numero(produto.quantidade_vendida)}</td>
-                    <td>${moeda(produto.total_vendido)}</td>
-                    <td>${moeda(produto.preco_medio)}</td>
-                </tr>
-            `;
+            if (modoFiscalAtivo) {
+                tabelaProdutos.innerHTML += `
+                    <tr>
+                        <td>${produto.codigo || '-'}</td>
+                        <td>${produto.nome || '-'}</td>
+                        <td>${produto.unidade || '-'}</td>
+                        <td>${numero(produto.quantidade_fiscal ?? produto.quantidade_vendida)}</td>
+                        <td>${moeda(produto.total_vendido_fiscal ?? produto.total_vendido)}</td>
+                        <td>${moeda(produto.preco_medio)}</td>
+                    </tr>
+                `;
+            } else {
+                tabelaProdutos.innerHTML += `
+                    <tr>
+                        <td>${produto.codigo || '-'}</td>
+                        <td>${produto.nome || '-'}</td>
+                        <td>${produto.unidade || '-'}</td>
+                        <td>${numero(produto.quantidade_fiscal)}</td>
+                        <td>${numero(produto.quantidade_nao_fiscal)}</td>
+                        <td>${numero(produto.quantidade_vendida)}</td>
+                        <td>${moeda(produto.total_vendido_fiscal)}</td>
+                        <td>${moeda(produto.total_vendido_nao_fiscal)}</td>
+                        <td>${moeda(produto.total_vendido)}</td>
+                        <td>${moeda(produto.preco_medio)}</td>
+                    </tr>
+                `;
+            }
         });
     } catch (error) {
         console.error('Erro:', error);
@@ -722,7 +775,7 @@ async function carregarFechamentoCaixa() {
     const token = getToken();
 
     try {
-        const resCaixa = await fetch(`${API_URL}/vendas/relatorio/fechamento-caixa?data_inicio=${dataInicio}&data_fim=${dataFim}`, {
+        const resCaixa = await fetch(`${API_URL}/vendas/relatorio/fechamento-caixa?data_inicio=${dataInicio}&data_fim=${dataFim}&modo_fiscal=${modoFiscalRelatorioParam()}`, {
             headers: {
                 'Authorization': `Bearer ${token}` 
             }
@@ -778,44 +831,90 @@ async function carregarProdutosMaisVendidos() {
 
 async function carregarProdutosMaisVendidosInterno(dataInicio, dataFim, limite = 30) {
     const token = getToken();
+    const modoFiscal = modoFiscalRelatorioParam();
 
     try {
-        const resProdutos = await fetch(`${API_URL}/vendas/relatorio/produtos-mais-vendidos?data_inicio=${dataInicio}&data_fim=${dataFim}&limite=${limite}`, {
+        const resProdutos = await fetch(`${API_URL}/vendas/relatorio/produtos-mais-vendidos?data_inicio=${dataInicio}&data_fim=${dataFim}&limite=${limite}&modo_fiscal=${modoFiscal}`, {
             headers: {
                 'Authorization': `Bearer ${token}` 
             }
         });
 
-        const produtos = await resProdutos.json();
+        const body = await resProdutos.json();
+        const produtos = Array.isArray(body) ? body : (body.produtos || []);
+        const modoFiscalAtivo = Array.isArray(body) ? modoFiscal === '1' : Boolean(body.modo_fiscal_ativo);
 
         if (!resProdutos.ok) {
-            alert(produtos.error || 'Erro ao carregar produtos mais vendidos');
+            alert(body.error || 'Erro ao carregar produtos mais vendidos');
             return;
+        }
+
+        const thead = document.querySelector('#tabela_produtos')?.closest('table')?.querySelector('thead tr');
+        if (thead) {
+            thead.innerHTML = modoFiscalAtivo
+                ? `
+                    <th>Código</th>
+                    <th>Produto</th>
+                    <th>Unidade</th>
+                    <th>Qtd fiscal</th>
+                    <th>Valor fiscal</th>
+                    <th>Preço médio</th>
+                `
+                : `
+                    <th>Código</th>
+                    <th>Produto</th>
+                    <th>Unidade</th>
+                    <th>Qtd fiscal</th>
+                    <th>Qtd não fiscal</th>
+                    <th>Qtd total</th>
+                    <th>Valor fiscal</th>
+                    <th>Valor não fiscal</th>
+                    <th>Total</th>
+                    <th>Preço médio</th>
+                `;
         }
 
         const tabelaProdutos = document.getElementById('tabela_produtos');
         tabelaProdutos.innerHTML = '';
 
         if (!produtos || produtos.length === 0) {
+            const colspan = modoFiscalAtivo ? 6 : 10;
             tabelaProdutos.innerHTML = `
                 <tr>
-                    <td colspan="6">Nenhum produto vendido no período.</td>
+                    <td colspan="${colspan}">Nenhum produto vendido no período.</td>
                 </tr>
             `;
             return;
         }
 
         produtos.forEach(produto => {
-            tabelaProdutos.innerHTML += `
-                <tr>
-                    <td>${produto.produto_codigo || '-'}</td>
-                    <td>${produto.produto_nome || '-'}</td>
-                    <td>${produto.unidade || '-'}</td>
-                    <td>${numero(produto.quantidade_vendida)}</td>
-                    <td>${moeda(produto.total_vendido)}</td>
-                    <td>${moeda(produto.preco_medio)}</td>
-                </tr>
-            `;
+            if (modoFiscalAtivo) {
+                tabelaProdutos.innerHTML += `
+                    <tr>
+                        <td>${produto.codigo || '-'}</td>
+                        <td>${produto.nome || '-'}</td>
+                        <td>${produto.unidade || '-'}</td>
+                        <td>${numero(produto.quantidade_fiscal ?? produto.quantidade_vendida)}</td>
+                        <td>${moeda(produto.total_vendido_fiscal ?? produto.total_vendido)}</td>
+                        <td>${moeda(produto.preco_medio)}</td>
+                    </tr>
+                `;
+            } else {
+                tabelaProdutos.innerHTML += `
+                    <tr>
+                        <td>${produto.codigo || '-'}</td>
+                        <td>${produto.nome || '-'}</td>
+                        <td>${produto.unidade || '-'}</td>
+                        <td>${numero(produto.quantidade_fiscal)}</td>
+                        <td>${numero(produto.quantidade_nao_fiscal)}</td>
+                        <td>${numero(produto.quantidade_vendida)}</td>
+                        <td>${moeda(produto.total_vendido_fiscal)}</td>
+                        <td>${moeda(produto.total_vendido_nao_fiscal)}</td>
+                        <td>${moeda(produto.total_vendido)}</td>
+                        <td>${moeda(produto.preco_medio)}</td>
+                    </tr>
+                `;
+            }
         });
     } catch (error) {
         console.error('Erro:', error);

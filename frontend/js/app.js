@@ -286,18 +286,21 @@ function alternarModoFiscalGlobal() {
 
     const novoValor = modoFiscalAtivoSistema() ? '0' : '1';
     localStorage.setItem('pdv_modo_fiscal_ativo', novoValor);
+    localStorage.setItem('modo_dashboard_fiscal', novoValor);
     aplicarModoFiscalGlobal();
 
     if (typeof showNotification === 'function') {
         showNotification(
             novoValor === '1'
-                ? 'Modo fiscal ativado. As vendas não fiscais ficarão ocultas nas consultas.'
-                : 'Modo completo ativado. Vendas fiscais e não fiscais liberadas.',
+                ? 'Modo fiscal ativado (F12). Exibindo somente informações fiscais.'
+                : 'Modo completo ativado (F12). Exibindo fiscal, não fiscal e total.',
             novoValor === '1' ? 'success' : 'info'
         );
     }
 
-    if (typeof currentPage !== 'undefined' && currentPage === 'vendas' && typeof loadVendas === 'function') {
+    if (typeof recarregarModulosModoFiscal === 'function') {
+        recarregarModulosModoFiscal();
+    } else if (typeof currentPage !== 'undefined' && currentPage === 'vendas' && typeof loadVendas === 'function') {
         loadVendas();
     }
 }

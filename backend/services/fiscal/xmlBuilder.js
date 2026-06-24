@@ -13,6 +13,61 @@ const {
 const { gerarQRCodeNFCe } = require('./qrcode');
 const { extrairNomeEmpresaDoCertificado } = require('./certificateService');
 
+function normalizarCsosn(valor, padrao = '102') {
+  const digits = String(valor ?? '').replace(/\D/g, '');
+  if (!digits) {
+    return String(padrao || '102').replace(/\D/g, '').padStart(3, '0').slice(-3);
+  }
+  return digits.padStart(3, '0').slice(-3);
+}
+
+function montarBlocoIcmsSimplesNacional(origem, csosnRaw, csosnPadrao = '102') {
+  const orig = origem != null && origem !== '' ? Number(origem) : 0;
+  const csosn = normalizarCsosn(csosnRaw, csosnPadrao);
+
+  if (['102', '103', '300', '400'].includes(csosn)) {
+    return `
+            <ICMSSN102>
+              <orig>${orig}</orig>
+              <CSOSN>${csosn}</CSOSN>
+            </ICMSSN102>`;
+  }
+
+  if (csosn === '101') {
+    return `
+            <ICMSSN101>
+              <orig>${orig}</orig>
+              <CSOSN>101</CSOSN>
+              <pCredSN>0.00</pCredSN>
+              <vCredICMSSN>0.00</vCredICMSSN>
+            </ICMSSN101>`;
+  }
+
+  if (csosn === '500') {
+    return `
+            <ICMSSN500>
+              <orig>${orig}</orig>
+              <CSOSN>500</CSOSN>
+            </ICMSSN500>`;
+  }
+
+  if (csosn === '900') {
+    return `
+            <ICMSSN900>
+              <orig>${orig}</orig>
+              <CSOSN>900</CSOSN>
+              <modBC>3</modBC>
+              <vBC>0.00</vBC>
+              <pICMS>0.00</pICMS>
+              <vICMS>0.00</vICMS>
+            </ICMSSN900>`;
+  }
+
+  throw new Error(
+    `CSOSN ${csosn} inválido para NFC-e. Use 102, 103, 300, 400, 500 ou 900 no cadastro do produto.`
+  );
+}
+
 function splitEnderecoLivre(endereco) {
   const texto = String(endereco || '').trim();
 
@@ -29,11 +84,15 @@ function splitEnderecoLivre(endereco) {
 }
 
 function mapearFormaPagamento(forma) {
+  const normalizada = String(forma || '').toLowerCase().trim();
+
   const mapa = {
     dinheiro: '01',
     cheque: '02',
+    cartao: '03',
     cartao_credito: '03',
     cartao_debito: '04',
+    credito: '05',
     credito_loja: '05',
     vale_alimentacao: '10',
     vale_refeicao: '11',
@@ -42,14 +101,84 @@ function mapearFormaPagamento(forma) {
     boleto: '15',
     deposito: '16',
     pix: '17',
+    pix_tef: '17',
     transferencia: '18',
     programa_fidelidade: '19',
     sem_pagamento: '90',
+    misto: '99',
     outro: '99',
     prazo: '99'
   };
 
-  return mapa[forma] || '99';
+  return mapa[normalizada] || '99';
+}
+
+function obterDescricaoPagamento(forma, tPag) {
+  if (tPag !== '99') {
+    return null;
+  }
+
+  const normalizada = String(forma || '').toLowerCase().trim();
+  const descricoes = {
+    outro: 'Outros',
+    prazo: 'Venda a prazo',
+    misto: 'Pagamento misto',
+    cartao_pf: 'Cartao PF'
+  };
+
+  return descricoes[normalizada] || 'Outros';
+}
+
+function resolverTefPagamento(pagamento, dadosVenda = {}) {
+  if (pagamento.tef) {
+    return pagamento.tef;
+  }
+
+  if (pagamento.nsu || pagamento.autorizacao) {
+    return {
+      nsu: pagamento.nsu,
+      autorizacao: pagamento.autorizacao,
+      bandeira: pagamento.bandeira,
+      cnpj_credenciadora: pagamento.cnpj_credenciadora
+    };
+  }
+
+  return dadosVenda.tef || null;
+}
+
+function resolverPagamentosNfce(venda, totalFiscal) {
+  const pagamentosBrutos = Array.isArray(venda?.pagamentos) ? venda.pagamentos : [];
+  let pagamentosFiscais = pagamentosBrutos.filter((p) => (
+    !p.tipo_recebimento || p.tipo_recebimento === 'fiscal'
+  ));
+
+  if (pagamentosFiscais.length === 0 && venda?.forma_pagamento) {
+    pagamentosFiscais = [{
+      forma_pagamento: venda.forma_pagamento,
+      valor: totalFiscal
+    }];
+  }
+
+  if (pagamentosFiscais.length === 0) {
+    pagamentosFiscais = [{
+      forma_pagamento: 'dinheiro',
+      valor: totalFiscal
+    }];
+  }
+
+  const somaPagamentos = pagamentosFiscais.reduce(
+    (total, pagamento) => total + Number(pagamento.valor || 0),
+    0
+  );
+
+  if (Math.abs(somaPagamentos - totalFiscal) > 0.01 && pagamentosFiscais.length === 1) {
+    pagamentosFiscais = [{
+      ...pagamentosFiscais[0],
+      valor: totalFiscal
+    }];
+  }
+
+  return pagamentosFiscais;
 }
 
 function montarPagamentos(pagamentos, dadosVenda = {}) {
@@ -58,14 +187,20 @@ function montarPagamentos(pagamentos, dadosVenda = {}) {
   pagamentos.forEach(p => {
     const formaPagamento = p.forma_pagamento || p.tipo || '';
     const tPag = mapearFormaPagamento(formaPagamento);
+    const xPag = p.xPag || p.descricao_pagamento || obterDescricaoPagamento(formaPagamento, tPag);
 
     xml += `
       <detPag>
         <tPag>${tPag}</tPag>
-        <vPag>${Number(p.valor).toFixed(2)}</vPag>
     `;
 
-    const tef = p.tef || dadosVenda.tef || null;
+    if (xPag) {
+      xml += `<xPag>${xmlEscape(String(xPag).substring(0, 60))}</xPag>`;
+    }
+
+    xml += `<vPag>${Number(p.valor).toFixed(2)}</vPag>`;
+
+    const tef = resolverTefPagamento(p, dadosVenda);
 
     if (tef && ['03', '04', '17'].includes(tPag)) {
       xml += `
@@ -278,6 +413,23 @@ function obterEANFiscal(produto) {
   return codigo;
 }
 
+function obterQuantidadeFiscalItem(item = {}) {
+  return Number(item.quantidade_fiscal ?? 0);
+}
+
+function obterValorFiscalItem(item = {}) {
+  return Number(item.valor_fiscal ?? 0);
+}
+
+function obterPrecoUnitarioFiscalItem(item = {}) {
+  const quantidade = obterQuantidadeFiscalItem(item);
+  const valor = obterValorFiscalItem(item);
+  if (quantidade > 0 && valor > 0) {
+    return valor / quantidade;
+  }
+  return Number(item.preco_unitario || 0);
+}
+
 function ratearDescontoNosItens(itens, descontoTotal) {
   const desconto = Number(descontoTotal || 0);
 
@@ -288,14 +440,10 @@ function ratearDescontoNosItens(itens, descontoTotal) {
     }));
   }
 
-  const totalProdutos = itens.reduce((soma, item) => {
-    const qtd = Number(item.quantidade || item.qCom || 1);
-    const valorUnit = Number(item.preco_unitario || item.valor_unitario || item.vUnCom || item.preco || 0);
-    const subtotal = item.subtotal != null
-      ? Number(item.subtotal)
-      : qtd * valorUnit;
-    return soma + subtotal;
-  }, 0);
+  const totalProdutos = itens.reduce(
+    (soma, item) => soma + obterValorFiscalItem(item),
+    0
+  );
 
   if (totalProdutos <= 0) {
     return itens.map(item => ({
@@ -307,11 +455,7 @@ function ratearDescontoNosItens(itens, descontoTotal) {
   let somaDescontos = 0;
 
   const itensComDesconto = itens.map((item, index) => {
-    const qtd = Number(item.quantidade || item.qCom || 1);
-    const valorUnit = Number(item.preco_unitario || item.valor_unitario || item.vUnCom || item.preco || 0);
-    const totalItem = item.subtotal != null
-      ? round2(Number(item.subtotal))
-      : round2(qtd * valorUnit);
+    const totalItem = obterValorFiscalItem(item);
 
     let descontoItem;
 
@@ -338,6 +482,11 @@ function buildNfceXml({ config, venda, itens, numero }) {
   const dhEmi = nowDhEmi();
   const aamm = dhEmi.slice(2, 4) + dhEmi.slice(5, 7);
   const cNF = gerarCodigoNumerico();
+
+  const totalFiscal = itens.reduce(
+    (total, item) => total + obterValorFiscalItem(item),
+    0
+  );
 
   const chave = gerarChaveAcesso({
     uf: config.codigoUf,
@@ -437,14 +586,14 @@ function buildNfceXml({ config, venda, itens, numero }) {
   const descontoVenda = round2(venda.desconto || venda.desconto_total || 0);
   const itensVenda = ratearDescontoNosItens(itens || [], descontoVenda);
   let vDesc = 0;
-  let vNF = 0;
+  let vNF = totalFiscal;
 
   const descricaoHomologacao = 'NOTA FISCAL EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
 
   const dets = itensVenda.map((item, idx) => {
-    const quantidade = Number(item.quantidade || 0);
-    const valorUnitario = Number(item.preco_unitario || 0);
-    const subtotal = round2(item.subtotal != null ? item.subtotal : quantidade * valorUnitario);
+    const quantidade = obterQuantidadeFiscalItem(item);
+    const subtotal = round2(obterValorFiscalItem(item));
+    const valorUnitario = obterPrecoUnitarioFiscalItem(item);
     const descontoItem = round2(item.desconto_rateado || 0);
     vProd += subtotal;
     vDesc += descontoItem;
@@ -455,7 +604,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
     }
     const ncm = ncmRaw;
     const cfop = item.cfop || '5102';
-    const csosn = item.csosn || '102';
+    const csosnPadrao = config.csosn_padrao || '102';
     const origem = item.origem != null ? Number(item.origem) : 0;
     const cestLimpo = onlyDigits(item.cest || item.produto_cest || item.CEST || '');
     const tagCEST = cestLimpo.length === 7
@@ -488,10 +637,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
         </prod>
         <imposto>
           <ICMS>
-            <ICMSSN102>
-              <orig>${origem}</orig>
-              <CSOSN>${xmlEscape(String(csosn))}</CSOSN>
-            </ICMSSN102>
+            ${montarBlocoIcmsSimplesNacional(origem, item.csosn, csosnPadrao)}
           </ICMS>
           <PIS>
             <PISNT>
@@ -511,9 +657,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
   vDesc = round2(vDesc);
   vNF = round2(vProd - vDesc);
 
-  const pagamentosVenda = venda.pagamentos && venda.pagamentos.length > 0
-    ? venda.pagamentos
-    : [{ forma_pagamento: venda.forma_pagamento || 'outro', valor: vNF }];
+  const pagamentosVenda = resolverPagamentosNfce(venda, totalFiscal);
 
   const pag = montarPagamentos(pagamentosVenda, venda);
 
@@ -562,7 +706,11 @@ function buildNfceXml({ config, venda, itens, numero }) {
       <IE>${emit.IE}</IE>
       <CRT>${emit.CRT}</CRT>
     </emit>
-    ${montarDestinatarioNFCe(venda.cpf_cnpj_nota)}
+    ${montarDestinatarioNFCe(
+      venda.cpf_cnpj_nota ||
+      venda.cliente_cpf ||
+      venda.cliente_cnpj
+    )}
     ${dets}
     <total>
       <ICMSTot>
@@ -574,7 +722,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
         <vST>0.00</vST>
         <vFCPST>0.00</vFCPST>
         <vFCPSTRet>0.00</vFCPSTRet>
-        <vProd>${formatNumber(vProd, 2)}</vProd>
+        <vProd>${formatNumber(totalFiscal, 2)}</vProd>
         <vFrete>0.00</vFrete>
         <vSeg>0.00</vSeg>
         <vDesc>${formatNumber(vDesc, 2)}</vDesc>
@@ -584,7 +732,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
         <vPIS>0.00</vPIS>
         <vCOFINS>0.00</vCOFINS>
         <vOutro>0.00</vOutro>
-        <vNF>${formatNumber(vNF, 2)}</vNF>
+        <vNF>${formatNumber(totalFiscal, 2)}</vNF>
       </ICMSTot>
     </total>
     <transp>
@@ -611,5 +759,7 @@ module.exports = {
   gerarQrCodeUrl,
   montarInfNFeSupl,
   anexarInfNFeSupl,
-  mapearFormaPagamento
+  mapearFormaPagamento,
+  montarPagamentos,
+  resolverPagamentosNfce
 };

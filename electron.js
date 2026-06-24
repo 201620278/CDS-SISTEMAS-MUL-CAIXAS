@@ -57,6 +57,40 @@ ipcMain.handle('selecionar-pasta-backup', async () => {
   return result.filePaths[0];
 });
 
+ipcMain.removeHandler('rede-obter-modo-estacao');
+ipcMain.handle('rede-obter-modo-estacao', async () => {
+  const configService = require('./backend/services/configuracaoService');
+  return configService.obterModoEstacaoLocal();
+});
+
+ipcMain.removeHandler('rede-voltar-modo-local');
+ipcMain.handle('rede-voltar-modo-local', async () => {
+  const confirmacao = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Cancelar', 'Voltar ao servidor local'],
+    defaultId: 1,
+    cancelId: 0,
+    title: 'Sair do modo cliente',
+    message: 'Voltar para o servidor local?',
+    detail: 'O sistema será reiniciado neste computador com o backend local. A conexão com o servidor remoto será desativada nesta estação.'
+  });
+
+  if (confirmacao.response !== 1) {
+    return { sucesso: false, cancelado: true };
+  }
+
+  try {
+    const configService = require('./backend/services/configuracaoService');
+    configService.voltarModoLocalEstacao();
+    app.relaunch();
+    app.exit(0);
+    return { sucesso: true };
+  } catch (error) {
+    console.error('Erro ao voltar ao modo local:', error);
+    return { sucesso: false, erro: error.message };
+  }
+});
+
 function obterPortaServidor() {
   const porta = Number.parseInt(process.env.PORT, 10);
   return Number.isFinite(porta) && porta > 0 ? porta : 3001;
@@ -220,6 +254,8 @@ function carregarConfiguracaoServidor() {
     configService.ensureConfigFile();
     const modoRede = configService.getModoRedeElectron();
     console.log('CONFIG PATH:', configService.CONFIG_PATH);
+    console.log('ELECTRON CONFIG PATH:', configService.ELECTRON_CONFIG_PATH);
+    console.log('DB_DIR:', process.env.DB_DIR);
     return modoRede;
   } catch (err) {
     console.warn('Não foi possível ler configuracoes.json, usando configuração padrão.', err.message);
@@ -231,7 +267,13 @@ function carregarConfiguracaoServidor() {
   }
 }
 
-function criarMainWindow() {
+function criarMainWindow(opcoes = {}) {
+  const argumentosExtras = [];
+  if (opcoes.modoClienteRemoto) {
+    const { ipServidor, porta } = opcoes.modoClienteRemoto;
+    argumentosExtras.push(`--cds-modo-cliente=${ipServidor}:${porta}`);
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -243,7 +285,8 @@ function criarMainWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      additionalArguments: argumentosExtras
     }
   });
 
@@ -465,8 +508,8 @@ function criarMainWindow() {
   return mainWindow;
 }
 
-function abrirJanelaApp(url, tituloErro, mensagemErro) {
-  criarMainWindow();
+function abrirJanelaApp(url, tituloErro, mensagemErro, opcoes = {}) {
+  criarMainWindow(opcoes);
 
   return carregarJanelaComRobustez(mainWindow, url)
     .then(() => {
@@ -490,11 +533,17 @@ function createWindow(serverPort) {
   );
 }
 
-function createWindowRemote(remoteUrl) {
+function createWindowRemote(remoteUrl, configServidor = {}) {
   return abrirJanelaApp(
     `${remoteUrl}/login`,
     'Erro ao carregar servidor remoto',
-    (error) => `Não foi possível conectar ao servidor remoto.\n\n${error.message}`
+    (error) => `Não foi possível conectar ao servidor remoto.\n\n${error.message}`,
+    {
+      modoClienteRemoto: {
+        ipServidor: configServidor.ipServidor,
+        porta: configServidor.porta
+      }
+    }
   );
 }
 
@@ -527,7 +576,7 @@ app.whenReady().then(() => {
     if (configServidor.modo === 'cliente') {
       const urlRemota = `http://${configServidor.ipServidor}:${configServidor.porta}`;
       console.log(`Modo CLIENTE ativado. Conectando ao servidor remoto: ${urlRemota}`);
-      createWindowRemote(urlRemota);
+      createWindowRemote(urlRemota, configServidor);
       return;
     }
 

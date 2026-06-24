@@ -34,7 +34,7 @@ class TefFiscalValidator {
     },
     
     // Tipos de cartão permitidos
-    TIPOS_PERMITIDOS: ['debito', 'credito'],
+    TIPOS_PERMITIDOS: ['debito', 'credito', 'pix', 'pix_tef'],
     
     // Bandeiras permitidas
     BANDEIRAS_PERMITIDAS: ['visa', 'mastercard', 'elo', 'hipercard', 'amex', 'discover', 'jcb', 'diners', 'aura'],
@@ -65,6 +65,14 @@ class TefFiscalValidator {
       credito: {
         parcelas_maximas: 12,
         valor_minimo: 10.00
+      },
+      pix: {
+        parcelas_maximas: 1,
+        valor_minimo: 1.00
+      },
+      pix_tef: {
+        parcelas_maximas: 1,
+        valor_minimo: 1.00
       }
     },
     
@@ -101,9 +109,14 @@ class TefFiscalValidator {
     
     // Validar parcelamento
     this._validarParcelamento(dados, erros);
-    
-    // Validar bandeira
-    this._validarBandeira(dados.bandeira, erros);
+
+    const tipoNorm = String(dados.tipo || '').toLowerCase().trim();
+    const ehPix = tipoNorm === 'pix' || tipoNorm === 'pix_tef';
+
+    // Validar bandeira (PIX TEF não usa bandeira de cartão)
+    if (!ehPix) {
+      this._validarBandeira(dados.bandeira, erros);
+    }
     
     return {
       valido: erros.length === 0,

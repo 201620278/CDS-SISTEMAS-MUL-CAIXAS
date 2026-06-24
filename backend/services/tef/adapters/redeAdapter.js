@@ -1,62 +1,11 @@
+const SimulatedGatewayAdapter = require('./SimulatedGatewayAdapter');
+
 function RedeAdapter(config) {
-  this.config = config;
+  return new SimulatedGatewayAdapter(config, {
+    nome: 'Rede',
+    adquirente: 'REDE',
+    bandeiraPadrao: 'VISA'
+  });
 }
-
-RedeAdapter.prototype.autorizarPagamento = function(dados) {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      const aprovado = true;
-
-      if (!aprovado) {
-        return resolve({
-          aprovado: false,
-          status: 'negado',
-          mensagem: 'Pagamento negado pelo TEF'
-        });
-      }
-
-      const agora = Date.now();
-
-      resolve({
-        aprovado: true,
-        status: 'aprovado',
-        mensagem: 'Pagamento aprovado',
-        provedor: 'REDE',
-        adquirente: 'REDE',
-        bandeira: dados.tipo === 'pix' ? 'PIX' : 'VISA',
-        nsu: `NSU${agora}`,
-        autorizacao: `AUT${String(agora).slice(-6)}`,
-        codigo_transacao: `TEF${agora}`,
-        comprovante_cliente: `COMPROVANTE CLIENTE\nVALOR: R$ ${Number(dados.valor).toFixed(2)}\nSTATUS: APROVADO`,
-        comprovante_estabelecimento: `COMPROVANTE LOJA\nVALOR: R$ ${Number(dados.valor).toFixed(2)}\nSTATUS: APROVADO`,
-        payload_retorno: {
-          ambiente: 'simulacao',
-          tipo: dados.tipo,
-          valor: dados.valor
-        }
-      });
-    }, 1200);
-  });
-};
-
-RedeAdapter.prototype.cancelarPagamento = function(dados) {
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        cancelado: true,
-        status: 'cancelado',
-        mensagem: 'Transação TEF cancelada com sucesso',
-        nsu: dados.nsu,
-        autorizacao: dados.autorizacao,
-        codigo_cancelamento: `CANC${Date.now()}`,
-        payload_retorno: {
-          ambiente: 'simulacao',
-          transacao_id: dados.transacao_id,
-          motivo: dados.motivo || 'Cancelamento da venda'
-        }
-      });
-    }, 1000);
-  });
-};
 
 module.exports = RedeAdapter;

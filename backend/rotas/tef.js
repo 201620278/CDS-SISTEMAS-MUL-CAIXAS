@@ -6,9 +6,31 @@ const tefConciliacaoRoutes = require('./tefConciliacao');
 const db = require('../database');
 const sdkDetector = require('../services/tef/sdkDetector');
 const tefConciliacaoService = require('../services/tef/tefConciliacaoService');
+const tefDiagnosticoService = require('../services/tef/tefDiagnosticoService');
+const tefEvents = require('../services/tef/tefEvents');
+const tefContrato = require('../services/tef/tefContrato');
+const { verificarToken } = require('./auth');
+const tefConfigService = require('../services/tef/tefConfigService');
+const tefFluxoPagamento = require('../services/tef/tefFluxoPagamento');
+const configService = require('../services/configuracaoService');
 
 router.use(tefConfiguracaoRoutes);
 router.use(tefConciliacaoRoutes);
+
+/** Estado TEF para o PDV (operador autenticado, sem dados sensíveis). */
+router.get('/fluxo-pdv', verificarToken, async (req, res) => {
+  try {
+    const tefConfig = await tefConfigService.obterConfiguracao();
+    res.json({
+      tefHabilitado: tefFluxoPagamento.parseTefHabilitado(tefConfig.tefHabilitado),
+      pixHabilitado: tefFluxoPagamento.parseTefHabilitado(tefConfig.pix),
+      modoConfirmacaoFiscal: configService.getModoConfirmacaoFiscal()
+    });
+  } catch (error) {
+    console.error('Erro ao consultar fluxo TEF do PDV:', error);
+    res.status(500).json({ error: 'Erro ao consultar configuração TEF do PDV.' });
+  }
+});
 
 router.post('/pagar', async (req, res) => {
   try {
@@ -16,7 +38,8 @@ router.post('/pagar', async (req, res) => {
       venda_id,
       tipo,
       valor,
-      parcelas
+      parcelas,
+      idempotency_key
     } = req.body;
 
     if (!tipo) {
@@ -31,8 +54,17 @@ router.post('/pagar', async (req, res) => {
       venda_id: venda_id || null,
       tipo,
       valor: Number(valor),
-      parcelas: Number(parcelas || 1)
+      parcelas: Number(parcelas || 1),
+      idempotency_key: idempotency_key || null
     });
+
+    if (resultado.codigo === 'TRANSACAO_DUPLICADA' && !resultado.aprovado && resultado.sucesso !== true) {
+      return res.status(409).json(resultado);
+    }
+
+    if (resultado.sucesso === false && resultado.codigo && !tefContrato.estaAprovado(resultado)) {
+      return res.status(422).json(resultado);
+    }
 
     res.json(resultado);
   } catch (error) {
@@ -163,19 +195,29 @@ router.post('/cancelar', async (req, res) => {
 
 router.get('/transacoes/recentes', (req, res) => {
   const limit = Number(req.query.limit) || 20;
+  const apenasIntegradas = req.query.apenas_integradas === '1' || req.query.apenas_integradas === 'true';
 
-  db.all(`
-    SELECT *
-    FROM tef_transacoes
-    ORDER BY criado_em DESC
-    LIMIT ?
-  `, [limit], (err, rows) => {
+  const sql = apenasIntegradas
+    ? `SELECT * FROM tef_transacoes WHERE venda_id IS NOT NULL ORDER BY criado_em DESC LIMIT ?`
+    : `SELECT * FROM tef_transacoes ORDER BY criado_em DESC LIMIT ?`;
+
+  db.all(sql, [limit], (err, rows) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
 
     res.json(rows || []);
   });
+});
+
+router.get('/pinpads-catalogo', async (req, res) => {
+  try {
+    const pinpadCatalogService = require('../services/tef/pinpadCatalogService');
+    const pinpads = await pinpadCatalogService.listarCatalogoAtivo();
+    res.json({ sucesso: true, pinpads });
+  } catch (error) {
+    res.status(500).json({ sucesso: false, erro: error.message });
+  }
 });
 
 router.get('/diagnostico-sdk', async (req, res) => {
@@ -212,6 +254,46 @@ router.get('/diagnostico', async (req, res) => {
   }
 });
 
+router.get('/diagnostico-completo', async (req, res) => {
+  try {
+    const relatorio = await tefDiagnosticoService.executarDiagnosticoCompleto();
+    res.json(relatorio);
+  } catch (error) {
+    console.error('Erro diagnóstico TEF completo:', error);
+    res.status(500).json({
+      sucesso: false,
+      erro: error.message
+    });
+  }
+});
+
+router.get('/eventos', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const enviar = (evento, payload) => {
+    res.write(`event: ${evento}\ndata: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const onPinpad = (payload) => enviar('pinpad', payload);
+  const onEstado = (payload) => enviar('estado', payload);
+  const onErro = (payload) => enviar('erro', payload);
+
+  tefEvents.onPinpad(onPinpad);
+  tefEvents.onEstado(onEstado);
+  tefEvents.onErro(onErro);
+
+  enviar('conectado', { mensagem: 'Stream de eventos TEF ativo', timestamp: new Date().toISOString() });
+
+  req.on('close', () => {
+    tefEvents.off('pinpad', onPinpad);
+    tefEvents.off('estado', onEstado);
+    tefEvents.off('erro', onErro);
+  });
+});
+
 router.get('/transacoes-pendentes', async (req, res) => {
   try {
     db.all(`
@@ -244,7 +326,7 @@ router.get('/transacoes-pendentes', async (req, res) => {
 router.post('/reconciliar-pendentes', async (req, res) => {
   try {
     const tefManager = require('../services/tef/TefManager');
-    
+
     db.all(`
       SELECT id, venda_id, tipo, valor, status, provedor, criado_em
       FROM tef_transacoes
@@ -271,35 +353,23 @@ router.post('/reconciliar-pendentes', async (req, res) => {
 
       for (const transacao of rows) {
         try {
-          // Tentar consultar status da transação no adquirente
           const resultado = await tefManager.consultar(transacao.id);
-          
-          if (resultado && resultado.status) {
-            // Atualizar status da transação
-            db.run(`
-              UPDATE tef_transacoes
-              SET status = ?, atualizado_em = datetime('now')
-              WHERE id = ?
-            `, [resultado.status, transacao.id], (updateErr) => {
-              if (updateErr) {
-                console.error(`Erro ao atualizar transação ${transacao.id}:`, updateErr);
-                falhas++;
-              } else {
-                reconciliadas++;
-              }
+
+          if (resultado && resultado.status && resultado.status !== 'pendente') {
+            await new Promise((resolve, reject) => {
+              db.run(`
+                UPDATE tef_transacoes
+                SET status = ?, nsu = COALESCE(?, nsu), autorizacao = COALESCE(?, autorizacao),
+                    atualizado_em = datetime('now')
+                WHERE id = ?
+              `, [resultado.status, resultado.nsu || null, resultado.autorizacao || null, transacao.id], (updateErr) => {
+                if (updateErr) return reject(updateErr);
+                resolve();
+              });
             });
+            reconciliadas++;
           } else {
-            // Se não conseguir consultar, marcar como erro
-            db.run(`
-              UPDATE tef_transacoes
-              SET status = 'erro', atualizado_em = datetime('now')
-              WHERE id = ?
-            `, [transacao.id], (updateErr) => {
-              if (updateErr) {
-                console.error(`Erro ao atualizar transação ${transacao.id}:`, updateErr);
-              }
-              falhas++;
-            });
+            falhas++;
           }
         } catch (error) {
           console.error(`Erro ao reconciliar transação ${transacao.id}:`, error);
@@ -405,37 +475,21 @@ router.post('/transacao/:id/reimprimir', async (req, res) => {
       return res.status(400).json({ error: 'Tipo inválido. Use "cliente" ou "loja".' });
     }
 
-    db.get(`
-      SELECT *
-      FROM tef_transacoes
-      WHERE id = ?
-    `, [transacaoId], async (err, transacao) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
+    const resultado = await tefService.reimprimirPagamento(transacaoId, tipo);
 
-      if (!transacao) {
-        return res.status(404).json({ error: 'Transação não encontrada.' });
-      }
-
-      const comprovante = tipo === 'cliente' 
-        ? transacao.comprovante_cliente 
-        : transacao.comprovante_estabelecimento;
-
-      if (!comprovante) {
-        return res.status(400).json({ error: 'Comprovante não disponível para esta transação.' });
-      }
-
-      // Aqui você pode integrar com o sistema de impressão
-      // Por enquanto, retorna o comprovante para ser impresso pelo frontend
-      res.json({
-        sucesso: true,
-        tipo,
-        comprovante,
-        mensagem: `Comprovante de ${tipo} obtido com sucesso.`
+    if (!resultado.sucesso) {
+      return res.status(400).json({
+        sucesso: false,
+        error: resultado.mensagem || 'Comprovante não disponível.'
       });
-    });
+    }
 
+    res.json({
+      sucesso: true,
+      tipo,
+      comprovante: resultado.comprovante,
+      mensagem: resultado.mensagem
+    });
   } catch (error) {
     console.error('Erro ao reimprimir comprovante:', error);
     res.status(500).json({

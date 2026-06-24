@@ -47,6 +47,40 @@ ipcMain.handle('selecionar-pasta-backup', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.removeHandler('rede-obter-modo-estacao');
+ipcMain.handle('rede-obter-modo-estacao', async () => {
+  const configService = require('./backend/services/configuracaoService');
+  return configService.obterModoEstacaoLocal();
+});
+
+ipcMain.removeHandler('rede-voltar-modo-local');
+ipcMain.handle('rede-voltar-modo-local', async () => {
+  const confirmacao = await dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Cancelar', 'Voltar ao servidor local'],
+    defaultId: 1,
+    cancelId: 0,
+    title: 'Sair do modo cliente',
+    message: 'Voltar para o servidor local?',
+    detail: 'O sistema será reiniciado neste computador com o backend local. A conexão com o servidor remoto será desativada nesta estação.'
+  });
+
+  if (confirmacao.response !== 1) {
+    return { sucesso: false, cancelado: true };
+  }
+
+  try {
+    const configService = require('./backend/services/configuracaoService');
+    configService.voltarModoLocalEstacao();
+    app.relaunch();
+    app.exit(0);
+    return { sucesso: true };
+  } catch (error) {
+    console.error('Erro ao voltar ao modo local:', error);
+    return { sucesso: false, erro: error.message };
+  }
+});
+
 function obterPortaServidor() {
   const porta = Number.parseInt(process.env.PORT, 10);
   return Number.isFinite(porta) && porta > 0 ? porta : 3001;
@@ -242,7 +276,13 @@ function registrarHandlersIpc() {
   });
 }
 
-function criarMainWindow(tituloJanela) {
+function criarMainWindow(tituloJanela, opcoes = {}) {
+  const argumentosExtras = [];
+  if (opcoes.modoClienteRemoto) {
+    const { ipServidor, porta } = opcoes.modoClienteRemoto;
+    argumentosExtras.push(`--cds-modo-cliente=${ipServidor}:${porta}`);
+  }
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -255,7 +295,8 @@ function criarMainWindow(tituloJanela) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
+      preload: path.join(__dirname, 'preload.js'),
+      additionalArguments: argumentosExtras
     }
   });
 
@@ -289,8 +330,8 @@ function montarUrlLogin(baseUrl) {
   return `${baseUrl}/login?modulo=${modulo}`;
 }
 
-function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela) {
-  criarMainWindow(tituloJanela);
+function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes = {}) {
+  criarMainWindow(tituloJanela, opcoes);
   return carregarJanelaComRobustez(mainWindow, url)
     .then(() => {
       mainWindow.maximize();
@@ -311,12 +352,18 @@ function createWindow(serverPort, tituloJanela) {
   );
 }
 
-function createWindowRemote(remoteUrl, tituloJanela) {
+function createWindowRemote(remoteUrl, tituloJanela, configServidor = {}) {
   return abrirJanelaApp(
     montarUrlLogin(remoteUrl),
     'Erro ao carregar servidor remoto',
     (error) => `Não foi possível conectar ao servidor remoto.\n\n${error.message}`,
-    tituloJanela
+    tituloJanela,
+    {
+      modoClienteRemoto: {
+        ipServidor: configServidor.ipServidor,
+        porta: configServidor.porta
+      }
+    }
   );
 }
 
@@ -348,7 +395,7 @@ function iniciarAplicacaoElectron(options = {}) {
 
       if (configServidor.modo === 'cliente') {
         const urlRemota = `http://${configServidor.ipServidor}:${configServidor.porta}`;
-        createWindowRemote(urlRemota, tituloJanela);
+        createWindowRemote(urlRemota, tituloJanela, configServidor);
         return;
       }
 

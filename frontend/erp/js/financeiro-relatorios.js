@@ -1,4 +1,11 @@
 // Relatórios Financeiro
+function modoFiscalRelatorioFinanceiroParam() {
+    if (typeof modoFiscalQueryParam === 'function') {
+        return modoFiscalQueryParam();
+    }
+    return localStorage.getItem('pdv_modo_fiscal_ativo') === '1' ? '1' : '0';
+}
+
 function renderRelatoriosFinanceiros(periodo) {
   const conteudo = document.getElementById('financeiroConteudo');
 
@@ -50,12 +57,15 @@ async function gerarRelatorio() {
 
 function renderizarRelatorio(tipo, titulo, dados, periodo) {
   const container = document.getElementById('relatorioContainer');
+  const sufixoModo = dados.modo_fiscal_ativo
+    ? ' · Somente fiscal (F12)'
+    : (dados.recebimentos_venda || dados.entradas_venda || dados.totais ? ' · Fiscal + Não fiscal + Total' : '');
 
   let html = `
     <div class="card">
       <div class="card-header">
         <h4 class="mb-0">${titulo}</h4>
-        <small class="text-muted">Período: ${formatarData(periodo.dataInicio)} a ${formatarData(periodo.dataFim)}</small>
+        <small class="text-muted">Período: ${formatarData(periodo.dataInicio)} a ${formatarData(periodo.dataFim)}${sufixoModo}</small>
       </div>
       <div class="card-body">
   `;
@@ -87,13 +97,26 @@ function renderizarRelatorio(tipo, titulo, dados, periodo) {
 }
 
 function renderizarFluxoCaixa(dados) {
+  const modoFiscalAtivo = Boolean(dados.modo_fiscal_ativo);
+  const entradasVenda = dados.entradas_venda || {};
+  const entradasHtml = modoFiscalAtivo
+    ? `<p class="valor">${formatarMoeda(dados.entradas || 0)}</p>`
+    : `
+        <p class="valor">${formatarMoeda(dados.entradas || 0)}</p>
+        <small class="text-muted d-block">
+          Fiscal: ${formatarMoeda(entradasVenda.fiscal || 0)} |
+          Não fiscal: ${formatarMoeda(entradasVenda.nao_fiscal || 0)}
+        </small>
+      `;
+
   return `
     <div class="row">
       <div class="col-md-6">
-        <h5>Entradas</h5>
+        <h5>Entradas (recebimentos de venda)</h5>
         <div class="dashboard-card recebido mb-3">
-          <p class="valor">${formatarMoeda(dados.entradas || 0)}</p>
+          ${entradasHtml}
         </div>
+        ${!modoFiscalAtivo ? `<small class="text-muted">Lançamentos financeiros gerais: ${formatarMoeda(dados.entradas_financeiro || 0)}</small>` : ''}
       </div>
       <div class="col-md-6">
         <h5>Saídas</h5>
@@ -241,7 +264,27 @@ function renderizarLucroPrejuizo(dados) {
 }
 
 function renderizarResumoFinanceiro(dados) {
+  const modoFiscalAtivo = Boolean(dados.modo_fiscal_ativo);
+  const recebimentos = dados.recebimentos_venda || {};
+  const recebimentosHtml = modoFiscalAtivo
+    ? `<p class="valor mb-0">${formatarMoeda(recebimentos.fiscal?.total || 0)}</p>`
+    : `
+        <p class="valor mb-0">${formatarMoeda(recebimentos.total?.total || 0)}</p>
+        <small class="text-muted">
+          Fiscal: ${formatarMoeda(recebimentos.fiscal?.total || 0)} |
+          Não fiscal: ${formatarMoeda(recebimentos.nao_fiscal?.total || 0)}
+        </small>
+      `;
+
   return `
+    <div class="row mb-3">
+      <div class="col-12">
+        <div class="dashboard-card recebido">
+          <h5>Recebimentos de Venda</h5>
+          ${recebimentosHtml}
+        </div>
+      </div>
+    </div>
     <div class="row">
       <div class="col-md-4">
         <div class="dashboard-card recebido">
@@ -268,17 +311,44 @@ function renderizarResumoFinanceiro(dados) {
 }
 
 function renderizarRelatorioReceber(dados) {
-  const colunas = ['Cliente', 'Descrição', 'Documento', 'Vencimento', 'Valor', 'Status', 'Origem'];
-  const linhas = (dados.contas || []).map(conta => [
-    conta.cliente || '-',
-    conta.descricao || '-',
-    conta.documento || '-',
-    formatarData(conta.dataVencimento),
-    formatarMoeda(conta.valor || 0),
-    conta.status || '-',
-    conta.origem || '-'
-  ]);
-  return renderTabelaRelatorio(colunas, linhas);
+  const modoFiscalAtivo = Boolean(dados.modo_fiscal_ativo);
+  const colunas = modoFiscalAtivo
+    ? ['Cliente', 'Descrição', 'Documento', 'Vencimento', 'Valor Fiscal', 'Status', 'Origem']
+    : ['Cliente', 'Descrição', 'Documento', 'Vencimento', 'Fiscal', 'Não Fiscal', 'Total', 'Status', 'Origem'];
+  const linhas = (dados.contas || []).map(conta => {
+    if (modoFiscalAtivo) {
+      return [
+        conta.cliente || '-',
+        conta.descricao || '-',
+        conta.documento || '-',
+        formatarData(conta.dataVencimento),
+        formatarMoeda(conta.valor_fiscal ?? conta.valor ?? 0),
+        conta.status || '-',
+        conta.origem || '-'
+      ];
+    }
+    return [
+      conta.cliente || '-',
+      conta.descricao || '-',
+      conta.documento || '-',
+      formatarData(conta.dataVencimento),
+      formatarMoeda(conta.valor_fiscal || 0),
+      formatarMoeda(conta.valor_nao_fiscal || 0),
+      formatarMoeda(conta.valor_total ?? conta.valor ?? 0),
+      conta.status || '-',
+      conta.origem || '-'
+    ];
+  });
+  const totais = dados.totais || {};
+  const rodape = modoFiscalAtivo
+    ? `<div class="mt-3 text-end"><strong>Total fiscal: ${formatarMoeda(totais.fiscal || 0)}</strong></div>`
+    : `<div class="mt-3 text-end">
+        <strong>Total: ${formatarMoeda(totais.total || 0)}</strong>
+        <small class="text-muted d-block">
+          Fiscal: ${formatarMoeda(totais.fiscal || 0)} | Não fiscal: ${formatarMoeda(totais.nao_fiscal || 0)}
+        </small>
+      </div>`;
+  return renderTabelaRelatorio(colunas, linhas) + rodape;
 }
 
 function renderizarRelatorioPagar(dados) {
@@ -328,8 +398,9 @@ function carregarRelatorioSelecionado() {
 
 async function gerarRelatorioResumo(filtros) {
   try {
+    const modoFiscal = modoFiscalRelatorioFinanceiroParam();
     const response = await fetch(
-      `/api/financeiro/relatorios/resumo?dataInicio=${filtros.dataInicio}&dataFim=${filtros.dataFim}`,
+      `/api/financeiro/relatorios/resumo?dataInicio=${filtros.dataInicio}&dataFim=${filtros.dataFim}&modo_fiscal=${modoFiscal}`,
       {
         headers: {
           'Accept': 'application/json',
@@ -349,7 +420,11 @@ async function gerarRelatorioResumo(filtros) {
     }
 
     if (dados.success) {
-      renderizarRelatorio('resumo', 'Resumo Financeiro', dados.resumo, filtros);
+      renderizarRelatorio('resumo', 'Resumo Financeiro', {
+        ...dados.resumo,
+        modo_fiscal_ativo: dados.modo_fiscal_ativo,
+        recebimentos_venda: dados.recebimentos_venda
+      }, filtros);
     }
   } catch (error) {
     console.error('Erro ao gerar relatório resumo:', error);
@@ -358,8 +433,9 @@ async function gerarRelatorioResumo(filtros) {
 
 async function gerarRelatorioReceber(filtros) {
   try {
+    const modoFiscal = modoFiscalRelatorioFinanceiroParam();
     const response = await fetch(
-      `/api/financeiro/relatorios/receber?dataInicio=${filtros.dataInicio}&dataFim=${filtros.dataFim}&status=${filtros.status}&cliente=${encodeURIComponent(filtros.cliente || '')}`,
+      `/api/financeiro/relatorios/receber?dataInicio=${filtros.dataInicio}&dataFim=${filtros.dataFim}&status=${filtros.status}&cliente=${encodeURIComponent(filtros.cliente || '')}&modo_fiscal=${modoFiscal}`,
       {
         headers: {
           'Accept': 'application/json',
@@ -418,7 +494,8 @@ async function gerarRelatorioPagar(filtros) {
 
 async function gerarRelatorioFluxo(filtros) {
   try {
-    const response = await fetch(`/api/financeiro/relatorios/fluxo?dataInicio=${filtros.dataInicio}&dataFim=${filtros.dataFim}`, {
+    const modoFiscal = modoFiscalRelatorioFinanceiroParam();
+    const response = await fetch(`/api/financeiro/relatorios/fluxo?dataInicio=${filtros.dataInicio}&dataFim=${filtros.dataFim}&modo_fiscal=${modoFiscal}`, {
       headers: {
         'Accept': 'application/json',
         'Authorization': 'Bearer ' + localStorage.getItem('token')

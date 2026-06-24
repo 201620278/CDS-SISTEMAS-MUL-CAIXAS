@@ -27,14 +27,27 @@ function initFechamentoCaixa() {
     carregarCaixaPorDia();
 }
 
+function fcModoFiscalParam() {
+    if (typeof modoFiscalQueryParam === 'function') {
+        return modoFiscalQueryParam();
+    }
+    return localStorage.getItem('pdv_modo_fiscal_ativo') === '1' ? '1' : '0';
+}
+
+function fcModoFiscalAtivo() {
+    return fcModoFiscalParam() === '1';
+}
+
 async function carregarFechamentoCaixa() {
     const dataInicio = $('#fc_data_inicio').val() || fcHoje();
     const dataFim = $('#fc_data_fim').val() || dataInicio;
+    const modoFiscal = fcModoFiscalParam();
 
     try {
         const caixa = await $.get(`${API_URL}/vendas/relatorio/fechamento-caixa`, {
             data_inicio: dataInicio,
-            data_fim: dataFim
+            data_fim: dataFim,
+            modo_fiscal: modoFiscal
         });
 
         $('#fc_total_vendido').text(fcMoeda(caixa.resumo.total_vendido));
@@ -44,12 +57,15 @@ async function carregarFechamentoCaixa() {
 
         renderPagamentosFechamento(caixa.pagamentos || []);
 
-        const produtos = await $.get(`${API_URL}/vendas/relatorio/produtos-mais-vendidos`, {
+        const produtosResp = await $.get(`${API_URL}/vendas/relatorio/produtos-mais-vendidos`, {
             data_inicio: dataInicio,
-            data_fim: dataFim
+            data_fim: dataFim,
+            modo_fiscal: modoFiscal
         });
 
-        renderProdutosMaisVendidos(produtos || []);
+        const produtos = produtosResp.produtos || produtosResp || [];
+        const modoFiscalAtivo = Boolean(produtosResp.modo_fiscal_ativo ?? fcModoFiscalAtivo());
+        renderProdutosMaisVendidos(produtos, modoFiscalAtivo);
 
     } catch (error) {
         console.error(error);
@@ -83,7 +99,7 @@ function renderPagamentosFechamento(lista) {
     });
 }
 
-function renderProdutosMaisVendidos(lista) {
+function renderProdutosMaisVendidos(lista, modoFiscalAtivo = false) {
     const tbody = $('#fc_tabela_produtos');
     tbody.empty();
 
@@ -99,13 +115,20 @@ function renderProdutosMaisVendidos(lista) {
     }
 
     lista.forEach(produto => {
+        const qtdHtml = modoFiscalAtivo
+            ? fcNumero(produto.quantidade_vendida)
+            : `${fcNumero(produto.quantidade_vendida)}<br><small class="text-muted">F: ${fcNumero(produto.quantidade_fiscal)} | NF: ${fcNumero(produto.quantidade_nao_fiscal)}</small>`;
+        const totalHtml = modoFiscalAtivo
+            ? fcMoeda(produto.total_vendido)
+            : `${fcMoeda(produto.total_vendido)}<br><small class="text-muted">F: ${fcMoeda(produto.total_vendido_fiscal)} | NF: ${fcMoeda(produto.total_vendido_nao_fiscal)}</small>`;
+
         tbody.append(`
             <tr>
                 <td>${produto.codigo || '-'}</td>
                 <td>${produto.nome || '-'}</td>
                 <td>${produto.unidade || '-'}</td>
-                <td>${fcNumero(produto.quantidade_vendida)}</td>
-                <td>${fcMoeda(produto.total_vendido)}</td>
+                <td>${qtdHtml}</td>
+                <td>${totalHtml}</td>
                 <td>${fcMoeda(produto.preco_medio)}</td>
             </tr>
         `);
@@ -133,7 +156,8 @@ async function carregarCaixaPorDia() {
 
     try {
         const resposta = await $.get(`${API_URL}/caixa/por-data`, {
-            data
+            data,
+            modo_fiscal: fcModoFiscalParam()
         });
 
         renderizarCaixaDoDia(resposta);

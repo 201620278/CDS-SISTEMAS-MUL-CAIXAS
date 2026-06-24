@@ -3,8 +3,71 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
-const { verificarPermissaoEspecifica } = require('./auth');
+const { verificarPermissaoEspecifica, exigirPerfilAjusteEstoque } = require('./auth');
 const lotesService = require('../services/lotesService');
+const { recalcularEstoqueConsolidado, recalcularSaldosProduto } = require('../services/estoqueFiscalService');
+const {
+  produtoTemMovimentacoes,
+  aplicarAjusteEstoqueProduto,
+  definirSaldosIniciaisProduto
+} = require('../services/ajusteEstoqueService');
+const { sqlRankingProdutos, isModoFiscalRelatorio } = require('../services/reportFiscalHelpers');
+
+function resolverItemFiscalCadastro(body, saldoFiscal, saldoNaoFiscal) {
+  if (body.item_fiscal !== undefined && body.item_fiscal !== null) {
+    return Number(body.item_fiscal) === 1 ? 1 : 0;
+  }
+  if (Number(saldoNaoFiscal) > 0 && Number(saldoFiscal) === 0) {
+    return 0;
+  }
+  return 1;
+}
+
+function isModoFiscalQuery(valor) {
+  return valor === '1' || valor === true || valor === 'true';
+}
+
+function filtroSqlModoFiscalProduto(modoFiscal, alias = 'p') {
+  if (!modoFiscal) {
+    return '';
+  }
+  return ` AND COALESCE(${alias}.item_fiscal, 1) = 1`;
+}
+
+function exprEstoqueAlerta(modoFiscal, alias = '') {
+  const prefixo = alias ? `${alias}.` : '';
+  return modoFiscal
+    ? `COALESCE(${prefixo}saldo_fiscal, 0)`
+    : `COALESCE(${prefixo}estoque_atual, 0)`;
+}
+
+function normalizarProdutoResposta(produto, modoFiscal) {
+  const saldoFiscal = Number(produto.saldo_fiscal ?? 0);
+  const saldoNaoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
+  const estoqueAtual = saldoFiscal + saldoNaoFiscal;
+  const precoCompra = Number(produto.preco_compra || 0);
+
+  const base = {
+    ...produto,
+    saldo_fiscal: saldoFiscal,
+    saldo_nao_fiscal: saldoNaoFiscal,
+    estoque_atual: estoqueAtual,
+    valor_estoque: Number((estoqueAtual * precoCompra).toFixed(2))
+  };
+
+  if (modoFiscal) {
+    return {
+      ...base,
+      estoque_exibido: saldoFiscal,
+      valor_estoque: Number((saldoFiscal * precoCompra).toFixed(2))
+    };
+  }
+
+  return {
+    ...base,
+    estoque_exibido: estoqueAtual
+  };
+}
 
 function produtosTemColuna(nomeColuna, callback) {
   db.all(`PRAGMA table_info(produtos)`, [], (err, cols) => {
@@ -32,7 +95,13 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'message',
   'data_validade',
   'lote',
-  'dias_alerta_validade'
+  'dias_alerta_validade',
+  'estoque_atual',
+  'saldo_fiscal',
+  'saldo_nao_fiscal',
+  'estoque_exibido',
+  'saldo_fiscal_inicial',
+  'saldo_nao_fiscal_inicial'
 ]);
 
 function inserirFaixasAtacadoProduto(produtoId, faixas, callback) {
@@ -120,6 +189,9 @@ function buscarProdutoCompleto(produtoId, callback) {
 
 // LISTAR PRODUTOS
 router.get('/', (req, res) => {
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const filtroFiscal = filtroSqlModoFiscalProduto(modoFiscal, 'p');
+
   db.all(`
     SELECT 
       p.*, 
@@ -137,6 +209,8 @@ router.get('/', (req, res) => {
     FROM produtos p
     LEFT JOIN categorias c ON c.id = p.categoria_id
     LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
+    WHERE 1=1
+      ${filtroFiscal}
     ORDER BY p.id DESC
   `, [], (err, rows) => {
     if (err) {
@@ -144,11 +218,11 @@ router.get('/', (req, res) => {
       return res.status(500).json({ error: err.message });
     }
 
-    const produtos = rows.map(p => ({
+    const produtos = (rows || []).map((p) => normalizarProdutoResposta({
       ...p,
       categoria: p.categoria_nome || p.categoria || '',
       subcategoria: p.subcategoria_nome || ''
-    }));
+    }, modoFiscal));
 
     res.json(produtos);
   });
@@ -183,9 +257,27 @@ router.get('/:id/historico-precos', (req, res) => {
   });
 });
 
+// Histórico de ajustes de estoque do produto
+router.get('/:id/historico-estoque', (req, res) => {
+  const { id } = req.params;
+  db.all(`
+    SELECT *
+    FROM produtos_ajustes_estoque
+    WHERE produto_id = ?
+    ORDER BY criado_em DESC, id DESC
+  `, [id], (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(rows || []);
+  });
+});
+
 // Relatório de estoque de produtos com data de compra
 router.get('/relatorio-estoque', (req, res) => {
   const { inicio, fim } = req.query;
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const filtroFiscal = filtroSqlModoFiscalProduto(modoFiscal, 'p');
 
   const filtrosSubconsulta = [];
   const paramsSubconsulta = [];
@@ -208,9 +300,9 @@ router.get('/relatorio-estoque', (req, res) => {
     paramsExists.push(fim);
   }
 
-  const whereExists = filtrosExists.length
+  const andExists = filtrosExists.length
     ? `
-      WHERE EXISTS (
+      AND EXISTS (
         SELECT 1
         FROM compras c3
         INNER JOIN compras_itens ci3 ON ci3.compra_id = c3.id
@@ -246,7 +338,9 @@ router.get('/relatorio-estoque', (req, res) => {
     FROM produtos p
     LEFT JOIN categorias c ON c.id = p.categoria_id
     LEFT JOIN subcategorias s ON s.id = p.subcategoria_id
-    ${whereExists}
+    WHERE 1=1
+      ${filtroFiscal}
+      ${andExists}
     ORDER BY p.nome ASC
   `;
 
@@ -258,12 +352,12 @@ router.get('/relatorio-estoque', (req, res) => {
       return res.status(500).json({ error: err.message });
     }
 
-    const produtos = (rows || []).map(p => ({
+    const produtos = (rows || []).map((p) => normalizarProdutoResposta({
       ...p,
       categoria: p.categoria_nome || p.categoria || '',
       subcategoria: p.subcategoria_nome || p.subcategoria || '',
       ultima_compra_data: p.ultima_compra_data || null
-    }));
+    }, modoFiscal));
 
     res.json(produtos);
   });
@@ -272,6 +366,8 @@ router.get('/relatorio-estoque', (req, res) => {
 // CONSULTA DE PRODUTOS NO PDV - F1
 router.get('/consulta-pdv/buscar', (req, res) => {
   const termo = String(req.query.q || '').trim();
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const filtroFiscal = filtroSqlModoFiscalProduto(modoFiscal, 'p');
 
   if (!termo) {
     return res.json([]);
@@ -313,6 +409,9 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
       (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,
       p.estoque_atual,
+      COALESCE(p.saldo_fiscal, 0) AS saldo_fiscal,
+      COALESCE(p.saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
+      COALESCE(p.item_fiscal, 1) AS item_fiscal,
       p.estoque_minimo,
       p.vendido_por_peso,
       CASE 
@@ -333,10 +432,13 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       AND date(promo.data_inicio) <= date(?)
       AND date(promo.data_fim) >= date(?)
     WHERE
-      CAST(p.id AS TEXT) = ?
-      OR p.codigo LIKE ?
-      OR p.codigo_barras LIKE ?
-      OR (${replaceChain}) LIKE ?
+      (
+        CAST(p.id AS TEXT) = ?
+        OR p.codigo LIKE ?
+        OR p.codigo_barras LIKE ?
+        OR (${replaceChain}) LIKE ?
+      )
+      ${filtroFiscal}
     ORDER BY p.nome ASC
     LIMIT 30
   `, [
@@ -352,7 +454,7 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       return res.status(500).json({ error: err.message });
     }
 
-    res.json(rows || []);
+    res.json((rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal)));
   });
 });
 
@@ -363,20 +465,9 @@ router.get('/ranking-vendas', (req, res) => {
 
   const dataInicio = req.query.inicio || seteDiasAtras.toISOString().slice(0, 10);
   const dataFim = req.query.fim || hoje.toISOString().slice(0, 10);
+  const modoFiscal = isModoFiscalRelatorio(req.query.modo_fiscal);
 
-  const sqlBase = `
-    SELECT 
-      p.id,
-      p.nome,
-      COALESCE(SUM(vi.quantidade), 0) AS quantidade_vendida,
-      COALESCE(COUNT(DISTINCT v.id), 0) AS total_vendas
-    FROM produtos p
-    LEFT JOIN vendas_itens vi ON vi.produto_id = p.id
-    LEFT JOIN vendas v ON v.id = vi.venda_id
-      AND date(v.data_venda) BETWEEN date(?) AND date(?)
-      AND (v.status IS NULL OR v.status != 'cancelada')
-    GROUP BY p.id, p.nome
-  `;
+  const sqlBase = sqlRankingProdutos(modoFiscal);
 
   db.all(`
     ${sqlBase}
@@ -413,6 +504,9 @@ router.get('/ranking-vendas', (req, res) => {
 // Acompanhamento de vencimentos de produtos
 router.get('/vencimentos/alertas', (req, res) => {
   const diasPadrao = Math.max(parseInt(req.query.dias || '30', 10) || 30, 0);
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const exprEstoque = exprEstoqueAlerta(modoFiscal);
+  const filtroFiscal = modoFiscal ? ' AND COALESCE(item_fiscal, 1) = 1' : '';
 
   db.all(`
     SELECT
@@ -422,6 +516,8 @@ router.get('/vencimentos/alertas', (req, res) => {
       nome,
       unidade,
       estoque_atual,
+      COALESCE(saldo_fiscal, 0) AS saldo_fiscal,
+      COALESCE(saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
       fornecedor,
       lote,
       data_validade,
@@ -437,7 +533,8 @@ router.get('/vencimentos/alertas', (req, res) => {
     WHERE COALESCE(controlar_validade, 0) = 1
       AND data_validade IS NOT NULL
       AND data_validade != ''
-      AND estoque_atual > 0
+      AND ${exprEstoque} > 0
+      ${filtroFiscal}
       AND date(data_validade) <= date('now', 'localtime', '+' || COALESCE(dias_alerta_validade, ?) || ' days')
     ORDER BY date(data_validade) ASC, nome ASC
   `, [diasPadrao, diasPadrao, diasPadrao], (err, rows) => {
@@ -446,7 +543,7 @@ router.get('/vencimentos/alertas', (req, res) => {
       return res.status(500).json({ error: err.message });
     }
 
-    const lista = rows || [];
+    const lista = (rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal));
 
     res.json({
       dias_padrao: diasPadrao,
@@ -1190,9 +1287,114 @@ router.get('/promocoes/produtos-elegiveis', (req, res) => {
   });
 });
 
+// Recalcular saldos fiscal/não fiscal a partir do histórico de compras e vendas
+router.post('/recalcular-saldos', verificarPermissaoEspecifica('produtos', 'editar'), (req, res) => {
+  const { recalcularSaldosTodosProdutos } = require('../services/estoqueFiscalService');
+  recalcularSaldosTodosProdutos(db, (err, result) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({
+      message: 'Saldos recalculados com sucesso',
+      atualizados: result?.atualizados || 0,
+      erros: result?.erros || []
+    });
+  });
+});
+
+router.post('/:id/recalcular-saldos', verificarPermissaoEspecifica('produtos', 'editar'), (req, res) => {
+  recalcularSaldosProduto(db, req.params.id, (err, result) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({
+      message: 'Saldos recalculados com sucesso',
+      ...result
+    });
+  });
+});
+
+function executarAjusteEstoque(req, res) {
+  const { id } = req.params;
+  const {
+    ajuste_fiscal,
+    ajuste_nao_fiscal,
+    motivo,
+    lote,
+    data_fabricacao,
+    data_validade,
+    quantidade,
+    modo_fiscal
+  } = req.body;
+
+  let ajusteFiscal = Number(ajuste_fiscal ?? 0);
+  let ajusteNaoFiscal = Number(ajuste_nao_fiscal ?? 0);
+
+  if (quantidade !== undefined && quantidade !== null && ajuste_fiscal === undefined && ajuste_nao_fiscal === undefined) {
+    const qtd = Number(quantidade) || 0;
+    const modoFiscalAtivo = modo_fiscal === 1 || modo_fiscal === true || modo_fiscal === '1';
+    if (modoFiscalAtivo) {
+      ajusteFiscal = qtd;
+    } else {
+      ajusteNaoFiscal = qtd;
+    }
+  }
+
+  aplicarAjusteEstoqueProduto(db, {
+    produtoId: id,
+    ajusteFiscal,
+    ajusteNaoFiscal,
+    motivo,
+    usuarioId: req.user?.id,
+    usuarioNome: req.user?.username || req.user?.nome,
+    lote,
+    dataFabricacao: data_fabricacao,
+    dataValidade: data_validade,
+    lotesService
+  }, (err, resultado) => {
+    if (err) {
+      const status = err.message.includes('não encontrado') ? 404 : 400;
+      return res.status(status).json({ error: err.message });
+    }
+
+    gravarAuditoria({
+      usuario_id: req.user?.id || null,
+      usuario_nome: req.user?.username || req.user?.nome || null,
+      modulo: 'produtos',
+      acao: 'ajustar_estoque',
+      referencia_tipo: 'produto',
+      referencia_id: id,
+      detalhes: {
+        ajuste_fiscal: ajusteFiscal,
+        ajuste_nao_fiscal: ajusteNaoFiscal,
+        motivo,
+        resultado
+      },
+      ip_requisicao: req.ip || null
+    }).catch(() => {});
+
+    res.json({
+      message: 'Estoque ajustado com sucesso',
+      ...resultado
+    });
+  });
+}
+
+router.get('/:id/tem-movimentacoes', exigirPerfilAjusteEstoque(), (req, res) => {
+  produtoTemMovimentacoes(db, req.params.id, (err, tem) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ produto_id: Number(req.params.id), tem_movimentacoes: tem });
+  });
+});
+
+router.post('/:id/ajustar-estoque', exigirPerfilAjusteEstoque(), executarAjusteEstoque);
+
 // Buscar produto por ID trazendo o nome da categoria
-// Buscar produto por ID trazendo o nome da categoria e subcategoria
 router.get('/:id', (req, res) => {
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+
   db.get(`
     SELECT 
       p.*, 
@@ -1221,11 +1423,20 @@ router.get('/:id', (req, res) => {
           return res.status(500).json({ error: faixaErr.message });
         }
 
-        res.json({
-          ...row,
-          categoria: row.categoria_nome || '',
-          subcategoria: row.subcategoria_nome || '',
-          atacado_faixas: faixas || []
+        produtoTemMovimentacoes(db, req.params.id, (movErr, temMovimentacoes) => {
+          if (movErr) {
+            return res.status(500).json({ error: movErr.message });
+          }
+
+          const produto = normalizarProdutoResposta({
+            ...row,
+            categoria: row.categoria_nome || '',
+            subcategoria: row.subcategoria_nome || '',
+            atacado_faixas: faixas || [],
+            tem_movimentacoes: temMovimentacoes
+          }, modoFiscal);
+
+          res.json(produto);
         });
       }
     );
@@ -1243,6 +1454,9 @@ router.post('/', (req, res) => {
     vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
     venda_atacado,
     atacado_faixas,
+    saldo_fiscal_inicial,
+    saldo_nao_fiscal_inicial,
+    item_fiscal,
     // Campos adicionais para lote inicial
     lote_inicial,
     data_fabricacao_inicial,
@@ -1250,7 +1464,29 @@ router.post('/', (req, res) => {
   } = req.body;
 
   const controlarValidade = controlar_validade ? 1 : 0;
-  const estoqueInicial = Number(estoque_atual) || 0;
+
+  let saldoFiscalInicial;
+  let saldoNaoFiscalInicial;
+  try {
+    if (saldo_fiscal_inicial !== undefined || saldo_nao_fiscal_inicial !== undefined) {
+      saldoFiscalInicial = Number(saldo_fiscal_inicial ?? 0);
+      saldoNaoFiscalInicial = Number(saldo_nao_fiscal_inicial ?? 0);
+    } else {
+      const estoqueLegado = Number(estoque_atual || 0);
+      saldoFiscalInicial = estoqueLegado;
+      saldoNaoFiscalInicial = 0;
+    }
+    const saldos = definirSaldosIniciaisProduto(saldoFiscalInicial, saldoNaoFiscalInicial);
+    saldoFiscalInicial = saldos.saldo_fiscal;
+    saldoNaoFiscalInicial = saldos.saldo_nao_fiscal;
+    var estoqueInicial = saldos.estoque_atual;
+  } catch (saldosErr) {
+    return res.status(400).json({ error: saldosErr.message });
+  }
+
+  const itemFiscalGravar = resolverItemFiscalCadastro(req.body, saldoFiscalInicial, saldoNaoFiscalInicial);
+  console.log('[AUDIT PRODUTO POST] req.body.item_fiscal:', req.body.item_fiscal);
+  console.log('[AUDIT PRODUTO POST] item_fiscal gravar INSERT:', itemFiscalGravar);
 
   db.run(`
     INSERT INTO produtos (
@@ -1261,9 +1497,10 @@ router.post('/', (req, res) => {
       aliquota_icms, aliquota_pis, aliquota_cofins,
       controlar_validade,
       vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
-      venda_atacado
+      venda_atacado,
+      saldo_fiscal, saldo_nao_fiscal, item_fiscal
     )
-    VALUES (${Array(26).fill('?').join(', ')})
+    VALUES (${Array(29).fill('?').join(', ')})
   `, [
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
@@ -1275,7 +1512,10 @@ router.post('/', (req, res) => {
     peso_total_compra || 0,
     valor_total_compra || 0,
     custo_por_kg || 0,
-    venda_atacado ? 1 : 0
+    venda_atacado ? 1 : 0,
+    saldoFiscalInicial,
+    saldoNaoFiscalInicial,
+    itemFiscalGravar
   ],
     function(err) {
       if (err) {
@@ -1285,6 +1525,15 @@ router.post('/', (req, res) => {
       }
 
       const produtoId = this.lastID;
+      db.get(
+        'SELECT id, nome, item_fiscal, saldo_fiscal, saldo_nao_fiscal FROM produtos WHERE id = ?',
+        [produtoId],
+        (auditErr, auditRow) => {
+          if (!auditErr && auditRow) {
+            console.log('[AUDIT PRODUTO POST] gravado no banco:', auditRow);
+          }
+        }
+      );
 
       // Se controlar validade e tiver estoque inicial, criar lote inicial
       if (controlarValidade && estoqueInicial > 0) {
@@ -1388,98 +1637,15 @@ router.put('/validade/configuracoes', (req, res) => {
   });
 });
 
-// Ajustar estoque com suporte a lotes (FEFO)
-router.put('/:id/ajustar-estoque', (req, res) => {
-  const { id } = req.params;
-  const { quantidade, motivo, lote, data_fabricacao, data_validade } = req.body;
-  
-  const quantidadeAjuste = Number(quantidade) || 0;
-  
-  if (quantidadeAjuste === 0) {
-    return res.status(400).json({ error: 'Quantidade de ajuste não pode ser zero' });
-  }
-
-  lotesService.produtoControlaValidade(id, (err, controlaValidade) => {
-    if (err) {
-      console.error('Erro ao verificar controle de validade:', err);
-      return res.status(500).json({ error: err.message });
-    }
-
-    if (!controlaValidade) {
-      // Produto não controla validade - ajustar estoque consolidado normal
-      db.run(`
-        UPDATE produtos
-        SET estoque_atual = estoque_atual + ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [quantidadeAjuste, id], (upErr) => {
-        if (upErr) {
-          return res.status(500).json({ error: upErr.message });
-        }
-        res.json({ message: 'Estoque ajustado com sucesso' });
-      });
-      return;
-    }
-
-    // Produto controla validade - ajustar lotes
-    const hoje = new Date().toISOString().split('T')[0];
-
-    if (quantidadeAjuste > 0) {
-      // Ajuste positivo - criar novo lote
-      if (!lote || !data_validade) {
-        return res.status(400).json({ 
-          error: 'Para produtos com controle de validade, informe o lote e data de validade para ajustes positivos' 
-        });
-      }
-
-      lotesService.criarLote({
-        produto_id: id,
-        lote: lote,
-        quantidade_inicial: quantidadeAjuste,
-        data_fabricacao: data_fabricacao || null,
-        data_validade: data_validade,
-        data_entrada: hoje,
-        origem: 'AJUSTE_ESTOQUE',
-        compra_id: null
-      }, (loteErr) => {
-        if (loteErr) {
-          console.error('Erro ao criar lote para ajuste:', loteErr);
-          return res.status(500).json({ error: loteErr.message });
-        }
-
-        // Atualizar estoque consolidado
-        lotesService.atualizarEstoqueConsolidado(id, (atualErr) => {
-          if (atualErr) {
-            return res.status(500).json({ error: atualErr.message });
-          }
-          res.json({ message: 'Estoque ajustado com sucesso (lote criado)' });
-        });
-      });
-    } else {
-      // Ajuste negativo - consumir lotes usando FEFO
-      const quantidadeConsumir = Math.abs(quantidadeAjuste);
-      
-      lotesService.consumirLotesFEFO(id, quantidadeConsumir, (consumoErr, consumoLotes) => {
-        if (consumoErr) {
-          return res.status(500).json({ error: consumoErr.message });
-        }
-
-        // Atualizar estoque consolidado
-        lotesService.atualizarEstoqueConsolidado(id, (atualErr) => {
-          if (atualErr) {
-            return res.status(500).json({ error: atualErr.message });
-          }
-          res.json({ message: 'Estoque ajustado com sucesso (lotes consumidos via FEFO)' });
-        });
-      });
-    }
-  });
-});
+// Ajustar estoque — legado PUT (use POST preferencialmente)
+router.put('/:id/ajustar-estoque', exigirPerfilAjusteEstoque(), executarAjusteEstoque);
 
 // Atualizar produto
 router.put('/:id', (req, res) => {
   const { id } = req.params;
-  const { atacado_faixas, ...bodyUpdates } = req.body;
+  const { atacado_faixas, saldo_fiscal_inicial, saldo_nao_fiscal_inicial, ...bodyUpdates } = req.body;
+
+  console.log('[AUDIT PRODUTO PUT] id:', id, 'req.body.item_fiscal:', req.body.item_fiscal);
 
   db.get('SELECT * FROM produtos WHERE id = ?', [id], (err, old) => {
     if (err) {
@@ -1491,6 +1657,36 @@ router.put('/:id', (req, res) => {
       return;
     }
 
+    const aplicarSaldosIniciaisSePermitido = (callback) => {
+      if (saldo_fiscal_inicial === undefined && saldo_nao_fiscal_inicial === undefined) {
+        return callback(null);
+      }
+
+      produtoTemMovimentacoes(db, id, (movErr, tem) => {
+        if (movErr) return callback(movErr);
+        if (tem) {
+          return callback(new Error('Produto com movimentações não permite alterar saldos iniciais.'));
+        }
+
+        try {
+          const saldos = definirSaldosIniciaisProduto(
+            saldo_fiscal_inicial ?? old.saldo_fiscal,
+            saldo_nao_fiscal_inicial ?? old.saldo_nao_fiscal
+          );
+          db.run(`
+            UPDATE produtos
+            SET saldo_fiscal = ?,
+                saldo_nao_fiscal = ?,
+                estoque_atual = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `, [saldos.saldo_fiscal, saldos.saldo_nao_fiscal, saldos.estoque_atual, id], callback);
+        } catch (saldosErr) {
+          callback(saldosErr);
+        }
+      });
+    };
+
     const fields = [];
     const values = [];
 
@@ -1501,8 +1697,13 @@ router.put('/:id', (req, res) => {
       }
     });
 
-    if (fields.length === 0 && !Array.isArray(atacado_faixas)) {
+    const temSaldosIniciais = saldo_fiscal_inicial !== undefined || saldo_nao_fiscal_inicial !== undefined;
+    if (fields.length === 0 && !Array.isArray(atacado_faixas) && !temSaldosIniciais) {
       return res.status(400).json({ error: 'Nenhum campo válido para atualizar.' });
+    }
+
+    if (bodyUpdates.item_fiscal !== undefined) {
+      console.log('[AUDIT PRODUTO PUT] item_fiscal no UPDATE:', bodyUpdates.item_fiscal);
     }
 
     values.push(id);
@@ -1562,12 +1763,21 @@ router.put('/:id', (req, res) => {
       });
     };
 
+    const concluirAtualizacao = (callback) => {
+      salvarFaixasTemporarias((faixaErr) => {
+        if (faixaErr) return callback(faixaErr);
+        aplicarSaldosIniciaisSePermitido((saldosErr) => {
+          if (saldosErr) return callback(saldosErr);
+          finalizarAtualizacao();
+        });
+      });
+    };
+
     if (fields.length === 0) {
-      return salvarFaixasTemporarias((faixaErr) => {
-        if (faixaErr) {
-          return res.status(500).json({ error: faixaErr.message });
+      return concluirAtualizacao((errFinal) => {
+        if (errFinal) {
+          return res.status(400).json({ error: errFinal.message });
         }
-        finalizarAtualizacao();
       });
     }
 
@@ -1581,11 +1791,20 @@ router.put('/:id', (req, res) => {
         return;
       }
 
-      salvarFaixasTemporarias((faixaErr) => {
-        if (faixaErr) {
-          return res.status(500).json({ error: faixaErr.message });
+      db.get(
+        'SELECT id, nome, item_fiscal, saldo_fiscal, saldo_nao_fiscal FROM produtos WHERE id = ?',
+        [id],
+        (auditErr, auditRow) => {
+          if (!auditErr && auditRow) {
+            console.log('[AUDIT PRODUTO PUT] gravado no banco:', auditRow);
+          }
         }
-        finalizarAtualizacao();
+      );
+
+      concluirAtualizacao((errFinal) => {
+        if (errFinal) {
+          return res.status(400).json({ error: errFinal.message });
+        }
       });
     });
   });
@@ -1615,16 +1834,21 @@ router.delete('/:id', (req, res) => {
 
 // Buscar produtos com estoque baixo
 router.get('/estoque/baixo', (req, res) => {
+  const modoFiscal = isModoFiscalQuery(req.query.modo_fiscal);
+  const exprEstoque = exprEstoqueAlerta(modoFiscal);
+  const filtroFiscal = modoFiscal ? ' AND COALESCE(item_fiscal, 1) = 1' : '';
+
   db.all(`
     SELECT * FROM produtos 
-    WHERE estoque_atual <= estoque_minimo 
-    ORDER BY (estoque_atual / NULLIF(estoque_minimo, 0)) ASC
+    WHERE ${exprEstoque} <= estoque_minimo 
+      ${filtroFiscal}
+    ORDER BY (${exprEstoque} / NULLIF(estoque_minimo, 0)) ASC
   `, (err, rows) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
     }
-    res.json(rows);
+    res.json((rows || []).map((row) => normalizarProdutoResposta(row, modoFiscal)));
   });
 });
 

@@ -1,334 +1,235 @@
+const BaseAdapter = require('./BaseAdapter');
+const tefContrato = require('../tefContrato');
 const sdkDetector = require('../sdkDetector');
 const fs = require('fs');
-const path = require('path');
 
-class PayGoAdapter {
+class PaygoAdapter extends BaseAdapter {
+  constructor(config = {}) {
+    super(config);
+    this.nome = 'PayGo';
+    this.modo = 'simulacao';
+    this.sdkEncontrado = false;
+    this.configuracaoIni = null;
+    this.inicializado = false;
+    this._carregarDeteccao();
+  }
 
-    constructor() {
-        this.nome = 'PayGo';
-        this.sdkEncontrado = false;
-        this.configuracao = null;
-        this.inicializado = false;
-        
-        this.verificarSDK();
+  _carregarDeteccao() {
+    const det = sdkDetector.detectarPaygo();
+    if (det.dllEncontrada) {
+      this.sdkEncontrado = true;
+      this.sdkCaminho = det.caminho;
+      if (det.ini?.caminho && fs.existsSync(det.ini.caminho)) {
+        this.configuracaoIni = this._parseConfig(fs.readFileSync(det.ini.caminho, 'utf8'));
+      }
+    }
+  }
+
+  _parseConfig(config) {
+    const configObj = {};
+    let secaoAtual = '';
+    String(config).split('\n').forEach((linha) => {
+      linha = linha.trim();
+      if (!linha || linha.startsWith(';') || linha.startsWith('#')) return;
+      if (linha.startsWith('[') && linha.endsWith(']')) {
+        secaoAtual = linha.substring(1, linha.length - 1);
+        configObj[secaoAtual] = {};
+      } else if (linha.includes('=')) {
+        const [chave, valor] = linha.split('=');
+        if (secaoAtual) configObj[secaoAtual][chave.trim()] = valor.trim();
+      }
+    });
+    return configObj;
+  }
+
+  async inicializar() {
+    this.inicializado = true;
+    return true;
+  }
+
+  async autorizarPagamento(dados) {
+    await this.inicializar();
+
+    this.emitirEventoPinpad(require('../tefEvents').estadosPinpad.AGUARDE);
+    await this._aguardar(300);
+    this.emitirEventoPinpad(require('../tefEvents').estadosPinpad.INSIRA_CARTAO);
+    await this._aguardar(500);
+    this.emitirEventoPinpad(require('../tefEvents').estadosPinpad.PROCESSANDO);
+
+    const resultado = await this._executarTransacaoPayGo({
+      valor: this._formatarValorCentavos(dados.valor),
+      tipoOperacao: this._mapearTipoOperacao(dados.tipo, dados.parcelas),
+      parcelas: dados.parcelas || 1,
+      dataHora: new Date().toISOString().replace('T', ' ').substring(0, 19),
+      terminal: this.configuracaoIni?.Terminal?.CodigoTerminal || this.config.terminal_codigo || '001'
+    });
+
+    if (resultado.status === tefContrato.STATUS.APROVADO) {
+      this.emitirEventoPinpad(require('../tefEvents').estadosPinpad.TRANSACAO_APROVADA);
+    } else {
+      this.emitirEventoPinpad(require('../tefEvents').estadosPinpad.TRANSACAO_NEGADA);
     }
 
-    verificarSDK() {
-        const sdks = sdkDetector.localizarSDKs();
-        const sdk = sdks.find(x => x.caminho.toLowerCase().includes('paygo'));
+    return tefContrato.criarRespostaAutorizacao({
+      sucesso: resultado.status === tefContrato.STATUS.APROVADO,
+      status: resultado.status,
+      adquirente: 'PayGo',
+      bandeira: resultado.bandeira,
+      nsu: resultado.nsu,
+      autorizacao: resultado.autorizacao,
+      transacaoId: resultado.codigoTransacao,
+      comprovanteCliente: resultado.comprovanteCliente,
+      comprovanteLoja: resultado.comprovanteEstabelecimento,
+      mensagem: resultado.mensagem,
+      payloadRetorno: { ...resultado, sdkDetectado: this.sdkEncontrado },
+      modo: this.modo
+    });
+  }
 
-        if (sdk) {
-            this.sdkEncontrado = true;
-            this.sdk = sdk;
-            this.carregarConfiguracao();
-        }
+  async cancelarPagamento(dados) {
+    const info = this._normalizarDadosCancelamento(dados);
+    const transacao = info.transacao_id ? await this._buscarTransacao(info.transacao_id) : null;
+    const resultado = await this._executarCancelamentoPayGo({
+      nsu: info.nsu || transacao?.nsu,
+      autorizacao: info.autorizacao || transacao?.autorizacao
+    });
+
+    return tefContrato.criarRespostaCancelamento({
+      sucesso: resultado.status === tefContrato.STATUS.CANCELADO,
+      status: resultado.status,
+      nsu: resultado.nsu,
+      autorizacao: resultado.autorizacao,
+      transacaoId: info.transacao_id,
+      mensagem: resultado.mensagem,
+      modo: this.modo
+    });
+  }
+
+  async consultarTransacao(transacaoId) {
+    const row = await this._buscarTransacao(transacaoId);
+    if (!row) {
+      return tefContrato.criarRespostaConsulta({
+        sucesso: false,
+        suportado: true,
+        transacaoId,
+        mensagem: 'Transação não encontrada',
+        modo: this.modo
+      });
     }
 
-    carregarConfiguracao() {
-        try {
-            const pastaSDK = path.dirname(this.sdk.caminho);
-            const configPath = path.join(pastaSDK, 'paygo.ini');
-            if (fs.existsSync(configPath)) {
-                const config = fs.readFileSync(configPath, 'utf8');
-                this.configuracao = this._parseConfig(config);
-            }
-        } catch (error) {
-            console.error('Erro ao carregar configuração PayGo:', error);
-        }
+    return tefContrato.criarRespostaConsulta({
+      sucesso: true,
+      suportado: true,
+      status: row.status,
+      nsu: row.nsu,
+      autorizacao: row.autorizacao,
+      transacaoId: row.id,
+      mensagem: 'Consulta local (simulador PayGo)',
+      dados: row,
+      modo: this.modo
+    });
+  }
+
+  async reimprimirComprovante(transacaoId, tipo = 'cliente') {
+    const row = await this._buscarTransacao(transacaoId);
+    if (!row) {
+      return tefContrato.criarRespostaReimpressao({
+        sucesso: false,
+        suportado: true,
+        tipo,
+        mensagem: 'Transação não encontrada',
+        modo: this.modo
+      });
     }
 
-    _parseConfig(config) {
-        const linhas = config.split('\n');
-        const configObj = {};
-        let secaoAtual = '';
+    const comprovante = tipo === 'loja' ? row.comprovante_estabelecimento : row.comprovante_cliente;
+    return tefContrato.criarRespostaReimpressao({
+      sucesso: Boolean(comprovante),
+      suportado: true,
+      tipo,
+      comprovante,
+      mensagem: comprovante ? 'Comprovante disponível' : 'Comprovante não disponível',
+      modo: this.modo
+    });
+  }
 
-        linhas.forEach(linha => {
-            linha = linha.trim();
-            if (!linha || linha.startsWith(';') || linha.startsWith('#')) return;
+  async diagnosticar() {
+    const det = sdkDetector.detectarPaygo();
+    return tefContrato.criarRespostaDiagnostico({
+      sucesso: true,
+      mensagem: 'Adapter PayGo em modo simulação',
+      detalhes: {
+        provedor: 'paygo',
+        modo: this.modo,
+        paygoInstalado: det.paygoInstalado,
+        dllEncontrada: det.dllEncontrada,
+        caminho: det.caminho,
+        configuracaoValida: det.configuracaoValida
+      }
+    });
+  }
 
-            if (linha.startsWith('[') && linha.endsWith(']')) {
-                secaoAtual = linha.substring(1, linha.length - 1);
-                configObj[secaoAtual] = {};
-            } else if (linha.includes('=')) {
-                const [chave, valor] = linha.split('=');
-                if (secaoAtual) {
-                    configObj[secaoAtual][chave.trim()] = valor.trim();
-                }
-            }
-        });
+  async testarConexao() {
+    return this.diagnosticar();
+  }
 
-        return configObj;
-    }
+  async _executarTransacaoPayGo(dados) {
+    await this._aguardar(1200);
+    const nsu = this._gerarNSU();
+    const autorizacao = this._gerarAutorizacao();
+    const valor = (Number(dados.valor) / 100).toFixed(2);
 
-    async inicializar() {
-        if (!this.sdkEncontrado) {
-            throw new Error('SDK PayGo não encontrado');
-        }
+    return {
+      status: tefContrato.STATUS.APROVADO,
+      bandeira: 'Mastercard',
+      nsu,
+      autorizacao,
+      codigoTransacao: String(Date.now()),
+      comprovanteCliente: `COMPROVANTE CLIENTE PAYGO\nVALOR: R$ ${valor}\nNSU: ${nsu}`,
+      comprovanteEstabelecimento: `COMPROVANTE LOJA PAYGO\nVALOR: R$ ${valor}\nNSU: ${nsu}`,
+      mensagem: 'Transação aprovada (simulação PayGo)'
+    };
+  }
 
-        if (this.inicializado) {
-            return true;
-        }
+  async _executarCancelamentoPayGo(dados) {
+    await this._aguardar(800);
+    return {
+      status: tefContrato.STATUS.CANCELADO,
+      nsu: dados.nsu,
+      autorizacao: dados.autorizacao,
+      mensagem: 'Cancelamento realizado (simulação PayGo)'
+    };
+  }
 
-        try {
-            // Tentar inicializar o SDK PayGo
-            // Em produção, isso chamaria a função de inicialização da DLL
-            this.inicializado = true;
-            return true;
-        } catch (error) {
-            console.error('Erro ao inicializar PayGo:', error);
-            throw new Error('Falha ao inicializar SDK PayGo');
-        }
-    }
+  async _buscarTransacao(transacaoId) {
+    const db = require('../../../database');
+    return new Promise((resolve, reject) => {
+      db.get(
+        'SELECT id, nsu, autorizacao, valor, status, comprovante_cliente, comprovante_estabelecimento FROM tef_transacoes WHERE id = ?',
+        [transacaoId],
+        (err, row) => (err ? reject(err) : resolve(row))
+      );
+    });
+  }
 
-    async autorizarPagamento(dados) {
-        if (!this.sdkEncontrado) {
-            return {
-                sucesso: false,
-                status: 'erro',
-                codigo: 'SDK_NAO_ENCONTRADO',
-                mensagem: 'PayGo não instalado'
-            };
-        }
+  _mapearTipoOperacao(tipo, parcelas) {
+    const t = String(tipo || '').toLowerCase();
+    if (t.includes('debito')) return '01';
+    if (t.includes('credito')) return parcelas > 1 ? '03' : '02';
+    return '01';
+  }
 
-        try {
-            await this.inicializar();
+  _gerarNSU() {
+    return Date.now().toString().substring(8) + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
+  }
 
-            // Determinar tipo de operação
-            const tipoOperacao = this._mapearTipoOperacao(dados.tipo, dados.parcelas);
-            
-            // Preparar dados para o PayGo
-            const dadosPayGo = {
-                valor: this._formatarValor(dados.valor),
-                tipoOperacao: tipoOperacao,
-                parcelas: dados.parcelas || 1,
-                dataHora: new Date().toISOString().replace('T', ' ').substring(0, 19),
-                numeroEstabelecimento: this.configuracao?.Terminal?.NumeroEstabelecimento || '00000000',
-                terminal: this.configuracao?.Terminal?.CodigoTerminal || '001'
-            };
+  _gerarAutorizacao() {
+    return Math.floor(Math.random() * 1000000).toString().padStart(6, '0');
+  }
 
-            // Executar transação via SDK
-            const resultado = await this._executarTransacaoPayGo(dadosPayGo);
-
-            return {
-                sucesso: resultado.status === 'aprovado',
-                status: resultado.status,
-                adquirente: resultado.adquirente || 'PayGo',
-                bandeira: resultado.bandeira || this._detectarBandeira(dados),
-                nsu: resultado.nsu,
-                autorizacao: resultado.autorizacao,
-                codigo_transacao: resultado.codigoTransacao,
-                comprovante_cliente: resultado.comprovanteCliente,
-                comprovante_estabelecimento: resultado.comprovanteEstabelecimento,
-                payload_retorno: resultado,
-                mensagem: resultado.mensagem
-            };
-        } catch (error) {
-            console.error('Erro na autorização PayGo:', error);
-            return {
-                sucesso: false,
-                status: 'erro',
-                codigo: 'ERRO_PAYGO',
-                mensagem: error.message
-            };
-        }
-    }
-
-    async cancelarPagamento(transacaoId, dados = {}) {
-        if (!this.sdkEncontrado) {
-            return {
-                sucesso: false,
-                codigo: 'SDK_NAO_ENCONTRADO',
-                mensagem: 'PayGo não instalado'
-            };
-        }
-
-        try {
-            await this.inicializar();
-
-            // Buscar dados da transação
-            const transacao = await this._buscarTransacao(transacaoId);
-            
-            if (!transacao) {
-                return {
-                    sucesso: false,
-                    codigo: 'TRANSACAO_NAO_ENCONTRADA',
-                    mensagem: 'Transação não encontrada'
-                };
-            }
-
-            // Preparar dados para cancelamento
-            const dadosCancelamento = {
-                nsu: transacao.nsu,
-                autorizacao: transacao.autorizacao,
-                valor: transacao.valor,
-                dataHora: new Date().toISOString().replace('T', ' ').substring(0, 19)
-            };
-
-            // Executar cancelamento via SDK
-            const resultado = await this._executarCancelamentoPayGo(dadosCancelamento);
-
-            return {
-                sucesso: resultado.status === 'cancelado',
-                status: resultado.status,
-                nsu: resultado.nsu,
-                autorizacao: resultado.autorizacao,
-                mensagem: resultado.mensagem
-            };
-        } catch (error) {
-            console.error('Erro no cancelamento PayGo:', error);
-            return {
-                sucesso: false,
-                codigo: 'ERRO_CANCELAMENTO',
-                mensagem: error.message
-            };
-        }
-    }
-
-    async _executarTransacaoPayGo(dados) {
-        // Em produção, isso chamaria as funções da DLL paygo.dll
-        // Aqui simulamos a comunicação para demonstração
-        
-        return new Promise((resolve, reject) => {
-            // Simular tempo de processamento
-            setTimeout(() => {
-                // Simular resposta bem-sucedida
-                resolve({
-                    status: 'aprovado',
-                    adquirente: 'PayGo',
-                    bandeira: 'Mastercard',
-                    nsu: this._gerarNSU(),
-                    autorizacao: this._gerarAutorizacao(),
-                    codigoTransacao: this._gerarCodigoTransacao(),
-                    comprovanteCliente: this._gerarComprovanteCliente(dados),
-                    comprovanteEstabelecimento: this._gerarComprovanteEstabelecimento(dados),
-                    mensagem: 'Transação aprovada'
-                });
-            }, 2000);
-        });
-    }
-
-    async _executarCancelamentoPayGo(dados) {
-        // Em produção, isso chamaria as funções da DLL paygo.dll
-        
-        return new Promise((resolve, reject) => {
-            setTimeout(() => {
-                resolve({
-                    status: 'cancelado',
-                    nsu: dados.nsu,
-                    autorizacao: dados.autorizacao,
-                    mensagem: 'Cancelamento realizado com sucesso'
-                });
-            }, 1500);
-        });
-    }
-
-    async _buscarTransacao(transacaoId) {
-        const db = require('../../../database');
-        
-        return new Promise((resolve, reject) => {
-            db.get(`
-                SELECT id, nsu, autorizacao, valor, status
-                FROM tef_transacoes
-                WHERE id = ?
-            `, [transacaoId], (err, row) => {
-                if (err) return reject(err);
-                resolve(row);
-            });
-        });
-    }
-
-    _mapearTipoOperacao(tipo, parcelas) {
-        const tipoNormalizado = String(tipo).toLowerCase();
-        
-        if (tipoNormalizado.includes('debito')) {
-            return '01'; // Débito
-        }
-        
-        if (tipoNormalizado.includes('credito')) {
-            if (parcelas > 1) {
-                return '03'; // Crédito parcelado
-            }
-            return '02'; // Crédito à vista
-        }
-        
-        return '01'; // Padrão: débito
-    }
-
-    _formatarValor(valor) {
-        // PayGo espera valor em centavos (sem vírgula)
-        return Math.round(Number(valor) * 100).toString().padStart(10, '0');
-    }
-
-    _detectarBandeira(dados) {
-        // Em produção, o SDK retorna a bandeira
-        // Aqui simulamos baseado em dados disponíveis
-        if (dados.bandeira) return dados.bandeira;
-        
-        // Mapeamento de bandeiras suportadas pelo PayGo
-        const bandeirasSuportadas = {
-            'visa': 'Visa',
-            'mastercard': 'Mastercard',
-            'elo': 'Elo',
-            'hipercard': 'Hipercard',
-            'amex': 'American Express',
-            'discover': 'Discover',
-            'jcb': 'JCB',
-            'diners': 'Diners Club',
-            'aura': 'Aura'
-        };
-        
-        // Se não foi informada, retorna Mastercard como padrão
-        return 'Mastercard';
-    }
-
-    _obterBandeirasSuportadas() {
-        return ['Visa', 'Mastercard', 'Elo', 'Hipercard', 'American Express', 'Discover', 'JCB', 'Diners Club', 'Aura'];
-    }
-
-    _gerarNSU() {
-        return Date.now().toString().substring(8) + Math.floor(Math.random() * 1000).toString().padStart(3, '0');
-    }
-
-    _gerarAutorizacao() {
-        return Math.floor(Math.random() * 1000000).toString().padStart(6, '0');
-    }
-
-    _gerarCodigoTransacao() {
-        return Date.now().toString();
-    }
-
-    _gerarComprovanteCliente(dados) {
-        return `
-COMPROVANTE DO CLIENTO
-======================
-MERCHANT: Loja Exemplo
-DATA: ${dados.dataHora}
-VALOR: R$ ${(Number(dados.valor) / 100).toFixed(2)}
-NSU: ${this._gerarNSU()}
-AUTORIZAÇÃO: ${this._gerarAutorizacao()}
-        `.trim();
-    }
-
-    _gerarComprovanteEstabelecimento(dados) {
-        return `
-COMPROVANTE DO ESTABELECIMENTO
-================================
-MERCHANT: Loja Exemplo
-DATA: ${dados.dataHora}
-VALOR: R$ ${(Number(dados.valor) / 100).toFixed(2)}
-NSU: ${this._gerarNSU()}
-AUTORIZAÇÃO: ${this._gerarAutorizacao()}
-        `.trim();
-    }
-
-    async status() {
-        return {
-            ativo: true,
-            sdkEncontrado: this.sdkEncontrado,
-            inicializado: this.inicializado,
-            configuracao: this.configuracao ? 'Carregada' : 'Não carregada'
-        };
-    }
+  _aguardar(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
 }
 
-module.exports = PayGoAdapter;
+module.exports = PaygoAdapter;

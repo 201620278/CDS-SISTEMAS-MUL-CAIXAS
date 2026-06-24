@@ -9,6 +9,10 @@ const { carregarCertificadoPfx } = require('../services/fiscal/certificateServic
 const { emitirPorVendaId } = require('../services/fiscal/emissor');
 const cancelarNfce = require('../services/fiscal/cancelarNfce');
 const { getFiscalSubDir } = require('../services/fiscal/paths');
+const {
+  exportarContabilidade,
+  limparExportacaoTemporaria
+} = require('../services/fiscal/exportarContabilidadeService');
 
 // Middleware para carregar perfil do usuário
 function carregarPerfilUsuario(req, res, next) {
@@ -381,6 +385,37 @@ router.get('/notas/:id', (req, res) => {
     if (!row) return res.status(404).json({ error: 'NFC-e não encontrada.' });
     res.json(row);
   });
+});
+
+router.post('/exportar-contabilidade', async (req, res) => {
+  let resultado = null;
+
+  try {
+    const { dataInicial, dataFinal } = req.body || {};
+    resultado = await exportarContabilidade({ dataInicial, dataFinal });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${resultado.nomeZip}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Export-Filename, X-Export-Arquivos, X-Export-Resumo');
+    res.setHeader('X-Export-Filename', resultado.nomeZip);
+    res.setHeader('X-Export-Arquivos', JSON.stringify(resultado.arquivosGerados));
+    res.setHeader('X-Export-Resumo', JSON.stringify(resultado.resumo));
+
+    const stream = fs.createReadStream(resultado.caminhoZip);
+    stream.on('close', () => limparExportacaoTemporaria(resultado));
+    stream.on('error', () => limparExportacaoTemporaria(resultado));
+    res.on('close', () => limparExportacaoTemporaria(resultado));
+    stream.pipe(res);
+  } catch (error) {
+    if (resultado) {
+      limparExportacaoTemporaria(resultado);
+    }
+
+    const status = error.statusCode || 500;
+    res.status(status).json({
+      error: error.message || 'Erro ao exportar documentos para contabilidade.'
+    });
+  }
 });
 
 module.exports = router;

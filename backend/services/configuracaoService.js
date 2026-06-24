@@ -1,25 +1,137 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_PATH = path.join(__dirname, '..', '..', 'config', 'configuracoes.json');
-const ELECTRON_CONFIG_PATH = path.join(__dirname, '..', '..', 'storage', 'config-servidor.json');
+const LEGACY_CONFIG_PATH = path.join(__dirname, '..', '..', 'config', 'configuracoes.json');
+const LEGACY_ELECTRON_PATHS = [
+  path.join(__dirname, '..', '..', 'storage', 'config-servidor.json'),
+  path.join(__dirname, '..', 'storage', 'config-servidor.json')
+];
 
 const DEFAULT = {
   tipoImplantacao: 'ERP_SEM_FISCAL',
   modoOperacao: 'LOCAL',
   ipServidor: '',
-  porta: 3001
+  porta: 3001,
+  modo_confirmacao_fiscal: 'TEF'
 };
 
 const TIPOS = ['ERP_SEM_FISCAL', 'ERP_FISCAL', 'ERP_MULTICAIXA'];
 const MODOS = ['LOCAL', 'CLIENTE_SERVIDOR'];
+const MODOS_CONFIRMACAO_FISCAL = ['TEF', 'MANUAL'];
+
+function getDbDir() {
+  return process.env.DB_DIR || path.join(
+    process.env.PROGRAMDATA || 'C:\\ProgramData',
+    'MercantilFiscal',
+    'dados'
+  );
+}
+
+function getPersistentConfigDir() {
+  const dir = path.join(getDbDir(), 'config');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getConfigPath() {
+  return path.join(getPersistentConfigDir(), 'configuracoes.json');
+}
+
+function getElectronConfigPath() {
+  return path.join(getPersistentConfigDir(), 'config-servidor.json');
+}
+
+function readJsonFile(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8') || '{}');
+  } catch (e) {
+    console.warn(`Não foi possível ler ${filePath}:`, e.message);
+    return null;
+  }
+}
+
+function readLegacyElectronConfig() {
+  for (const legacyPath of LEGACY_ELECTRON_PATHS) {
+    const data = readJsonFile(legacyPath);
+    if (data?.modo === 'cliente' && data.ipServidor) {
+      return data;
+    }
+  }
+  return null;
+}
+
+function buildConfigFromLegacyElectron(legacyElectron, baseConfig = {}) {
+  const base = normalizeConfig(baseConfig);
+  return normalizeConfig({
+    tipoImplantacao: base.tipoImplantacao === 'ERP_SEM_FISCAL' ? 'ERP_MULTICAIXA' : base.tipoImplantacao,
+    modoOperacao: 'CLIENTE_SERVIDOR',
+    ipServidor: legacyElectron.ipServidor,
+    porta: legacyElectron.porta || base.porta || DEFAULT.porta
+  });
+}
+
+function migrateLegacyConfig() {
+  const configPath = getConfigPath();
+
+  if (fs.existsSync(configPath)) {
+    return;
+  }
+
+  const legacyConfig = readJsonFile(LEGACY_CONFIG_PATH);
+  if (legacyConfig) {
+    const normalized = normalizeConfig(legacyConfig);
+    fs.writeFileSync(configPath, JSON.stringify(normalized, null, 2), 'utf8');
+    syncElectronConfig(normalized);
+    console.log('Configuração migrada de', LEGACY_CONFIG_PATH, 'para', configPath);
+    return;
+  }
+
+  const legacyElectron = readLegacyElectronConfig();
+  if (legacyElectron) {
+    const migrated = buildConfigFromLegacyElectron(legacyElectron);
+    fs.writeFileSync(configPath, JSON.stringify(migrated, null, 2), 'utf8');
+    syncElectronConfig(migrated);
+    console.log('Configuração de rede migrada do arquivo legado para:', configPath);
+    return;
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(DEFAULT, null, 2), 'utf8');
+  syncElectronConfig(DEFAULT);
+}
 
 function ensureConfigFile() {
-  const dir = path.dirname(CONFIG_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  if (!fs.existsSync(CONFIG_PATH)) {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(DEFAULT, null, 2), 'utf8');
+  migrateLegacyConfig();
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) {
+    fs.writeFileSync(configPath, JSON.stringify(DEFAULT, null, 2), 'utf8');
+    syncElectronConfig(DEFAULT);
   }
+}
+
+function normalizePadraoFiscal(obj) {
+  const origem = obj?.origem_padrao;
+  return {
+    cfop_padrao: obj?.cfop_padrao !== undefined && obj?.cfop_padrao !== null
+      ? String(obj.cfop_padrao).trim()
+      : '',
+    csosn_padrao: obj?.csosn_padrao !== undefined && obj?.csosn_padrao !== null
+      ? String(obj.csosn_padrao).trim()
+      : '',
+    origem_padrao: origem !== undefined && origem !== null
+      ? String(origem).trim()
+      : '',
+    cest_padrao: obj?.cest_padrao !== undefined && obj?.cest_padrao !== null
+      ? String(obj.cest_padrao).trim()
+      : ''
+  };
+}
+
+function normalizeModoConfirmacaoFiscal(valor) {
+  const modo = String(valor || DEFAULT.modo_confirmacao_fiscal).toUpperCase().trim();
+  return modo === 'MANUAL' ? 'MANUAL' : 'TEF';
 }
 
 function normalizeConfig(obj) {
@@ -27,14 +139,24 @@ function normalizeConfig(obj) {
     tipoImplantacao: String(obj?.tipoImplantacao || DEFAULT.tipoImplantacao).toUpperCase(),
     modoOperacao: String(obj?.modoOperacao || DEFAULT.modoOperacao).toUpperCase(),
     ipServidor: String(obj?.ipServidor || '').trim(),
-    porta: Number(obj?.porta || DEFAULT.porta)
+    porta: Number(obj?.porta || DEFAULT.porta),
+    modo_confirmacao_fiscal: normalizeModoConfirmacaoFiscal(obj?.modo_confirmacao_fiscal),
+    ...normalizePadraoFiscal(obj)
   };
+}
+
+function getModoConfirmacaoFiscal(cfg) {
+  return normalizeModoConfirmacaoFiscal((cfg || readConfig()).modo_confirmacao_fiscal);
+}
+
+function getPadraoFiscal(cfg) {
+  return normalizePadraoFiscal(cfg || readConfig());
 }
 
 function readConfig() {
   try {
     ensureConfigFile();
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    const raw = fs.readFileSync(getConfigPath(), 'utf8');
     const parsed = JSON.parse(raw || '{}');
     return Object.assign({}, DEFAULT, normalizeConfig(parsed));
   } catch (e) {
@@ -106,6 +228,10 @@ function validateConfig(obj) {
     errors.push('Modo Cliente/Servidor disponível apenas para ERP Multi-Caixa');
   }
 
+  if (!MODOS_CONFIRMACAO_FISCAL.includes(config.modo_confirmacao_fiscal)) {
+    errors.push('modo_confirmacao_fiscal inválido');
+  }
+
   return { valid: errors.length === 0, errors, config };
 }
 
@@ -116,9 +242,10 @@ function syncElectronConfig(cfg) {
     ? { modo: 'cliente', ipServidor: modoRede.ipServidor, porta: modoRede.porta }
     : { modo: 'local', porta: modoRede.porta };
 
-  const dir = path.dirname(ELECTRON_CONFIG_PATH);
+  const electronPath = getElectronConfigPath();
+  const dir = path.dirname(electronPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(ELECTRON_CONFIG_PATH, JSON.stringify(payload, null, 2), 'utf8');
+  fs.writeFileSync(electronPath, JSON.stringify(payload, null, 2), 'utf8');
   return payload;
 }
 
@@ -156,10 +283,30 @@ function saveConfig(obj) {
     throw error;
   }
 
-  const toSave = validation.config;
+  const current = readConfig();
+  const toSave = {
+    ...current,
+    tipoImplantacao: validation.config.tipoImplantacao,
+    modoOperacao: validation.config.modoOperacao,
+    ipServidor: validation.config.ipServidor,
+    porta: validation.config.porta,
+    modo_confirmacao_fiscal: validation.config.modo_confirmacao_fiscal
+  };
+
   ensureConfigFile();
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(toSave, null, 2), 'utf8');
+  fs.writeFileSync(getConfigPath(), JSON.stringify(toSave, null, 2), 'utf8');
   syncElectronConfig(toSave);
+  reloadGlobalConfig();
+  return toSave;
+}
+
+function savePadraoFiscal(obj) {
+  const current = readConfig();
+  const padrao = normalizePadraoFiscal(obj);
+  const toSave = { ...current, ...padrao };
+
+  ensureConfigFile();
+  fs.writeFileSync(getConfigPath(), JSON.stringify(toSave, null, 2), 'utf8');
   reloadGlobalConfig();
   return toSave;
 }
@@ -169,19 +316,52 @@ function recursoHabilitado(nomeRecurso) {
   return recursos[nomeRecurso] === true;
 }
 
+function obterModoEstacaoLocal() {
+  ensureConfigFile();
+  const cfg = readConfig();
+  const modoRede = getModoRedeElectron(cfg);
+  return {
+    modo: modoRede.modo,
+    ipServidor: modoRede.ipServidor || '',
+    porta: modoRede.porta || DEFAULT.porta
+  };
+}
+
+function voltarModoLocalEstacao() {
+  const current = readConfig();
+  return saveConfig({
+    tipoImplantacao: current.tipoImplantacao,
+    modoOperacao: 'LOCAL',
+    ipServidor: '',
+    porta: current.porta || DEFAULT.porta,
+    modo_confirmacao_fiscal: current.modo_confirmacao_fiscal
+  });
+}
+
 module.exports = {
-  CONFIG_PATH,
-  ELECTRON_CONFIG_PATH,
+  get CONFIG_PATH() { return getConfigPath(); },
+  get ELECTRON_CONFIG_PATH() { return getElectronConfigPath(); },
   DEFAULT,
   TIPOS,
   MODOS,
+  MODOS_CONFIRMACAO_FISCAL,
+  getModoConfirmacaoFiscal,
+  normalizeModoConfirmacaoFiscal,
+  getDbDir,
+  getConfigPath,
+  getElectronConfigPath,
   readConfig,
   saveConfig,
+  savePadraoFiscal,
+  getPadraoFiscal,
+  normalizePadraoFiscal,
   validateConfig,
   ensureConfigFile,
   getRecursos,
   getModoRedeElectron,
   syncElectronConfig,
   reloadGlobalConfig,
-  recursoHabilitado
+  recursoHabilitado,
+  obterModoEstacaoLocal,
+  voltarModoLocalEstacao
 };

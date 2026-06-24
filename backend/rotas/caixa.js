@@ -5,6 +5,7 @@ const { verificarToken } = require('./auth');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
 const bcrypt = require('bcryptjs');
 const { gravarAuditoria } = require('../services/auditoria');
+const { FILTRO_VENDA_VALIDA, getExprValorVenda } = require('../services/reportFiscalHelpers');
 
 function n(valor) {
   return Number(valor || 0);
@@ -78,6 +79,8 @@ function normalizarForma(forma) {
 function calcularResumoCaixa(caixa, options = {}, callback) {
   const data = caixa.data;
   const sessaoId = options.sessaoId || null;
+  const modoFiscal = options.modo_fiscal || '0';
+  const exprValor = getExprValorVenda(modoFiscal);
 
   // Se não recebeu sessaoId, tentar resolver a última sessão para este caixa
   const obterSessao = (cb) => {
@@ -109,11 +112,11 @@ function calcularResumoCaixa(caixa, options = {}, callback) {
     }
 
     db.all(`
-      SELECT forma_pagamento, SUM(total) AS total
-      FROM vendas
-      WHERE status = 'concluida'
-        AND caixa_sessao_id = ?
-      GROUP BY forma_pagamento
+      SELECT v.forma_pagamento, SUM(${exprValor}) AS total
+      FROM vendas v
+      WHERE ${FILTRO_VENDA_VALIDA}
+        AND v.caixa_sessao_id = ?
+      GROUP BY v.forma_pagamento
     `, [resolvedSessaoId], (err, vendas) => {
       if (err) return callback(err);
 
@@ -780,15 +783,17 @@ router.post('/fechar', verificarToken, validarCaixaAberto, (req, res) => {
 function calcularFechamentoDetalhado(caixa, options = {}, callback) {
   const data = caixa.data;
   const sessaoId = options.sessaoId || null;
+  const modoFiscal = options.modo_fiscal || '0';
+  const exprValor = getExprValorVenda(modoFiscal);
 
-  const vendasWhere = 'caixa_sessao_id = ?';
+  const vendasWhere = 'v.caixa_sessao_id = ?';
 
   db.all(`
-    SELECT forma_pagamento, SUM(total) AS total
-    FROM vendas
-    WHERE status = 'concluida'
+    SELECT v.forma_pagamento, SUM(${exprValor}) AS total
+    FROM vendas v
+    WHERE ${FILTRO_VENDA_VALIDA}
       AND ${vendasWhere}
-    GROUP BY forma_pagamento
+    GROUP BY v.forma_pagamento
   `, [sessaoId], (err, vendas) => {
     if (err) return callback(err);
 
@@ -951,6 +956,7 @@ router.get('/movimentacoes/:caixa_id', validarCaixaAberto, (req, res) => {
 
 router.get('/por-data', (req, res) => {
   const data = req.query.data || hoje();
+  const modoFiscal = req.query.modo_fiscal || '0';
 
   db.all(`
     SELECT c.*, ua.nome AS aberto_por_nome, uf.nome AS fechado_por_nome
@@ -987,7 +993,7 @@ router.get('/por-data', (req, res) => {
 
         const sessaoId = sRow ? sRow.id : null;
 
-        calcularResumoCaixa(caixa, { sessaoId }, (calcErr, resumo) => {
+        calcularResumoCaixa(caixa, { sessaoId, modo_fiscal: modoFiscal }, (calcErr, resumo) => {
           if (calcErr) {
             return res.status(500).json({ sucesso: false, mensagem: calcErr.message });
           }

@@ -59,8 +59,10 @@ window.minimizarModal = function(modalId) {
 
 // Carrega página de produtos
 function loadProdutos() {
+    const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+
     $.ajax({
-        url: `${API_URL}/produtos`,
+        url: `${API_URL}/produtos?modo_fiscal=${modoFiscal}`,
         method: 'GET',
         success: function (produtos) {
             window.produtosList = produtos || [];
@@ -72,6 +74,290 @@ function loadProdutos() {
     });
 }
 window.loadProdutos = loadProdutos;
+
+function obterQuantidadeEstoqueProduto(p) {
+    if (typeof obterEstoqueDisponivelProduto === 'function') {
+        return obterEstoqueDisponivelProduto(p);
+    }
+    return Number(p?.estoque_atual || 0);
+}
+
+function tituloColunaEstoqueLista() {
+    if (typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo()) {
+        return 'Estoque Fiscal';
+    }
+    return 'Estoque';
+}
+
+function formatarEstoqueDetalheProduto(produto) {
+    const unidade = produto.unidade || '';
+
+    if (typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo()) {
+        const fiscal = Number(produto.saldo_fiscal ?? 0);
+        return `<p><strong>Estoque Fiscal:</strong> ${formatarEstoqueProduto(fiscal, unidade)}</p>`;
+    }
+
+    const fiscal = Number(produto.saldo_fiscal ?? 0);
+    const naoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
+    const total = Number(produto.estoque_atual ?? (fiscal + naoFiscal));
+
+    return `
+        <p><strong>Estoque Fiscal:</strong> ${formatarEstoqueProduto(fiscal, unidade)}</p>
+        <p><strong>Estoque Não Fiscal:</strong> ${formatarEstoqueProduto(naoFiscal, unidade)}</p>
+        <p><strong>Estoque Total:</strong> ${formatarEstoqueProduto(total, unidade)}</p>
+    `;
+}
+
+function usuarioPodeAjustarEstoque() {
+    try {
+        const usuario = JSON.parse(localStorage.getItem('user') || '{}');
+        const perfil = String(usuario?.perfil || usuario?.nivel || '').trim().toUpperCase();
+        return usuario?.role === 'admin' || perfil === 'SUPER_ADMIN' || perfil === 'ADMIN';
+    } catch (e) {
+        return false;
+    }
+}
+
+function resolverItemFiscalParaSalvar(saldosIniciais) {
+    const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+    if (modoFiscal) return 1;
+    if (Number(saldosIniciais.saldo_nao_fiscal_inicial) > 0 && Number(saldosIniciais.saldo_fiscal_inicial) === 0) {
+        return 0;
+    }
+    return 1;
+}
+
+function obterSaldosIniciaisDoFormulario() {
+    if ($('#saldo_fiscal_inicial').length) {
+        const fiscal = parseFloat($('#saldo_fiscal_inicial').val()) || 0;
+        const naoFiscal = parseFloat($('#saldo_nao_fiscal_inicial').val()) || 0;
+        return {
+            saldo_fiscal_inicial: fiscal,
+            saldo_nao_fiscal_inicial: naoFiscal,
+            estoque_total: fiscal + naoFiscal
+        };
+    }
+
+    const legado = parseFloat($('#estoque_atual').val()) || 0;
+    return {
+        saldo_fiscal_inicial: legado,
+        saldo_nao_fiscal_inicial: 0,
+        estoque_total: legado
+    };
+}
+
+function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
+    const temMovimentacoes = Boolean(opcoes.temMovimentacoes ?? produto?.tem_movimentacoes);
+    const permiteEditarSaldos = !isEdit || !temMovimentacoes;
+    const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+    const saldoFiscal = Number(produto?.saldo_fiscal ?? 0);
+    const saldoNaoFiscal = Number(produto?.saldo_nao_fiscal ?? 0);
+    const estoqueTotal = Number(produto?.estoque_atual ?? (saldoFiscal + saldoNaoFiscal));
+    const unidade = produto?.unidade || '';
+
+    if (permiteEditarSaldos) {
+        if (modoFiscal) {
+            return `
+                <div class="col-md-6 mb-3">
+                    <label for="saldo_fiscal_inicial" class="form-label">Estoque Fiscal Inicial</label>
+                    <input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        class="form-control"
+                        id="saldo_fiscal_inicial"
+                        value="${isEdit ? saldoFiscal : 0}"
+                    >
+                    <input type="hidden" id="saldo_nao_fiscal_inicial" value="${isEdit ? saldoNaoFiscal : 0}">
+                </div>
+            `;
+        }
+
+        return `
+            <div class="col-md-4 mb-3">
+                <label for="saldo_fiscal_inicial" class="form-label">Estoque Fiscal Inicial</label>
+                <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="form-control"
+                    id="saldo_fiscal_inicial"
+                    value="${isEdit ? saldoFiscal : 0}"
+                >
+            </div>
+            <div class="col-md-4 mb-3">
+                <label for="saldo_nao_fiscal_inicial" class="form-label">Estoque Não Fiscal Inicial</label>
+                <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    class="form-control"
+                    id="saldo_nao_fiscal_inicial"
+                    value="${isEdit ? saldoNaoFiscal : 0}"
+                >
+            </div>
+            <div class="col-md-4 mb-3">
+                <label class="form-label">Estoque Total</label>
+                <input
+                    type="text"
+                    class="form-control bg-light"
+                    id="estoque_total_inicial_preview"
+                    readonly
+                    value="${formatarEstoqueProduto(estoqueTotal, unidade)}"
+                >
+            </div>
+        `;
+    }
+
+    const avisoAjuste = temMovimentacoes && usuarioPodeAjustarEstoque()
+        ? '<small class="text-muted d-block mt-1">Use o botão <strong>Ajustar Estoque</strong> na lista para alterar saldos.</small>'
+        : '';
+
+    if (modoFiscal) {
+        return `
+            <div class="col-md-6 mb-3">
+                <label class="form-label">Estoque Fiscal</label>
+                <input
+                    type="text"
+                    class="form-control bg-light"
+                    readonly
+                    value="${formatarEstoqueProduto(saldoFiscal, unidade)}"
+                >
+                ${avisoAjuste}
+            </div>
+        `;
+    }
+
+    return `
+        <div class="col-md-4 mb-3">
+            <label class="form-label">Estoque Fiscal</label>
+            <input
+                type="text"
+                class="form-control bg-light"
+                readonly
+                value="${formatarEstoqueProduto(saldoFiscal, unidade)}"
+            >
+        </div>
+        <div class="col-md-4 mb-3">
+            <label class="form-label">Estoque Não Fiscal</label>
+            <input
+                type="text"
+                class="form-control bg-light"
+                readonly
+                value="${formatarEstoqueProduto(saldoNaoFiscal, unidade)}"
+            >
+        </div>
+        <div class="col-md-4 mb-3">
+            <label class="form-label">Estoque Total</label>
+            <input
+                type="text"
+                class="form-control bg-light"
+                readonly
+                value="${formatarEstoqueProduto(estoqueTotal, unidade)}"
+            >
+            ${avisoAjuste}
+        </div>
+    `;
+}
+
+function atualizarCamposEstoqueModalProduto() {
+    const $modal = $('#produtoModal');
+    if (!$modal.length || !$modal.hasClass('show')) {
+        return;
+    }
+
+    const $area = $('#areaCamposEstoqueProduto');
+    if (!$area.length) {
+        return;
+    }
+
+    const saldosForm = obterSaldosIniciaisDoFormulario();
+    const isEdit = Boolean($('#produtoId').val());
+    const temMovimentacoes = $modal.data('temMovimentacoes') === true;
+    const saldosArmazenados = $modal.data('produtoSaldos') || {};
+
+    const produto = {
+        unidade: $('#unidade').val() || '',
+        tem_movimentacoes: temMovimentacoes,
+        saldo_fiscal: temMovimentacoes && isEdit
+            ? Number(saldosArmazenados.saldo_fiscal ?? 0)
+            : saldosForm.saldo_fiscal_inicial,
+        saldo_nao_fiscal: temMovimentacoes && isEdit
+            ? Number(saldosArmazenados.saldo_nao_fiscal ?? 0)
+            : saldosForm.saldo_nao_fiscal_inicial,
+        estoque_atual: temMovimentacoes && isEdit
+            ? Number(saldosArmazenados.estoque_atual ?? 0)
+            : saldosForm.estoque_total
+    };
+
+    $area.html(montarHtmlCamposEstoqueProduto(produto, isEdit, { temMovimentacoes }));
+
+    const permiteEditarSaldos = !isEdit || !temMovimentacoes;
+    if (permiteEditarSaldos) {
+        $('#saldo_fiscal_inicial').val(saldosForm.saldo_fiscal_inicial);
+        const $naoFiscal = $('#saldo_nao_fiscal_inicial');
+        if ($naoFiscal.length && $naoFiscal.attr('type') !== 'hidden') {
+            $naoFiscal.val(saldosForm.saldo_nao_fiscal_inicial);
+        }
+    }
+
+    inicializarPreviewEstoqueTotalInicial();
+}
+window.atualizarCamposEstoqueModalProduto = atualizarCamposEstoqueModalProduto;
+
+function atualizarPreviewEstoqueTotalInicial() {
+    const $preview = $('#estoque_total_inicial_preview');
+    if (!$preview.length) {
+        return;
+    }
+
+    const saldos = obterSaldosIniciaisDoFormulario();
+    const unidade = $('#unidade').val() || 'un';
+    $preview.val(formatarEstoqueProduto(saldos.estoque_total, unidade));
+}
+
+function inicializarPreviewEstoqueTotalInicial() {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) {
+        return;
+    }
+
+    $modal.off('input.previewEstoqueTotal change.previewEstoqueTotal')
+        .on(
+            'input.previewEstoqueTotal change.previewEstoqueTotal',
+            '#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial, #unidade',
+            atualizarPreviewEstoqueTotalInicial
+        );
+
+    atualizarPreviewEstoqueTotalInicial();
+}
+window.inicializarPreviewEstoqueTotalInicial = inicializarPreviewEstoqueTotalInicial;
+
+function formatarEstoqueExibicaoTela(produto) {
+    const unidade = produto?.unidade || '';
+    const valor = typeof obterEstoqueExibicaoSimplesProduto === 'function'
+        ? obterEstoqueExibicaoSimplesProduto(produto)
+        : Number(produto?.estoque_atual || 0);
+    return formatarEstoqueProduto(valor, unidade);
+}
+
+function formatarColunaEstoqueLista(p) {
+    const unidade = p.unidade || '';
+
+    if (typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo()) {
+        return formatarEstoqueProduto(Number(p.saldo_fiscal ?? 0), unidade);
+    }
+
+    const fiscal = Number(p.saldo_fiscal ?? 0);
+    const naoFiscal = Number(p.saldo_nao_fiscal ?? 0);
+    const total = Number(p.estoque_atual ?? (fiscal + naoFiscal));
+
+    return `
+        <div class="small">Fiscal: ${formatarEstoqueProduto(fiscal, unidade)}</div>
+        <div class="small">Não Fiscal: ${formatarEstoqueProduto(naoFiscal, unidade)}</div>
+        <div class="fw-semibold">Total: ${formatarEstoqueProduto(total, unidade)}</div>
+    `;
+}
 
 const RELATORIO_PRODUTOS_FILTROS = {
     todos: 'Todos os produtos',
@@ -101,7 +387,7 @@ function aplicarFiltroRelatorioProdutos() {
 }
 
 function classificarEstoqueProduto(p) {
-    const atual = Number(p.estoque_atual || 0);
+    const atual = obterQuantidadeEstoqueProduto(p);
     const minimo = Number(p.estoque_minimo || 0);
     if (minimo <= 0) return 'ok';
     if (atual <= minimo) return 'estoque_baixo';
@@ -172,11 +458,11 @@ function filtrarProdutosRelatorio(produtos, tipoFiltro) {
             return lista.filter((p) => classificarEstoqueRelatorio(p) === 'proximo_minimo');
         case 'vencidos':
             return lista.filter((p) => {
-                return classificarValidadeRelatorio(p) === 'vencido' && Number(p.estoque_atual || 0) > 0;
+                return classificarValidadeRelatorio(p) === 'vencido' && obterQuantidadeEstoqueProduto(p) > 0;
             });
         case 'proximo_vencimento':
             return lista.filter((p) => {
-                return classificarValidadeRelatorio(p) === 'proximo_vencimento' && Number(p.estoque_atual || 0) > 0;
+                return classificarValidadeRelatorio(p) === 'proximo_vencimento' && obterQuantidadeEstoqueProduto(p) > 0;
             });
         case 'todos':
         default:
@@ -298,6 +584,8 @@ function printRelatorioEstoqueProdutos() {
 
 function carregarRelatorioEstoqueProdutos(tipoFiltro = 'todos', filtroInicio = '', filtroFim = '') {
     const params = new URLSearchParams();
+    const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+    params.append('modo_fiscal', modoFiscal);
 
     if (filtroInicio) params.append('inicio', filtroInicio);
     if (filtroFim) params.append('fim', filtroFim);
@@ -332,7 +620,8 @@ function renderRelatorioEstoqueProdutos(produtos, tipoFiltro = 'todos', filtroIn
     const produtosExibidos = filtrarProdutosRelatorio(produtosFiltrados, tipoFiltro);
 
     const valorTotalFiscal = produtosExibidos.reduce((sum, p) => {
-        return sum + (Number(p.estoque_atual || 0) * Number(p.preco_compra || 0));
+        const qtd = obterQuantidadeEstoqueProduto(p);
+        return sum + (qtd * Number(p.preco_compra || 0));
     }, 0);
 
     const tituloModo = RELATORIO_PRODUTOS_FILTROS[tipoFiltro] || 'Todos os produtos';
@@ -395,7 +684,7 @@ function renderRelatorioEstoqueProdutos(produtos, tipoFiltro = 'todos', filtroIn
                                     <tr>
                                         <th>Produto</th>
                                         <th>Categoria</th>
-                                        <th>Estoque</th>
+                                        <th>${tituloColunaEstoqueLista()}</th>
                                         <th>Mínimo</th>
                                         <th>Lote</th>
                                         <th>Validade</th>
@@ -412,7 +701,7 @@ function renderRelatorioEstoqueProdutos(produtos, tipoFiltro = 'todos', filtroIn
                                             </td>
                                         </tr>
                                     ` : produtosExibidos.map(p => {
-                                        const estoqueAtual = Number(p.estoque_atual || 0);
+                                        const estoqueAtual = obterQuantidadeEstoqueProduto(p);
                                         const estoqueMinimo = Number(p.estoque_minimo || 0);
                                         const precoCompra = Number(p.preco_compra || 0);
                                         const totalItem = estoqueAtual * precoCompra;
@@ -422,7 +711,7 @@ function renderRelatorioEstoqueProdutos(produtos, tipoFiltro = 'todos', filtroIn
                                             <tr class="${classes.row}">
                                                 <td class="${classes.text}">${escapeHtml(p.nome || '-')}</td>
                                                 <td>${escapeHtml(p.categoria || '-')}</td>
-                                                <td>${estoqueAtual}</td>
+                                                <td>${formatarColunaEstoqueLista(p)}</td>
                                                 <td>${estoqueMinimo}</td>
                                                 <td>${escapeHtml(p.lote || '-')}</td>
                                                 <td>${formatarValidadeRelatorio(p.data_validade)}</td>
@@ -532,7 +821,7 @@ function renderProdutoRow(p) {
             <td>${formatCurrency(p.preco_compra || 0)}</td>
             <td>${formatCurrency(p.preco_venda || 0)}</td>
             <td class="${classes.estoque}">
-                ${formatarEstoqueProduto(p.estoque_atual, p.unidade)}
+                ${formatarColunaEstoqueLista(p)}
                 ${badges}
             </td>
             <td>
@@ -542,6 +831,11 @@ function renderProdutoRow(p) {
                 <button class="btn btn-sm btn-warning" onclick="editProduto(${p.id})">
                     <i class="fas fa-edit"></i>
                 </button>
+                ${usuarioPodeAjustarEstoque() ? `
+                <button class="btn btn-sm btn-success" onclick="abrirModalAjustarEstoque(${p.id})" title="Ajustar Estoque">
+                    <i class="fas fa-boxes"></i>
+                </button>
+                ` : ''}
                 <button class="btn btn-sm btn-danger" onclick="deleteProduto(${p.id})">
                     <i class="fas fa-trash"></i>
                 </button>
@@ -727,7 +1021,7 @@ function renderProdutos(produtos) {
                                 <th>Unidade</th>
                                 <th>Preço Compra</th>
                                 <th>Preço Venda</th>
-                                <th>Estoque</th>
+                                <th>${tituloColunaEstoqueLista()}</th>
                                 <th>Ações</th>
                             </tr>
                         </thead>
@@ -875,7 +1169,7 @@ function toggleProdutosCategoriaMenu(categoriaId, categoriaNome) {
                                     <th>Unidade</th>
                                     <th>Preço Compra</th>
                                     <th>Preço Venda</th>
-                                    <th>Estoque</th>
+                                    <th>${tituloColunaEstoqueLista()}</th>
                                     <th>Ações</th>
                                 </tr>
                             </thead>
@@ -1070,15 +1364,10 @@ function showProdutoModal(produto = null) {
                                     >
                                 </div>
 
-                                <div class="col-md-6 mb-3">
-                                    <label for="estoque_atual" class="form-label">Estoque Atual</label>
-                                    <input
-                                        type="number"
-                                        step="0.01"
-                                        class="form-control"
-                                        id="estoque_atual"
-                                        value="${isEdit ? Number(produto.estoque_atual || 0) : 0}"
-                                    >
+                                <div id="areaCamposEstoqueProduto" style="display: contents;">
+                                ${montarHtmlCamposEstoqueProduto(produto, isEdit, {
+                                    temMovimentacoes: produto?.tem_movimentacoes
+                                })}
                                 </div>
 
                                 <div class="col-md-6 mb-3">
@@ -1255,6 +1544,14 @@ function showProdutoModal(produto = null) {
     // inicializar armazenamento temporário de faixas (para produto novo)
     const faixasInit = (produto && Array.isArray(produto.atacado_faixas)) ? produto.atacado_faixas : [];
     $('#produtoModal').data('faixasTemp', faixasInit);
+    $('#produtoModal').data('temMovimentacoes', Boolean(produto?.tem_movimentacoes));
+    if (isEdit && produto) {
+        $('#produtoModal').data('produtoSaldos', {
+            saldo_fiscal: produto.saldo_fiscal,
+            saldo_nao_fiscal: produto.saldo_nao_fiscal,
+            estoque_atual: produto.estoque_atual
+        });
+    }
     // Remove botão flutuante se existir ao restaurar
     $('#btn-restaurar-produtoModal').remove();
 
@@ -1271,9 +1568,100 @@ function showProdutoModal(produto = null) {
 
     // Inicializar controle de visibilidade do lote inicial
     inicializarControleLoteInicial();
+    inicializarPreviewEstoqueTotalInicial();
+    inicializarEspelhoCodigoBarras(produto, isEdit);
+
+    if (!isEdit) {
+        aplicarPadraoFiscalNovoProduto();
+    }
 
     // ...
 }
+
+async function aplicarPadraoFiscalNovoProduto() {
+    if ($('#produtoId').val()) {
+        return;
+    }
+
+    try {
+        const token = localStorage.getItem('token') || '';
+        const response = await fetch(`${API_URL}/configuracoes-avancadas/padrao-fiscal`, {
+            headers: { Authorization: `Bearer ${token}` }
+        });
+
+        if (!response.ok) {
+            return;
+        }
+
+        const padrao = await response.json();
+        if (padrao.cfop_padrao) {
+            $('#cfop').val(padrao.cfop_padrao);
+        }
+        if (padrao.csosn_padrao) {
+            $('#csosn').val(padrao.csosn_padrao);
+        }
+        if (padrao.origem_padrao !== undefined && padrao.origem_padrao !== null && padrao.origem_padrao !== '') {
+            const origem = parseInt(padrao.origem_padrao, 10);
+            if (!Number.isNaN(origem)) {
+                $('#origem').val(origem);
+            }
+        }
+        if (padrao.cest_padrao) {
+            $('#cest').val(padrao.cest_padrao);
+        }
+    } catch (err) {
+        console.warn('Não foi possível carregar padrão fiscal da empresa:', err);
+    }
+}
+window.aplicarPadraoFiscalNovoProduto = aplicarPadraoFiscalNovoProduto;
+
+function inicializarEspelhoCodigoBarras(produto, isEdit) {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) {
+        return;
+    }
+
+    const codigoInicial = isEdit ? String(produto?.codigo || '').trim() : '';
+    const barrasInicial = isEdit ? String(produto?.codigo_barras || '').trim() : '';
+
+    if (barrasInicial && barrasInicial !== codigoInicial) {
+        $modal.data('codigoBarrasEditadoManualmente', true);
+        $modal.data('ultimoCodigoEspelhado', '');
+    } else {
+        $modal.data('codigoBarrasEditadoManualmente', false);
+        $modal.data('ultimoCodigoEspelhado', codigoInicial);
+    }
+
+    $modal.off('input.espelhoCodigo change.espelhoCodigo')
+        .on('input.espelhoCodigo change.espelhoCodigo', '#codigo', function () {
+            const codigo = String($(this).val() || '').trim();
+            const $barras = $('#codigo_barras');
+            const barras = String($barras.val() || '').trim();
+            const ultimoEspelhado = String($modal.data('ultimoCodigoEspelhado') || '');
+            const manual = $modal.data('codigoBarrasEditadoManualmente') === true;
+
+            if (!manual || barras === '' || barras === ultimoEspelhado) {
+                $barras.val(codigo);
+                $modal.data('ultimoCodigoEspelhado', codigo);
+                $modal.data('codigoBarrasEditadoManualmente', false);
+            }
+        })
+        .on('input.espelhoCodigo change.espelhoCodigo', '#codigo_barras', function () {
+            const codigo = String($('#codigo').val() || '').trim();
+            const barras = String($(this).val() || '').trim();
+
+            if (barras === codigo) {
+                $modal.data('codigoBarrasEditadoManualmente', false);
+                $modal.data('ultimoCodigoEspelhado', codigo);
+            } else if (barras === '') {
+                $modal.data('codigoBarrasEditadoManualmente', false);
+                $modal.data('ultimoCodigoEspelhado', '');
+            } else {
+                $modal.data('codigoBarrasEditadoManualmente', true);
+            }
+        });
+}
+window.inicializarEspelhoCodigoBarras = inicializarEspelhoCodigoBarras;
 
 // Função para controlar visibilidade dos campos de lote inicial
 function inicializarControleLoteInicial() {
@@ -1975,6 +2363,8 @@ async function saveProduto() {
         }
     }
 
+    const saldosIniciais = obterSaldosIniciaisDoFormulario();
+
     const data = {
         codigo: ($('#codigo').val() || '').trim(),
         nome: ($('#nome').val() || '').trim(),
@@ -1984,7 +2374,6 @@ async function saveProduto() {
         preco_compra: parseFloat($('#preco_compra').val()) || 0,
         preco_venda: parseFloat($('#preco_venda').val()) || 0,
         lucro_percentual: $('#lucro_percentual').val() !== '' ? parseFloat($('#lucro_percentual').val()) : null,
-        estoque_atual: parseFloat($('#estoque_atual').val()) || 0,
         estoque_minimo: parseFloat($('#estoque_minimo').val()) || 0,
         fornecedor: ($('#fornecedor').val() || '').trim(),
         data_validade: ($('#data_validade').val() || '').trim() || null,
@@ -2009,8 +2398,17 @@ async function saveProduto() {
         data_validade_inicial: ($('#data_validade_inicial').val() || '').trim() || null
     };
 
+    if ($('#saldo_fiscal_inicial').length) {
+        data.saldo_fiscal_inicial = saldosIniciais.saldo_fiscal_inicial;
+        data.saldo_nao_fiscal_inicial = saldosIniciais.saldo_nao_fiscal_inicial;
+    }
+
+    data.item_fiscal = resolverItemFiscalParaSalvar(saldosIniciais);
+    console.log('[AUDIT PRODUTO] Payload salvar:', JSON.stringify(data, null, 2));
+    console.log('[AUDIT PRODUTO] item_fiscal enviado:', data.item_fiscal);
+
     // Validação para produtos com controle de validade e estoque inicial
-    if (!id && data.controlar_validade === 1 && data.estoque_atual > 0) {
+    if (!id && data.controlar_validade === 1 && saldosIniciais.estoque_total > 0) {
         if (!data.data_validade_inicial) {
             showNotification('Para produtos com controle de validade e estoque inicial, informe a data de validade.', 'warning');
             $('#data_validade_inicial').focus();
@@ -2056,9 +2454,15 @@ async function saveProduto() {
         }
     }
 
-    if (data.estoque_atual < 0) {
-        showNotification('Estoque atual inválido.', 'warning');
-        $('#estoque_atual').focus();
+    if (saldosIniciais.saldo_fiscal_inicial < 0 || saldosIniciais.saldo_nao_fiscal_inicial < 0) {
+        showNotification('Saldos iniciais não podem ser negativos.', 'warning');
+        $('#saldo_fiscal_inicial').focus();
+        return;
+    }
+
+    if ($('#saldo_fiscal_inicial').length && saldosIniciais.estoque_total < 0) {
+        showNotification('Estoque inicial inválido.', 'warning');
+        $('#saldo_fiscal_inicial').focus();
         return;
     }
 
@@ -2172,6 +2576,112 @@ function showHistoricoPrecos(produtoId) {
 window.showHistoricoPrecos = showHistoricoPrecos;
 
 
+function historicoProduto(produtoId) {
+    const token = localStorage.getItem('token') || '';
+    const headers = { Authorization: 'Bearer ' + token };
+    const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+
+    Promise.all([
+        fetch(`${API_URL}/produtos/${produtoId}/historico-estoque`, { headers }).then((r) => (r.ok ? r.json() : [])),
+        fetch(`${API_URL}/produtos/${produtoId}/historico-precos`, { headers }).then((r) => (r.ok ? r.json() : [])),
+        fetch(`${API_URL}/produtos/${produtoId}`, { headers }).then((r) => (r.ok ? r.json() : null))
+    ])
+        .then(([ajustes, precos, produto]) => {
+            const nomeProduto = produto?.nome || `Produto #${produtoId}`;
+
+            const linhasAjustes = (ajustes && ajustes.length)
+                ? ajustes.map((r) => `
+                    <tr>
+                        <td>${formatDateTime(r.criado_em)}</td>
+                        <td>${escapeHtml(r.usuario_nome || '-')}</td>
+                        <td>${escapeHtml(r.motivo || '-')}</td>
+                        <td class="text-end">${Number(r.ajuste_fiscal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</td>
+                        ${modoFiscal ? '' : `<td class="text-end">${Number(r.ajuste_nao_fiscal || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</td>`}
+                        <td class="text-end">${Number(r.estoque_total_antes || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })} → ${Number(r.estoque_total_depois || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</td>
+                    </tr>
+                `).join('')
+                : `<tr><td colspan="${modoFiscal ? 5 : 6}" class="text-center text-muted">Nenhum ajuste de estoque registrado.</td></tr>`;
+
+            const linhasPrecos = (precos && precos.length)
+                ? precos.map((r) => `
+                    <tr>
+                        <td>${formatDateTime(r.created_at)}</td>
+                        <td>${formatCurrency(r.preco_compra_anterior || 0)} → ${formatCurrency(r.preco_compra_novo || 0)}</td>
+                        <td>${formatCurrency(r.preco_venda_anterior || 0)} → ${formatCurrency(r.preco_venda_novo || 0)}</td>
+                    </tr>
+                `).join('')
+                : '<tr><td colspan="3" class="text-center text-muted">Nenhuma alteração de preço registrada.</td></tr>';
+
+            const modalHtml = `
+                <div class="modal fade" id="historicoProdutoModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Histórico — ${escapeHtml(nomeProduto)}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <ul class="nav nav-tabs mb-3" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#hist-ajustes" type="button">Ajustes de Estoque</button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#hist-precos" type="button">Preços</button>
+                                    </li>
+                                </ul>
+                                <div class="tab-content">
+                                    <div class="tab-pane fade show active" id="hist-ajustes">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm table-striped">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Data</th>
+                                                        <th>Usuário</th>
+                                                        <th>Motivo</th>
+                                                        <th class="text-end">Ajuste Fiscal</th>
+                                                        ${modoFiscal ? '' : '<th class="text-end">Ajuste Não Fiscal</th>'}
+                                                        <th class="text-end">Total (antes → depois)</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>${linhasAjustes}</tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    <div class="tab-pane fade" id="hist-precos">
+                                        <div class="table-responsive">
+                                            <table class="table table-sm table-striped">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Data</th>
+                                                        <th>P. compra (de →)</th>
+                                                        <th>P. venda (de →)</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>${linhasPrecos}</tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            $('#historicoProdutoModal').remove();
+            $('#modal-container').append(modalHtml);
+            $('#historicoProdutoModal').modal('show');
+        })
+        .catch(() => {
+            showNotification('Erro ao carregar histórico do produto.', 'danger');
+        });
+}
+window.historicoProduto = historicoProduto;
+
+
 // Excluir produto
 function deleteProduto(id) {
     if (!confirm('Tem certeza que deseja excluir este produto?')) {
@@ -2216,10 +2726,185 @@ function editProduto(id) {
 window.editProduto = editProduto;
 
 
+function abrirModalAjustarEstoque(produtoId) {
+    if (!usuarioPodeAjustarEstoque()) {
+        showNotification('Acesso restrito: apenas ADMIN ou SUPER_ADMIN podem ajustar estoque.', 'warning');
+        return;
+    }
+
+    const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}`,
+        method: 'GET',
+        headers: {
+            Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+        },
+        success: function (produto) {
+            const saldoFiscal = Number(produto.saldo_fiscal ?? 0);
+            const saldoNaoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
+            const estoqueTotal = Number(produto.estoque_atual ?? (saldoFiscal + saldoNaoFiscal));
+            const unidade = produto.unidade || '';
+            const controlaValidade = Number(produto.controlar_validade || 0) === 1;
+
+            const camposFiscal = modoFiscal ? `
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">Saldo Fiscal Atual</label>
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade)}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="ajuste_fiscal" class="form-label">Ajuste Fiscal (+/-)</label>
+                    <input type="number" step="0.01" class="form-control" id="ajuste_fiscal" value="0">
+                </div>
+            ` : `
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">Saldo Fiscal Atual</label>
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade)}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">Saldo Não Fiscal Atual</label>
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoNaoFiscal, unidade)}">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label class="form-label">Estoque Total</label>
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(estoqueTotal, unidade)}">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="ajuste_fiscal" class="form-label">Ajuste Fiscal (+/-)</label>
+                    <input type="number" step="0.01" class="form-control" id="ajuste_fiscal" value="0">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="ajuste_nao_fiscal" class="form-label">Ajuste Não Fiscal (+/-)</label>
+                    <input type="number" step="0.01" class="form-control" id="ajuste_nao_fiscal" value="0">
+                </div>
+            `;
+
+            const camposValidade = controlaValidade ? `
+                <div class="col-12"><hr class="my-2"><small class="text-muted">Produto com controle de validade — informe validade em ajustes positivos.</small></div>
+                <div class="col-md-4 mb-3">
+                    <label for="ajuste_lote" class="form-label">Lote</label>
+                    <input type="text" class="form-control" id="ajuste_lote" value="">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label for="ajuste_data_fabricacao" class="form-label">Data Fabricação</label>
+                    <input type="date" class="form-control" id="ajuste_data_fabricacao" value="">
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label for="ajuste_data_validade" class="form-label">Data Validade</label>
+                    <input type="date" class="form-control" id="ajuste_data_validade" value="">
+                </div>
+            ` : '';
+
+            const modalHtml = `
+                <div class="modal fade" id="ajustarEstoqueModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Ajustar Estoque — ${escapeHtml(produto.nome || '')}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <form id="ajustarEstoqueForm">
+                                    <input type="hidden" id="ajuste_produto_id" value="${produtoId}">
+                                    <input type="hidden" id="ajuste_controla_validade" value="${controlaValidade ? 1 : 0}">
+                                    <div class="row">
+                                        ${camposFiscal}
+                                        ${camposValidade}
+                                        <div class="col-12 mb-3">
+                                            <label for="ajuste_motivo" class="form-label">Motivo *</label>
+                                            <textarea class="form-control" id="ajuste_motivo" rows="2" required placeholder="Descreva o motivo do ajuste"></textarea>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                                <button type="button" class="btn btn-primary" onclick="salvarAjusteEstoque()">Confirmar Ajuste</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            $('#ajustarEstoqueModal').remove();
+            $('#modal-container').append(modalHtml);
+            $('#ajustarEstoqueModal').modal('show');
+        },
+        error: function () {
+            showNotification('Erro ao carregar produto para ajuste de estoque.', 'danger');
+        }
+    });
+}
+window.abrirModalAjustarEstoque = abrirModalAjustarEstoque;
+
+
+function salvarAjusteEstoque() {
+    const produtoId = $('#ajuste_produto_id').val();
+    const motivo = ($('#ajuste_motivo').val() || '').trim();
+    const ajusteFiscal = parseFloat($('#ajuste_fiscal').val()) || 0;
+    const ajusteNaoFiscal = parseFloat($('#ajuste_nao_fiscal').val()) || 0;
+    const controlaValidade = $('#ajuste_controla_validade').val() === '1';
+    const modoFiscal = typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+
+    if (!motivo) {
+        showNotification('Informe o motivo do ajuste.', 'warning');
+        $('#ajuste_motivo').focus();
+        return;
+    }
+
+    if (ajusteFiscal === 0 && ajusteNaoFiscal === 0) {
+        showNotification('Informe ao menos um ajuste diferente de zero.', 'warning');
+        $('#ajuste_fiscal').focus();
+        return;
+    }
+
+    const ajustePositivo = Math.max(0, ajusteFiscal) + Math.max(0, (modoFiscal ? 0 : ajusteNaoFiscal));
+    if (controlaValidade && ajustePositivo > 0 && !($('#ajuste_data_validade').val() || '').trim()) {
+        showNotification('Informe a data de validade para ajuste positivo em produto com controle de validade.', 'warning');
+        $('#ajuste_data_validade').focus();
+        return;
+    }
+
+    const payload = {
+        ajuste_fiscal: ajusteFiscal,
+        ajuste_nao_fiscal: modoFiscal ? 0 : ajusteNaoFiscal,
+        motivo
+    };
+
+    if (controlaValidade) {
+        payload.lote = ($('#ajuste_lote').val() || '').trim() || undefined;
+        payload.data_fabricacao = ($('#ajuste_data_fabricacao').val() || '').trim() || undefined;
+        payload.data_validade = ($('#ajuste_data_validade').val() || '').trim() || undefined;
+    }
+
+    $.ajax({
+        url: `${API_URL}/produtos/${produtoId}/ajustar-estoque`,
+        method: 'POST',
+        contentType: 'application/json',
+        headers: {
+            Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+        },
+        data: JSON.stringify(payload),
+        success: function () {
+            $('#ajustarEstoqueModal').modal('hide');
+            showNotification('Estoque ajustado com sucesso!', 'success');
+            loadProdutos();
+        },
+        error: function (xhr) {
+            const erro = xhr.responseJSON?.error || 'Erro desconhecido';
+            showNotification('Erro ao ajustar estoque: ' + erro, 'danger');
+        }
+    });
+}
+window.salvarAjusteEstoque = salvarAjusteEstoque;
+
+
 // Visualizar produto
 function viewProduto(id) {
+    const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+
     $.ajax({
-        url: `${API_URL}/produtos/${id}`,
+        url: `${API_URL}/produtos/${id}?modo_fiscal=${modoFiscal}`,
         method: 'GET',
         headers: {
             Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
@@ -2247,7 +2932,7 @@ function viewProduto(id) {
                                 <p><strong>Unidade:</strong> ${escapeHtml(produtoNormalizado.unidade || '-')}</p>
                                 <p><strong>Preço de Compra:</strong> ${formatCurrency(produtoNormalizado.preco_compra || 0)}</p>
                                 <p><strong>Preço de Venda:</strong> ${formatCurrency(produtoNormalizado.preco_venda || 0)}</p>
-                                <p><strong>Estoque Atual:</strong> ${formatarEstoqueProduto(produtoNormalizado.estoque_atual, produtoNormalizado.unidade)}</p>
+                                ${formatarEstoqueDetalheProduto(produto)}
                                 <p><strong>Estoque Mínimo:</strong> ${Number(produtoNormalizado.estoque_minimo || 0)}</p>
                                 <p><strong>Fornecedor:</strong> ${escapeHtml(produtoNormalizado.fornecedor || '-')}</p>
                             </div>
@@ -2641,7 +3326,7 @@ async function carregarProdutosElegiveisPromocao() {
                             </div>
                             <small class="text-muted">
                                 ${escapeHtml(detalhe)} |
-                                Estoque: ${p.estoque_atual} |
+                                Estoque: ${formatarEstoqueExibicaoTela(p)} |
                                 Preço: ${formatCurrency(p.preco_venda || 0)}
                             </small>
                         </div>
@@ -2854,7 +3539,7 @@ async function carregarSugestoesPromocoes(autoGerar = false) {
                 <tr>
                     <th>Produto</th>
                     <th>Motivo</th>
-                    <th>Estoque</th>
+                    <th>${tituloColunaEstoqueLista()}</th>
                     <th>Preço Atual</th>
                     <th>Desconto Sugerido</th>
                     <th>Preço Promocional</th>
@@ -2874,7 +3559,7 @@ async function carregarSugestoesPromocoes(autoGerar = false) {
                         ${diasInfo}
                     </td>
                     <td>${formatarBadgeMotivoSugestao(s.motivo)}</td>
-                    <td>${escapeHtml(s.estoque_atual || 0)}</td>
+                    <td>${escapeHtml(formatarEstoqueExibicaoTela(s))}</td>
                     <td>${formatCurrency(s.preco_atual || 0)}</td>
                     <td><span class="badge bg-danger">${desconto}%</span></td>
                     <td>${formatCurrency(s.preco_sugerido || 0)}</td>
@@ -3089,7 +3774,7 @@ async function abrirModalConfirmarSugestao(sugestao) {
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label"><strong>Estoque Disponível</strong></label>
-                                <p class="form-control-static">${escapeHtml(sugestao.estoque_atual || 0)}</p>
+                                <p class="form-control-static">${escapeHtml(formatarEstoqueExibicaoTela(sugestao))}</p>
                             </div>
                         </div>
 
@@ -3423,7 +4108,7 @@ function montarTabelaEstoqueResumo(lista, classeLinha) {
           <tr class="${classeLinha}">
             <td class="fw-semibold">${escapeHtml(p.nome || '')}</td>
             <td>${escapeHtml(p.codigo || '-')}</td>
-            <td class="text-end fw-bold">${formatarEstoqueProduto(p.estoque_atual, p.unidade)}</td>
+            <td class="text-end fw-bold">${formatarColunaEstoqueLista(p)}</td>
             <td class="text-end">${formatarEstoqueProduto(p.estoque_minimo, p.unidade)}</td>
           </tr>
         `).join('')}
@@ -3491,7 +4176,7 @@ async function carregarEstoqueBaixoProdutos() {
   }
 
   try {
-    const response = await fetch(`${API_URL}/produtos/estoque/baixo`, {
+    const response = await fetch(`${API_URL}/produtos/estoque/baixo?modo_fiscal=${modoFiscalQueryParam()}`, {
       headers: {
         Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
       }
@@ -3531,7 +4216,7 @@ function inicializarModalVencimentosProdutos() {
                             <thead>
                                 <tr>
                                     <th>Produto</th>
-                                    <th>Estoque</th>
+                                    <th>${tituloColunaEstoqueLista()}</th>
                                     <th>Lote</th>
                                     <th>Validade</th>
                                     <th>Status</th>
@@ -3552,7 +4237,8 @@ function inicializarModalVencimentosProdutos() {
 
 async function carregarVencimentosProdutos() {
     try {
-        const response = await fetch(`${API_URL}/produtos/vencimentos/alertas?dias=30`, {
+        const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+        const response = await fetch(`${API_URL}/produtos/vencimentos/alertas?dias=30&modo_fiscal=${modoFiscal}`, {
             headers: {
                 Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
             }
@@ -3606,7 +4292,7 @@ function renderizarListaVencimentosProdutos(produtos) {
         return `
             <tr class="${linhaClasse}">
                 <td class="fw-semibold">${escapeHtml(produto.nome || '-')}</td>
-                <td>${produto.estoque_atual || 0}</td>
+                <td>${formatarEstoqueExibicaoTela(produto)}</td>
                 <td>${escapeHtml(produto.lote || '-')}</td>
                 <td>${validadeFormatada}</td>
                 <td>

@@ -26,12 +26,13 @@ function criarTransacao(dados, callback) {
       nsu,
       autorizacao,
       codigo_transacao,
+      idempotency_key,
       comprovante_cliente,
       comprovante_estabelecimento,
       payload_retorno,
       criado_em,
       atualizado_em
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `, [
     dados.venda_id || null,
     dados.tipo,
@@ -44,6 +45,7 @@ function criarTransacao(dados, callback) {
     dados.nsu || null,
     dados.autorizacao || null,
     dados.codigo_transacao || null,
+    dados.idempotency_key || null,
     comprovanteClienteCriptografado,
     comprovanteEstabelecimentoCriptografado,
     payloadRetornoCriptografado

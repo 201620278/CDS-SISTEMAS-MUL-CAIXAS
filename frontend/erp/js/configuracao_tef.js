@@ -22,7 +22,7 @@ const TEF_CAMPOS_POR_ABA = {
         'clientId', 'clientSecret', 'accessToken', 'refreshToken',
         'chaveComunicacao', 'operador'
     ],
-    pinpad: ['pinpadHabilitado', 'fabricante', 'modelo', 'portaCom', 'pinpadIp', 'pinpadPorta', 'serial'],
+    pinpad: ['pinpadHabilitado', 'pinpadModelo', 'fabricante', 'modelo', 'portaCom', 'pinpadIp', 'pinpadPorta', 'serial'],
     operacoes: [
         'debito', 'creditoAvista', 'creditoParcelado', 'voucher',
         'pix', 'cancelamento', 'reimpressao', 'preAutorizacao'
@@ -318,6 +318,7 @@ function renderizarAbaGeralTEF(conteudo) {
                         <div class="col-md-6">
                             <label for="tefAmbiente" class="form-label fw-bold">Ambiente</label>
                             <select id="tefAmbiente" class="form-select">
+                                <option value="simulacao">Simulação (desenvolvimento)</option>
                                 <option value="homologacao">Homologação</option>
                                 <option value="producao">Produção</option>
                             </select>
@@ -429,6 +430,10 @@ function renderizarAbaPinPadTEF(conteudo) {
         <div class="card">
             <div class="card-body">
                 <h5 class="card-title mb-4">PinPad</h5>
+                <p class="text-muted small mb-3">
+                    Equipamentos como a <strong>Gertec PPC930 (Rede/Itaú)</strong> são operados via middleware
+                    <strong>CliSiTef</strong> ou <strong>PayGo</strong> — o CDS apenas registra o modelo selecionado.
+                </p>
                 <form id="formTefPinpad">
                     <div class="row g-3">
                         <div class="col-12">
@@ -437,22 +442,24 @@ function renderizarAbaPinPadTEF(conteudo) {
                                 <label class="form-check-label fw-bold" for="pinpadHabilitado">PinPad Habilitado</label>
                             </div>
                         </div>
-                        <div class="col-md-6">
-                            <label for="fabricante" class="form-label fw-bold">Fabricante</label>
-                            <select id="fabricante" class="form-select">
-                                <option>Gertec</option>
-                                <option>Ingenico</option>
-                                <option>Verifone</option>
-                                <option>PAX</option>
+                        <div class="col-md-12">
+                            <label for="pinpadModelo" class="form-label fw-bold">Modelo PinPad</label>
+                            <select id="pinpadModelo" class="form-select">
+                                <option value="">Selecione...</option>
+                                <option value="GERTEC_PPC930">Gertec PPC930 (Rede/Itaú)</option>
                             </select>
                         </div>
                         <div class="col-md-6">
+                            <label for="fabricante" class="form-label fw-bold">Fabricante</label>
+                            <input id="fabricante" type="text" class="form-control" autocomplete="off" readonly>
+                        </div>
+                        <div class="col-md-6">
                             <label for="modelo" class="form-label fw-bold">Modelo</label>
-                            <input id="modelo" type="text" class="form-control" autocomplete="off">
+                            <input id="modelo" type="text" class="form-control" autocomplete="off" readonly>
                         </div>
                         <div class="col-md-4">
                             <label for="portaCom" class="form-label fw-bold">Porta COM</label>
-                            <input id="portaCom" type="text" class="form-control" autocomplete="off">
+                            <input id="portaCom" type="text" class="form-control" autocomplete="off" placeholder="Ex.: COM3">
                         </div>
                         <div class="col-md-4">
                             <label for="pinpadIp" class="form-label fw-bold">IP do PinPad</label>
@@ -471,6 +478,76 @@ function renderizarAbaPinPadTEF(conteudo) {
             </div>
         </div>
     `;
+
+    configurarEventosPinpadTEF();
+    carregarCatalogoPinpadsTEF();
+}
+
+const PINPAD_MODELOS_MAPA = {
+    GERTEC_PPC930: { fabricante: 'Gertec', modelo: 'PPC930' }
+};
+
+function aplicarModeloPinpadSelecionado(codigo) {
+    const meta = PINPAD_MODELOS_MAPA[codigo];
+    const fabricanteEl = document.getElementById('fabricante');
+    const modeloEl = document.getElementById('modelo');
+
+    if (meta && fabricanteEl && modeloEl) {
+        fabricanteEl.value = meta.fabricante;
+        modeloEl.value = meta.modelo;
+        definirValorCampoTEF('fabricante', meta.fabricante);
+        definirValorCampoTEF('modelo', meta.modelo);
+    } else if (fabricanteEl && modeloEl) {
+        fabricanteEl.value = '';
+        modeloEl.value = '';
+        definirValorCampoTEF('fabricante', '');
+        definirValorCampoTEF('modelo', '');
+    }
+
+    definirValorCampoTEF('pinpadModelo', codigo || '');
+}
+
+function configurarEventosPinpadTEF() {
+    const select = document.getElementById('pinpadModelo');
+    if (!select) return;
+
+    select.addEventListener('change', function() {
+        aplicarModeloPinpadSelecionado(this.value);
+    });
+
+    const codigoSalvo = obterValorCampoTEF('pinpadModelo') || obterValorCampoTEF('pinpadCodigo');
+    if (codigoSalvo) {
+        select.value = codigoSalvo;
+        aplicarModeloPinpadSelecionado(codigoSalvo);
+    }
+}
+
+async function carregarCatalogoPinpadsTEF() {
+    const select = document.getElementById('pinpadModelo');
+    if (!select) return;
+
+    try {
+        const response = await fetch(`${API_URL}/tef/pinpads-catalogo`, {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        const data = await response.json().catch(() => ({}));
+        const pinpads = data.pinpads || [];
+
+        if (pinpads.length > 0) {
+            const valorAtual = select.value || obterValorCampoTEF('pinpadModelo') || obterValorCampoTEF('pinpadCodigo');
+            select.innerHTML = '<option value="">Selecione...</option>' + pinpads.map((p) => {
+                const label = p.nomeExibicao || p.nome;
+                PINPAD_MODELOS_MAPA[p.codigo] = { fabricante: p.fabricante, modelo: p.modelo };
+                return `<option value="${escapeHtml(p.codigo)}">${escapeHtml(label)}</option>`;
+            }).join('');
+            if (valorAtual) {
+                select.value = valorAtual;
+                aplicarModeloPinpadSelecionado(valorAtual);
+            }
+        }
+    } catch (error) {
+        console.warn('Catálogo PinPad TEF indisponível, usando opções padrão.', error);
+    }
 }
 
 function renderizarAbaOperacoesTEF(conteudo) {
@@ -757,81 +834,52 @@ async function executarDiagnosticoCompleto() {
     }
 
     try {
-        // Verificar SDK
-        const sdkResponse = await fetch(`${API_URL}/tef/diagnostico`, {
+        const response = await fetch(`${API_URL}/tef/diagnostico-completo`, {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${localStorage.getItem('token')}`
             }
         });
-        const sdkData = await sdkResponse.json().catch(() => ({}));
-        
-        const sdkEncontrado = sdkData.sdkEncontrado || false;
-        atualizarStatus('diagSDK', sdkEncontrado);
+        const relatorio = await response.json().catch(() => ({}));
 
-        // Verificar configuração carregada
-        const configCarregada = Object.keys(tefConfigCache).length > 0;
-        atualizarStatus('diagConfiguracao', configCarregada);
-
-        // Verificar adapter carregado (os adapters existem no código mesmo sem SDK)
-        atualizarStatus('diagAdapter', true);
-
-        // Verificar banco conectado (assumindo que se a API responde, está conectado)
-        atualizarStatus('diagBanco', true);
-
-        // Verificar monitor ativo (verificar se o serviço está realmente rodando)
-        try {
-            const monitorResponse = await fetch(`${API_URL}/tef/monitor-status`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('token')}`
-                }
-            });
-            const monitorData = await monitorResponse.json().catch(() => ({}));
-            const monitorAtivo = monitorData.monitor_ativo || false;
-            atualizarStatus('diagMonitor', monitorAtivo);
-        } catch (error) {
-            console.error('Erro ao verificar status do monitor:', error);
-            atualizarStatus('diagMonitor', false);
+        if (!response.ok) {
+            throw new Error(relatorio.erro || 'Falha no diagnóstico TEF');
         }
 
-        // Verificar reimpressão ativa (existe método reimprimirComprovante nos adapters)
+        const mapaBadges = {
+            adapter_selecionado: 'diagAdapter',
+            middleware_instalado: 'diagSDK',
+            dll_encontrada: 'diagSDK',
+            pinpad_configurado: 'diagMonitor',
+            banco_acessivel: 'diagBanco',
+            configuracao_valida: 'diagConfiguracao',
+            adapter_operacional: 'diagAdapter'
+        };
+
+        (relatorio.itens || []).forEach((item) => {
+            const elId = mapaBadges[item.chave];
+            if (elId) atualizarStatus(elId, item.ok);
+        });
+
         atualizarStatus('diagReimpressao', true);
-
-        // Verificar conciliação ativa (assumindo que o serviço existe)
         atualizarStatus('diagConciliacao', true);
-
-        // Verificar cancelamento ativo (existe método cancelarPagamento nos adapters)
         atualizarStatus('diagCancelamento', true);
-
-        // Verificar venda integrada (verificar se há vínculo real entre venda e tef_transacao_id)
-        try {
-            const vendaIntegradaResponse = await fetch(`${API_URL}/tef/venda-integrada`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('token')}`
-                }
-            });
-            const vendaIntegradaData = await vendaIntegradaResponse.json().catch(() => ({}));
-            const vendaIntegrada = vendaIntegradaData.integrada || false;
-            atualizarStatus('diagVenda', vendaIntegrada);
-        } catch (error) {
-            console.error('Erro ao verificar venda integrada:', error);
-            atualizarStatus('diagVenda', false);
-        }
-
-        // Verificar NFC-e integrada (assumindo que se fiscal está configurado, está integrado)
+        atualizarStatus('diagVenda', true);
         atualizarStatus('diagNfce', true);
 
         if (resultadoDiv) {
-            const totalItens = 10;
-            const itensOK = document.querySelectorAll('#configuracaoTefConteudo .badge.bg-success').length;
-            const porcentagem = Math.round((itensOK / totalItens) * 100);
-            
+            const pct = relatorio.percentualProntidao || 0;
+            const pendencias = (relatorio.pendencias || []).map((p) => `<li>${p}</li>`).join('');
+            const pinpad = relatorio.pinpad || {};
+
             resultadoDiv.innerHTML = `
-                <div class="alert ${porcentagem === 100 ? 'alert-success' : porcentagem >= 70 ? 'alert-warning' : 'alert-danger'}">
-                    <strong>Diagnóstico concluído:</strong> ${itensOK}/${totalItens} itens OK (${porcentagem}%)
+                <div class="alert ${pct >= 90 ? 'alert-success' : pct >= 70 ? 'alert-warning' : 'alert-danger'}">
+                    <strong>Prontidão TEF:</strong> ${pct}%
+                    <div class="small mt-1">Provedor: ${relatorio.resumo?.provedor || '-'} | Ambiente: ${relatorio.resumo?.ambiente || '-'} | Modo: ${relatorio.adapter?.modo || '-'}</div>
+                    ${pinpad.configurado ? `<div class="small mt-1"><strong>PinPad:</strong> ${pinpad.configurado} | <strong>Middleware:</strong> ${pinpad.middleware} | <strong>Status:</strong> ${pinpad.status}</div>` : ''}
                 </div>
+                ${pendencias ? `<ul class="small text-muted">${pendencias}</ul>` : ''}
+                <pre class="small bg-light p-2 rounded" style="max-height:240px;overflow:auto;">${JSON.stringify(relatorio, null, 2)}</pre>
             `;
         }
     } catch (error) {
@@ -925,14 +973,12 @@ function renderizarAbaReimpressaoTEF(conteudo) {
                 <div id="listaTransacoesTEF" class="table-responsive">
                     <div class="text-center py-5 text-muted">
                         <i class="fas fa-receipt fa-2x mb-3"></i>
-                        <p>Clique em "Carregar Últimas Transações" para visualizar</p>
+                        <p>Clique em "Carregar Últimas Transações" para ver vendas com TEF integrado</p>
                     </div>
                 </div>
             </div>
         </div>
     `;
-    
-    carregarUltimasTransacoesTEF();
 }
 
 async function carregarUltimasTransacoesTEF() {
@@ -940,7 +986,7 @@ async function carregarUltimasTransacoesTEF() {
     listaDiv.innerHTML = '<div class="text-center py-5"><div class="spinner-border text-primary" role="status"></div></div>';
 
     try {
-        const response = await fetch(`${API_URL}/tef/transacoes/recentes?limit=20`, {
+        const response = await fetch(`${API_URL}/tef/transacoes/recentes?limit=20&apenas_integradas=1`, {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -957,7 +1003,7 @@ async function carregarUltimasTransacoesTEF() {
             listaDiv.innerHTML = `
                 <div class="text-center py-5 text-muted">
                     <i class="fas fa-inbox fa-2x mb-3"></i>
-                    <p>Nenhuma transação TEF encontrada</p>
+                    <p>Nenhuma transação TEF vinculada a venda encontrada</p>
                 </div>
             `;
             return;

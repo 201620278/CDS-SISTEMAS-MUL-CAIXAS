@@ -399,9 +399,26 @@ function renderConfiguracaoRedeCard(config = {}) {
     const modo = config.modo === 'cliente' ? 'cliente' : 'local';
     const ipServidor = config.ipServidor || '';
     const porta = Number.isInteger(config.porta) && config.porta > 0 ? config.porta : 3001;
+    const temElectron = Boolean(window.electronAPI && typeof window.electronAPI.voltarModoLocal === 'function');
 
     return `
         <form id="redeConfigForm" onsubmit="return false;">
+            ${temElectron ? `
+            <div id="containerVoltarServidorLocalRede" class="alert alert-warning mb-3">
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                    <div>
+                        <strong id="tituloModoRedeEstacao">Modo de rede desta estação</strong>
+                        <div class="small mb-0">
+                            <span id="descricaoModoRedeEstacao">Verificando configuração local...</span>
+                            <span class="d-block mt-1">Servidor remoto: <span id="lblServidorRemotoEstacaoRede">-</span></span>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-primary btn-sm" id="btnVoltarServidorLocalRede" onclick="voltarServidorLocalEstacao()" disabled>
+                        <i class="fas fa-home"></i> Voltar ao servidor local
+                    </button>
+                </div>
+            </div>
+            ` : ''}
             <div class="mb-3">
                 <label class="form-label fw-bold">Modo de operação</label>
                 <div class="form-check">
@@ -440,11 +457,121 @@ function renderConfiguracaoRedeCard(config = {}) {
     `;
 }
 
+async function abrirModalConfiguracaoRede() {
+    $('#modal-container').html(`
+        <div class="modal fade" id="modalConfiguracaoRede" tabindex="-1" aria-labelledby="modalConfiguracaoRedeLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header bg-primary text-white">
+                        <h5 class="modal-title" id="modalConfiguracaoRedeLabel">
+                            <i class="fas fa-network-wired"></i> Configuração de Rede
+                        </h5>
+                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Fechar"></button>
+                    </div>
+                    <div class="modal-body" id="redeConfigCardContainer">
+                        <div class="text-center py-4 text-muted">
+                            <i class="fas fa-spinner fa-spin me-2"></i> Carregando configuração de rede...
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `);
+
+    const modalEl = document.getElementById('modalConfiguracaoRede');
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+    await carregarConfiguracaoRede();
+}
+
 function aplicarEstadoConfiguracaoRede() {
     const modo = $('input[name="modoRede"]:checked').val() || 'local';
     const isCliente = modo === 'cliente';
     $('#containerClienteConfig').toggle(isCliente);
     $('#btnTestarConexaoServidor').prop('disabled', !isCliente);
+    aplicarEstadoBotaoVoltarLocal();
+}
+
+function estaEmModoClienteRemotoElectron() {
+    return Boolean(
+        window.electronAPI
+        && typeof window.electronAPI.estaEmModoClienteRemoto === 'function'
+        && window.electronAPI.estaEmModoClienteRemoto()
+    );
+}
+
+async function obterEstadoRedeEstacaoLocal() {
+    if (!window.electronAPI || typeof window.electronAPI.obterModoEstacao !== 'function') {
+        return { modo: 'local', ipServidor: '', porta: 3001 };
+    }
+
+    try {
+        return await window.electronAPI.obterModoEstacao();
+    } catch (error) {
+        console.error('Erro ao obter modo da estação:', error);
+        return { modo: 'local', ipServidor: '', porta: 3001 };
+    }
+}
+
+async function aplicarEstadoBotaoVoltarLocal() {
+    const temElectron = Boolean(window.electronAPI && typeof window.electronAPI.voltarModoLocal === 'function');
+    if (!temElectron) {
+        $('#containerVoltarServidorLocal').hide();
+        $('#containerVoltarServidorLocalRede').hide();
+        return;
+    }
+
+    const estacao = await obterEstadoRedeEstacaoLocal();
+    const modoCliente = estacao.modo === 'cliente' || estaEmModoClienteRemotoElectron();
+    const destinoRemoto = estacao.ipServidor
+        ? `${estacao.ipServidor}:${estacao.porta || 3001}`
+        : (typeof window.electronAPI.obterServidorRemoto === 'function'
+            ? (window.electronAPI.obterServidorRemoto() || '-')
+            : '-');
+
+    $('#lblServidorRemotoEstacao').text(destinoRemoto);
+    $('#lblServidorRemotoEstacaoRede').text(destinoRemoto);
+    $('#descricaoModoRedeEstacao').text(
+        modoCliente
+            ? 'Esta estação inicia conectada a um servidor remoto. Use o botão para voltar ao backend local.'
+            : 'Esta estação está configurada para usar o servidor local integrado.'
+    );
+    $('#tituloModoRedeEstacao').text(
+        modoCliente ? 'Estação em modo cliente' : 'Estação em modo local'
+    );
+
+    $('#containerVoltarServidorLocal').toggle(modoCliente);
+    $('#containerVoltarServidorLocalRede').toggle(true);
+    $('#btnVoltarServidorLocal').prop('disabled', !modoCliente);
+    $('#btnVoltarServidorLocalRede').prop('disabled', !modoCliente);
+}
+
+async function voltarServidorLocalEstacao() {
+    if (!window.electronAPI || typeof window.electronAPI.voltarModoLocal !== 'function') {
+        showNotification('Disponível apenas no aplicativo desktop (Electron).', 'warning');
+        return;
+    }
+
+    const botao = $('#btnVoltarServidorLocal, #btnVoltarServidorLocalRede');
+    botao.prop('disabled', true);
+
+    try {
+        const resultado = await window.electronAPI.voltarModoLocal();
+        if (resultado?.cancelado) {
+            return;
+        }
+        if (!resultado?.sucesso) {
+            throw new Error(resultado?.erro || 'Não foi possível voltar ao modo local.');
+        }
+    } catch (error) {
+        console.error(error);
+        showNotification(error.message || 'Erro ao voltar ao modo local.', 'danger');
+    } finally {
+        botao.prop('disabled', false);
+    }
 }
 
 function fetchComTimeout(url, timeout = 15000) {
@@ -1804,6 +1931,7 @@ function loadConfiguracoesAvancadas() {
 function renderConfiguracoesAvancadas(config) {
     const tipo = String(config.tipoImplantacao || 'ERP_SEM_FISCAL').toUpperCase();
     const modo = String(config.modoOperacao || 'LOCAL').toUpperCase();
+    const modoConfirmacaoFiscal = String(config.modo_confirmacao_fiscal || 'TEF').toUpperCase();
     const ipServidor = config.ipServidor || '';
     const porta = Number(config.porta) > 0 ? Number(config.porta) : 3001;
     const clienteServidorDisponivel = tipo === 'ERP_MULTICAIXA';
@@ -1820,9 +1948,14 @@ function renderConfiguracoesAvancadas(config) {
                         <h3>Integração TEF e PinPad</h3>
                         <p>Configuração de adquirentes, APIs e PinPads.</p>
                     </div>
+                    <div class="config-card" id="btnConfiguracaoRede" role="button" tabindex="0">
+                        <i class="fas fa-network-wired"></i>
+                        <h3>Configuração de Rede</h3>
+                        <p>Modo local, cliente/servidor e retorno ao servidor local.</p>
+                    </div>
                 </div>
 
-                <form id="formConfigAvancadas">
+                <form id="formConfigAvancadas" onsubmit="return false;">
                     <h6 class="fw-bold text-uppercase">Tipo de Implantação</h6>
                     <div class="mb-3">
                         <div class="form-check">
@@ -1862,6 +1995,40 @@ function renderConfiguracoesAvancadas(config) {
                     <div class="mb-3">
                         <label for="cfgPorta" class="form-label fw-bold">Porta</label>
                         <input type="number" class="form-control" id="cfgPorta" value="${escapeHtml(String(porta))}" min="1" max="65535">
+                    </div>
+
+                    <div id="containerVoltarServidorLocal" class="alert alert-warning mb-3" style="display:none;">
+                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                            <div>
+                                <strong id="tituloModoRedeEstacaoInline">Estação em modo cliente</strong>
+                                <div class="small mb-0">
+                                    <span id="descricaoModoRedeEstacaoInline">Use o botão para voltar ao backend local deste computador.</span>
+                                    <span class="d-block mt-1">Servidor remoto: <span id="lblServidorRemotoEstacao">-</span></span>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-primary btn-sm" id="btnVoltarServidorLocal" onclick="voltarServidorLocalEstacao()" disabled>
+                                <i class="fas fa-home"></i> Voltar ao servidor local
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-muted small">
+                        Para conectar terminais remotos ou voltar ao servidor local, use também o painel
+                        <button type="button" class="btn btn-link btn-sm p-0 align-baseline" onclick="abrirModalConfiguracaoRede()">Configuração de Rede</button>.
+                    </p>
+
+                    <hr>
+
+                    <h6 class="fw-bold text-uppercase">Confirmação Fiscal</h6>
+                    <p class="text-muted small mb-2">Define como o PDV confirma o recebimento fiscal antes da NFC-e.</p>
+                    <div class="mb-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="modoConfirmacaoFiscal" id="confirmacaoFiscalTef" value="TEF" ${modoConfirmacaoFiscal === 'TEF' ? 'checked' : ''}>
+                            <label class="form-check-label" for="confirmacaoFiscalTef">TEF</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="modoConfirmacaoFiscal" id="confirmacaoFiscalManual" value="MANUAL" ${modoConfirmacaoFiscal === 'MANUAL' ? 'checked' : ''}>
+                            <label class="form-check-label" for="confirmacaoFiscalManual">Manual</label>
+                        </div>
                     </div>
 
                     <hr>
@@ -1905,6 +2072,39 @@ function renderConfiguracoesAvancadas(config) {
 
                     <hr>
 
+                    <div id="secaoPadraoFiscalEmpresa">
+                        <h6 class="fw-bold text-uppercase"><i class="fas fa-file-invoice"></i> Padrão Fiscal da Empresa</h6>
+                        <p class="text-muted small mb-3">
+                            Defina os valores padrão para novos produtos, conforme orientação do contador.
+                            Alterações aqui não afetam produtos já cadastrados.
+                        </p>
+                        <div class="row g-3">
+                            <div class="col-md-3">
+                                <label for="padraoCfop" class="form-label fw-bold">CFOP</label>
+                                <input type="text" class="form-control" id="padraoCfop" value="${escapeHtml(config.cfop_padrao || '')}" placeholder="Ex.: 5405">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="padraoCsosn" class="form-label fw-bold">CSOSN</label>
+                                <input type="text" class="form-control" id="padraoCsosn" value="${escapeHtml(config.csosn_padrao || '')}" placeholder="Ex.: 500">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="padraoOrigem" class="form-label fw-bold">Origem</label>
+                                <input type="text" class="form-control" id="padraoOrigem" value="${escapeHtml(config.origem_padrao || '')}" placeholder="Ex.: 0">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="padraoCest" class="form-label fw-bold">CEST</label>
+                                <input type="text" class="form-control" id="padraoCest" value="${escapeHtml(config.cest_padrao || '')}" placeholder="Ex.: 0300100">
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button type="button" class="btn btn-success btn-sm" onclick="salvarPadraoFiscalEmpresa()">
+                                <i class="fas fa-save"></i> Salvar
+                            </button>
+                        </div>
+                    </div>
+
+                    <hr>
+
                     <div class="d-flex flex-wrap gap-2">
                         <button type="button" class="btn btn-primary" onclick="salvarConfiguracoesAvancadas()">
                             <i class="fas fa-save"></i> Salvar Configurações
@@ -1919,6 +2119,7 @@ function renderConfiguracoesAvancadas(config) {
     `;
 
     $('#page-content').html(html);
+    configurarFormConfigAvancadas();
     aplicarEstadoFormConfigAvancadas();
     carregarStatusPixAutomatico();
 
@@ -1926,6 +2127,12 @@ function renderConfiguracoesAvancadas(config) {
         .getElementById('btnConfiguracaoTEF')
         ?.addEventListener('click', () => {
             abrirConfiguracaoTEF();
+        });
+
+    document
+        .getElementById('btnConfiguracaoRede')
+        ?.addEventListener('click', () => {
+            abrirModalConfiguracaoRede();
         });
 }
 
@@ -1958,6 +2165,24 @@ function carregarConfigFiscalAvancadas() {
     }
 }
 
+function configurarFormConfigAvancadas() {
+    const $form = $('#formConfigAvancadas');
+
+    $form.off('submit.configAvancadas').on('submit.configAvancadas', function (event) {
+        event.preventDefault();
+        return false;
+    });
+}
+
+function manterTelaConfiguracoesAvancadas() {
+    if (typeof currentPage !== 'undefined') {
+        currentPage = 'configuracoes-avancadas';
+    }
+
+    $('.nav-link').removeClass('active');
+    $('.nav-link[data-page="configuracoes-avancadas"]').addClass('active');
+}
+
 function obterTipoImplantacaoSelecionado() {
     return String($('input[name="tipoImplantacao"]:checked').val() || 'ERP_SEM_FISCAL').toUpperCase();
 }
@@ -1978,6 +2203,7 @@ function aplicarEstadoFormConfigAvancadas() {
     $('#containerIpServidor').toggle(exigeIp);
     $('#cfgIpServidor').prop('required', exigeIp);
 
+    aplicarEstadoBotaoVoltarLocal();
     carregarConfigFiscalAvancadas();
 }
 
@@ -1989,6 +2215,7 @@ async function salvarConfiguracoesAvancadas() {
 
     const tipoImplantacao = obterTipoImplantacaoSelecionado();
     const modoOperacao = String($('input[name="modoOperacao"]:checked').val() || 'LOCAL').toUpperCase();
+    const modoConfirmacaoFiscal = String($('input[name="modoConfirmacaoFiscal"]:checked').val() || 'TEF').toUpperCase();
     const ipServidor = $('#cfgIpServidor').val().trim();
     const porta = Number($('#cfgPorta').val()) || 3001;
 
@@ -2012,6 +2239,7 @@ async function salvarConfiguracoesAvancadas() {
             body: JSON.stringify({
                 tipoImplantacao,
                 modoOperacao,
+                modo_confirmacao_fiscal: modoConfirmacaoFiscal,
                 ipServidor: modoOperacao === 'CLIENTE_SERVIDOR' ? ipServidor : '',
                 porta
             })
@@ -2031,6 +2259,7 @@ async function salvarConfiguracoesAvancadas() {
         }
 
         renderConfiguracoesAvancadas(data.config || {});
+        manterTelaConfiguracoesAvancadas();
         carregarStatusPixAutomatico();
     } catch (err) {
         console.error(err);
@@ -2039,3 +2268,46 @@ async function salvarConfiguracoesAvancadas() {
 }
 
 $(document).on('change', 'input[name="tipoImplantacao"], input[name="modoOperacao"]', aplicarEstadoFormConfigAvancadas);
+
+async function salvarPadraoFiscalEmpresa() {
+    if (!isSuperAdminUser()) {
+        showNotification('Acesso negado.', 'danger');
+        return;
+    }
+
+    const payload = {
+        cfop_padrao: ($('#padraoCfop').val() || '').trim(),
+        csosn_padrao: ($('#padraoCsosn').val() || '').trim(),
+        origem_padrao: ($('#padraoOrigem').val() || '').trim(),
+        cest_padrao: ($('#padraoCest').val() || '').trim()
+    };
+
+    try {
+        const response = await fetch(`${API_URL}/configuracoes-avancadas/padrao-fiscal`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Erro ao salvar padrão fiscal.');
+        }
+
+        showNotification(data.message || 'Padrão Fiscal da Empresa atualizado com sucesso.', 'success');
+
+        const padrao = data.padrao_fiscal || payload;
+        $('#padraoCfop').val(padrao.cfop_padrao || '');
+        $('#padraoCsosn').val(padrao.csosn_padrao || '');
+        $('#padraoOrigem').val(padrao.origem_padrao || '');
+        $('#padraoCest').val(padrao.cest_padrao || '');
+    } catch (err) {
+        console.error(err);
+        showNotification(err.message || 'Erro ao salvar padrão fiscal.', 'danger');
+    }
+}
+window.salvarPadraoFiscalEmpresa = salvarPadraoFiscalEmpresa;

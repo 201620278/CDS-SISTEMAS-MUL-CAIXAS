@@ -791,11 +791,26 @@ function verificarPermissaoEspecifica(nomeDaPermissao) {
   };
 }
 
+function exigirPerfilAjusteEstoque() {
+  return (req, res, next) => {
+    verificarToken(req, res, () => {
+      const perfil = String(req.user?.perfil || '').trim().toUpperCase();
+      if (req.user?.role === 'admin' || ['SUPER_ADMIN', 'ADMIN'].includes(perfil)) {
+        return next();
+      }
+      return res.status(403).json({
+        error: 'Acesso restrito: apenas SUPER_ADMIN ou ADMIN podem ajustar estoque.'
+      });
+    });
+  };
+}
+
 module.exports = {
   router,
   verificarToken,
   exigirAdmin,
   exigirSuperAdmin,
+  exigirPerfilAjusteEstoque,
   verificarSupervisorToken,
   isSupervisorPerfil,
   PERMISSOES_DISPONIVEIS,

@@ -14,6 +14,11 @@ const { validarItensFiscal } = require('./validadorFiscal');
 const { gerarDanfeHtml } = require('./danfe');
 const { getFiscalSubDir } = require('./paths');
 
+function itemEntraNaNfce(item) {
+  return Number(item.quantidade_fiscal || 0) > 0
+    && Number(item.valor_fiscal || 0) > 0;
+}
+
 console.log('EMISSOR REAL:', __filename);
 
 function salvarDebug(nome, conteudo) {
@@ -50,32 +55,53 @@ function carregarVenda(vendaId) {
       `, [vendaId], (itErr, itens) => {
         if (itErr) return reject(itErr);
 
-        db.all(
-          "SELECT forma_pagamento, valor FROM venda_pagamentos WHERE venda_id = ?",
-          [vendaId],
-          (pgErr, pagamentos) => {
-            if (pgErr) return reject(pgErr);
-            venda.pagamentos = pagamentos || [];
-
-            // Carregar dados TEF se existirem
-            db.get(
-              "SELECT * FROM tef_transacoes WHERE venda_id = ? LIMIT 1",
-              [vendaId],
-              (tefErr, tef) => {
-                if (tefErr) {
-                  console.error('Erro ao carregar TEF:', tefErr);
-                }
-                if (tef) {
-                  console.log('TEF carregado do banco:', tef);
-                  venda.tef = tef;
-                } else {
-                  console.log('Nenhum TEF encontrado para venda:', vendaId);
-                }
-                resolve({ venda, itens });
+        const carregarTefEVoltar = () => {
+          db.get(
+            "SELECT * FROM tef_transacoes WHERE venda_id = ? LIMIT 1",
+            [vendaId],
+            (tefErr, tef) => {
+              if (tefErr) {
+                console.error('Erro ao carregar TEF:', tefErr);
               }
-            );
+              if (tef) {
+                venda.tef = tef;
+              }
+              resolve({ venda, itens });
+            }
+          );
+        };
+
+        db.all(`
+          SELECT
+            forma_pagamento,
+            valor,
+            tipo_recebimento,
+            tef_transacao_id,
+            nsu,
+            autorizacao
+          FROM venda_recebimentos
+          WHERE venda_id = ?
+            AND status = 'aprovado'
+          ORDER BY id
+        `, [vendaId], (recErr, recebimentos) => {
+          if (recErr) return reject(recErr);
+
+          if (Array.isArray(recebimentos) && recebimentos.length > 0) {
+            venda.pagamentos = recebimentos;
+            carregarTefEVoltar();
+            return;
           }
-        );
+
+          db.all(
+            "SELECT forma_pagamento, valor FROM venda_pagamentos WHERE venda_id = ?",
+            [vendaId],
+            (pgErr, pagamentos) => {
+              if (pgErr) return reject(pgErr);
+              venda.pagamentos = pagamentos || [];
+              carregarTefEVoltar();
+            }
+          );
+        });
       });
     });
   });
@@ -165,6 +191,27 @@ function salvarNota(payload) {
 async function emitirPorVendaId(vendaId) {
   console.log('ENTROU NO EMISSOR FISCAL');
   const { venda, itens } = await carregarVenda(vendaId);
+
+  if (
+    venda.status_pagamento &&
+    venda.status_pagamento !== 'quitada'
+  ) {
+    return {
+      success: false,
+      status: 'aguardando_pagamento',
+      message: 'Venda ainda não está totalmente quitada.'
+    };
+  }
+
+  const itensFiscal = itens.filter(itemEntraNaNfce);
+
+  if (itensFiscal.length === 0) {
+    return {
+      success: true,
+      status: 'sem_itens_fiscais',
+      message: 'Venda sem itens fiscais. NFC-e não necessária.'
+    };
+  }
 
   const notaAutorizada = await new Promise((resolve, reject) => {
     db.get(`
@@ -257,12 +304,16 @@ async function emitirPorVendaId(vendaId) {
     };
   }
 
-  const errosFiscais = validarItensFiscal(itens, config.ambiente);
+  const errosFiscais =
+    validarItensFiscal(
+      itensFiscal,
+      config.ambiente
+    );
   if (errosFiscais.length > 0) {
     console.warn('Avisos fiscais (homologação):', errosFiscais.join('; '));
   }
 
-  const xmlBase = buildNfceXml({ config, venda, itens, numero });
+  const xmlBase = buildNfceXml({ config, venda, itens: itensFiscal, numero });
 
   let xmlAssinadoFinal = null;
   let qrCodeUrl = '';
@@ -361,7 +412,7 @@ async function emitirPorVendaId(vendaId) {
       ...venda,
       tpAmb: config.ambiente
     },
-    itens,
+    itens: itensFiscal,
     empresa: {
       nome: config.nomeEmpresa,
       cnpj: config.cnpj,

@@ -42,17 +42,52 @@ function formatarDataBr(iso) {
     return `${partes[2]}/${partes[1]}/${partes[0]}`;
 }
 
-function montarListaProdutosDashboard(lista) {
+function montarListaProdutosDashboard(lista, modoFiscalAtivo) {
     if (!lista || lista.length === 0) {
         return '<div class="text-muted">Nenhum dado encontrado.</div>';
     }
 
-    return lista.map((item, index) => `
+    return lista.map((item, index) => {
+        let quantidadeHtml;
+        if (modoFiscalAtivo) {
+            quantidadeHtml = `<strong>${Number(item.quantidade_vendida || item.quantidade_fiscal || 0)}</strong>`;
+        } else {
+            quantidadeHtml = `
+                <span class="text-end">
+                    <strong>${Number(item.quantidade_vendida || 0)}</strong>
+                    <small class="text-muted d-block">
+                        F: ${Number(item.quantidade_fiscal || 0)} |
+                        NF: ${Number(item.quantidade_nao_fiscal || 0)}
+                    </small>
+                </span>
+            `;
+        }
+
+        return `
         <div class="d-flex justify-content-between border-bottom py-2">
             <span>${index + 1}. ${escapeHtmlDashboard(item.nome)}</span>
-            <strong>${Number(item.quantidade_vendida || 0)}</strong>
+            ${quantidadeHtml}
         </div>
-    `).join('');
+    `;
+    }).join('');
+}
+
+function aplicarFaturamentoDashboard(id, valorPrincipal, fiscal, naoFiscal, modoFiscalAtivo) {
+    const el = document.getElementById(id);
+    if (!el) return;
+
+    if (modoFiscalAtivo) {
+        el.textContent = formatarMoedaDashboard(valorPrincipal);
+        return;
+    }
+
+    el.innerHTML = `
+        <div>${formatarMoedaDashboard(valorPrincipal)}</div>
+        <small class="text-muted d-block" style="font-size:0.78rem">
+            Fiscal: ${formatarMoedaDashboard(fiscal)} |
+            Não fiscal: ${formatarMoedaDashboard(naoFiscal)}
+        </small>
+    `;
 }
 
 function montarListaEstoqueBaixo(lista) {
@@ -64,7 +99,9 @@ function montarListaEstoqueBaixo(lista) {
         <div class="d-flex justify-content-between border-bottom py-2">
             <span>${escapeHtmlDashboard(item.nome)}</span>
             <span class="text-danger">
-                <strong>${Number(item.estoque_atual || 0)}</strong>
+                <strong>${typeof obterEstoqueExibicaoSimplesProduto === 'function'
+                    ? obterEstoqueExibicaoSimplesProduto(item)
+                    : Number(item.estoque_atual || 0)}</strong>
                 <small class="text-muted">/ mín. ${Number(item.estoque_minimo || 0)} ${escapeHtmlDashboard(item.unidade || '')}</small>
             </span>
         </div>
@@ -183,17 +220,31 @@ async function resolverAlerta(id) {
 
 function preencherDashboard(data) {
     const periodo = data.periodo || {};
+    const modoFiscalAtivo = Boolean(data.modo_fiscal_ativo);
     const labelPeriodo = document.getElementById('dashboardPeriodoLabel');
     if (labelPeriodo) {
-        labelPeriodo.textContent = `Período: ${formatarDataBr(periodo.inicio)} a ${formatarDataBr(periodo.fim)}`;
+        const sufixoModo = modoFiscalAtivo ? ' · Somente fiscal (F12)' : ' · Fiscal + Não fiscal + Total';
+        labelPeriodo.textContent = `Período: ${formatarDataBr(periodo.inicio)} a ${formatarDataBr(periodo.fim)}${sufixoModo}`;
     }
 
     setDashboardText('dashboardVendasHoje', data.vendas_hoje ?? 0);
-    setDashboardText('dashboardFaturamentoHoje', formatarMoedaDashboard(data.faturamento_hoje));
+    aplicarFaturamentoDashboard(
+        'dashboardFaturamentoHoje',
+        data.faturamento_hoje,
+        data.faturamento_hoje_fiscal,
+        data.faturamento_hoje_nao_fiscal,
+        modoFiscalAtivo
+    );
     setDashboardText('dashboardLucroHoje', formatarMoedaDashboard(data.lucro_estimado_hoje));
     setDashboardText('dashboardTicketHoje', formatarMoedaDashboard(data.ticket_medio_hoje));
 
-    setDashboardText('dashboardFaturamento', formatarMoedaDashboard(data.faturamento));
+    aplicarFaturamentoDashboard(
+        'dashboardFaturamento',
+        data.faturamento,
+        data.faturamento_fiscal,
+        data.faturamento_nao_fiscal,
+        modoFiscalAtivo
+    );
     setDashboardText('dashboardVendas', data.total_vendas ?? 0);
     setDashboardText('dashboardTicket', formatarMoedaDashboard(data.ticket_medio));
     setDashboardText('dashboardProdutos', data.produtos_vendidos ?? 0);
@@ -214,10 +265,10 @@ function preencherDashboard(data) {
     const formas = document.getElementById('dashboardFormasPagamento');
 
     if (mais) {
-        mais.innerHTML = montarListaProdutosDashboard(data.mais_vendidos || data.produtos_mais_vendidos);
+        mais.innerHTML = montarListaProdutosDashboard(data.mais_vendidos || data.produtos_mais_vendidos, modoFiscalAtivo);
     }
     if (menos) {
-        menos.innerHTML = montarListaProdutosDashboard(data.menos_vendidos || data.produtos_menos_vendidos);
+        menos.innerHTML = montarListaProdutosDashboard(data.menos_vendidos || data.produtos_menos_vendidos, modoFiscalAtivo);
     }
     if (estoque) {
         estoque.innerHTML = montarListaEstoqueBaixo(data.estoque_baixo);
@@ -305,19 +356,78 @@ function carregarDashboardComFiltro() {
     carregarDashboard(inicio, fim);
 }
 
+function modoDashboardFiscalAtivo() {
+    if (typeof modoFiscalAtivoSistema === 'function') {
+        return modoFiscalAtivoSistema();
+    }
+    return localStorage.getItem('pdv_modo_fiscal_ativo') === '1';
+}
+
+function alternarModoDashboardFiscal() {
+    if (typeof alternarModoFiscalGlobal === 'function') {
+        alternarModoFiscalGlobal();
+        return;
+    }
+
+    const novoValor = modoDashboardFiscalAtivo() ? '0' : '1';
+    localStorage.setItem('pdv_modo_fiscal_ativo', novoValor);
+    localStorage.setItem('modo_dashboard_fiscal', novoValor);
+    carregarDashboardComFiltro();
+}
+
+async function carregarModoDashboardFiscalPadrao(apiUrl) {
+    if (localStorage.getItem('pdv_modo_fiscal_ativo') !== null) {
+        localStorage.setItem(
+            'modo_dashboard_fiscal',
+            localStorage.getItem('pdv_modo_fiscal_ativo') === '1' ? '1' : '0'
+        );
+        return;
+    }
+
+    if (localStorage.getItem('modo_dashboard_fiscal') !== null) {
+        localStorage.setItem(
+            'pdv_modo_fiscal_ativo',
+            localStorage.getItem('modo_dashboard_fiscal') === '1' ? '1' : '0'
+        );
+        return;
+    }
+
+    try {
+        const response = await fetch(`${apiUrl}/configuracoes/modo_dashboard_fiscal`, {
+            headers: {
+                Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
+            }
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            const valor = data.valor === '1' ? '1' : '0';
+            localStorage.setItem('modo_dashboard_fiscal', valor);
+            localStorage.setItem('pdv_modo_fiscal_ativo', valor);
+            return;
+        }
+    } catch (error) {
+        console.error('Erro ao carregar modo_dashboard_fiscal:', error);
+    }
+
+    localStorage.setItem('modo_dashboard_fiscal', '0');
+    localStorage.setItem('pdv_modo_fiscal_ativo', '0');
+}
+
 async function carregarDashboard(inicio = null, fim = null) {
     try {
         const apiUrl = (typeof API_URL === 'string' && API_URL.trim() !== '')
             ? API_URL
             : `${window.location.origin}/api`;
 
+        await carregarModoDashboardFiscalPadrao(apiUrl);
+
         const dataInicio = inicio || dataDiasAtrasDashboard(7);
         const dataFim = fim || dataHojeDashboard();
 
-        // Check if fiscal mode is active
-        const modoFiscalAtivo = localStorage.getItem('pdv_modo_fiscal_ativo') === '1';
+        const modoFiscalAtivo = modoDashboardFiscalAtivo();
 
-        console.log('Modo fiscal ativo:', modoFiscalAtivo);
+        console.log('Modo dashboard fiscal ativo:', modoFiscalAtivo);
 
         const response = await fetch(`${apiUrl}/dashboard/resumo?inicio=${dataInicio}&fim=${dataFim}&modo_fiscal=${modoFiscalAtivo ? '1' : '0'}`, {
             headers: {
@@ -344,7 +454,7 @@ async function carregarDashboard(inicio = null, fim = null) {
 
 async function carregarVencimentosDashboard(apiUrl) {
     try {
-        const response = await fetch(`${apiUrl}/produtos/vencimentos/alertas?dias=30`, {
+        const response = await fetch(`${apiUrl}/produtos/vencimentos/alertas?dias=30&modo_fiscal=${modoDashboardFiscalAtivo() ? '1' : '0'}`, {
             headers: {
                 Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
             }
@@ -388,6 +498,9 @@ function initDashboard() {
         });
     }
 
+    document.removeEventListener('keydown', window._dashboardModoFiscalF12Handler);
+    window._dashboardModoFiscalF12Handler = null;
+
     prepararFiltroDashboard();
     carregarDashboardComFiltro();
 }
@@ -395,3 +508,4 @@ function initDashboard() {
 window.initDashboard = initDashboard;
 window.carregarDashboard = carregarDashboard;
 window.carregarDashboardComFiltro = carregarDashboardComFiltro;
+window.alternarModoDashboardFiscal = alternarModoDashboardFiscal;

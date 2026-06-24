@@ -1,6 +1,7 @@
 const { obterAdapter } = require('./tefFactory');
 const repository = require('./tefRepository');
 const tefEvents = require('./tefEvents');
+const tefContrato = require('./tefContrato');
 const TefFiscalValidator = require('./tefFiscalValidator');
 const DataMaskingService = require('../crypto/dataMaskingService');
 const tefLockService = require('./tefLockService');
@@ -8,6 +9,7 @@ const tefFraudDetectionService = require('./tefFraudDetectionService');
 const tefRetryService = require('./tefRetryService');
 const tefCircuitBreakerService = require('./tefCircuitBreakerService');
 const tefFailureNotificationService = require('./tefFailureNotificationService');
+const tefFluxoPagamento = require('./tefFluxoPagamento');
 
 class TefManager {
 
@@ -18,13 +20,17 @@ class TefManager {
 
   async autorizar(dados, timeoutMs) {
     const operacaoTimeout = timeoutMs || this.timeout;
+    const dadosNormalizados = {
+      ...dados,
+      tipo: tefFluxoPagamento.normalizarTipoTef(dados.tipo)
+    };
     
     // Determinar chave do lock (usar idempotency_key ou venda_id)
-    const lockKey = dados.idempotency_key || dados.venda_id || `tef_${Date.now()}`;
+    const lockKey = dadosNormalizados.idempotency_key || dadosNormalizados.venda_id || `tef_${Date.now()}`;
     
     try {
       // Validar regras fiscais antes de autorizar
-      const validacaoFiscal = TefFiscalValidator.validarTransacao(dados);
+      const validacaoFiscal = TefFiscalValidator.validarTransacao(dadosNormalizados);
       if (!validacaoFiscal.valido) {
         return {
           sucesso: false,
@@ -39,7 +45,7 @@ class TefManager {
         ip_address: dados.ip_address || null,
         user_agent: dados.user_agent || null
       };
-      const analiseFraude = await tefFraudDetectionService.analisarTransacao(dados, contexto);
+      const analiseFraude = await tefFraudDetectionService.analisarTransacao(dadosNormalizados, contexto);
       
       if (analiseFraude.suspeita) {
         // Registrar alerta de fraude nos logs
@@ -61,15 +67,24 @@ class TefManager {
       }
 
       // Verificar idempotência para evitar duplicação
-      if (dados.idempotency_key) {
-        const transacaoExistente = await this._verificarIdempotencia(dados.idempotency_key);
+      if (dadosNormalizados.idempotency_key) {
+        const transacaoExistente = await this._verificarIdempotencia(dadosNormalizados.idempotency_key);
         if (transacaoExistente) {
-          return {
-            sucesso: false,
-            codigo: 'TRANSACAO_DUPLICADA',
-            mensagem: 'Transação duplicada detectada',
-            transacao_id: transacaoExistente.id,
+          const completa = await this._buscarTransacaoCompleta(transacaoExistente.id);
+          const resposta = tefContrato.paraRespostaApi({
+            sucesso: tefContrato.estaAprovado({ status: transacaoExistente.status }),
             status: transacaoExistente.status,
+            nsu: completa?.nsu,
+            autorizacao: completa?.autorizacao,
+            adquirente: completa?.adquirente,
+            bandeira: completa?.bandeira,
+            comprovanteCliente: completa?.comprovante_cliente,
+            comprovanteLoja: completa?.comprovante_estabelecimento,
+            codigo: 'TRANSACAO_DUPLICADA',
+            mensagem: 'Transação duplicada detectada — retornando existente'
+          }, transacaoExistente.id);
+          return {
+            ...resposta,
             transacao_existente: true
           };
         }
@@ -90,20 +105,20 @@ class TefManager {
                 }, operacaoTimeout);
 
                 repository.criarTransacao({
-                  venda_id: dados.venda_id || null,
-                  tipo: dados.tipo,
-                  valor: dados.valor,
-                  parcelas: dados.parcelas || 1,
+                  venda_id: dadosNormalizados.venda_id || null,
+                  tipo: dadosNormalizados.tipo,
+                  valor: dadosNormalizados.valor,
+                  parcelas: dadosNormalizados.parcelas || 1,
                   status: 'pendente',
                   provedor: adapter.nome,
-                  idempotency_key: dados.idempotency_key || null
+                  idempotency_key: dadosNormalizados.idempotency_key || null
                 }, async (err, transacaoId) => {
                   clearTimeout(timeoutId);
                   
                   if (err) {
                     // Se erro for de chave duplicada (idempotency_key), buscar transação existente
                     if (err.message && err.message.includes('UNIQUE constraint')) {
-                      const transacaoExistente = await this._buscarPorIdempotencyKey(dados.idempotency_key);
+                      const transacaoExistente = await this._buscarPorIdempotencyKey(dadosNormalizados.idempotency_key);
                       if (transacaoExistente) {
                         return resolve({
                           sucesso: false,
@@ -119,44 +134,52 @@ class TefManager {
                   }
 
                   // Mascarar dados sensíveis nos logs
-                  const dadosMascarados = DataMaskingService.mascararObjeto(dados);
+                  const dadosMascarados = DataMaskingService.mascararObjeto(dadosNormalizados);
                   repository.registrarLog(transacaoId, 'INICIO', 'Transação TEF iniciada', dadosMascarados);
 
                   tefEvents.emitirEstado(tefEvents.estados.INSIRA_CARTAO);
 
                   try {
-                    const retorno = await adapter.autorizarPagamento(dados);
+                    const retornoBruto = await adapter.autorizarPagamento(dadosNormalizados);
+                    const retorno = tefContrato.criarRespostaAutorizacao({
+                      sucesso: retornoBruto.sucesso,
+                      status: retornoBruto.status,
+                      nsu: retornoBruto.nsu,
+                      autorizacao: retornoBruto.autorizacao,
+                      adquirente: retornoBruto.adquirente,
+                      bandeira: retornoBruto.bandeira,
+                      comprovanteCliente: retornoBruto.comprovanteCliente || retornoBruto.comprovante_cliente,
+                      comprovanteLoja: retornoBruto.comprovanteLoja || retornoBruto.comprovante_estabelecimento,
+                      transacaoId: String(transacaoId),
+                      codigo: retornoBruto.codigo,
+                      mensagem: retornoBruto.mensagem,
+                      payloadRetorno: retornoBruto.payloadRetorno || retornoBruto.payload_retorno,
+                      modo: retornoBruto.modo
+                    });
 
                     tefEvents.emitirEstado(tefEvents.estados.PROCESSANDO);
 
+                    const persistencia = tefContrato.paraPersistencia(retorno);
+
                     repository.atualizarTransacao(transacaoId, {
                       venda_id: dados.venda_id || null,
-                      status: retorno.status,
-                      adquirente: retorno.adquirente,
-                      bandeira: retorno.bandeira,
-                      nsu: retorno.nsu,
-                      autorizacao: retorno.autorizacao,
-                      codigo_transacao: retorno.codigo_transacao,
-                      comprovante_cliente: retorno.comprovante_cliente,
-                      comprovante_estabelecimento: retorno.comprovante_estabelecimento,
-                      payload_retorno: retorno.payload_retorno
+                      ...persistencia
                     }, (updateErr) => {
                       if (updateErr) {
                         return reject(updateErr);
                       }
 
-                      if (retorno.status === 'aprovado') {
+                      if (tefContrato.estaAprovado(retorno)) {
+                        tefEvents.emitirEstadoPinpad(tefEvents.estadosPinpad.TRANSACAO_APROVADA, { transacaoId });
                         tefEvents.emitirEstado(tefEvents.estados.APROVADO);
+                      } else if (retorno.status === tefContrato.STATUS.NEGADO) {
+                        tefEvents.emitirEstadoPinpad(tefEvents.estadosPinpad.TRANSACAO_NEGADA, { transacaoId });
                       }
 
-                      // Mascarar dados sensíveis nos logs
                       const retornoMascarado = DataMaskingService.mascararObjeto(retorno);
                       repository.registrarLog(transacaoId, 'RETORNO', retorno.mensagem, retornoMascarado);
 
-                      resolve({
-                        transacao_id: transacaoId,
-                        ...retorno
-                      });
+                      resolve(tefContrato.paraRespostaApi(retorno, transacaoId));
                     });
                   } catch (error) {
                     repository.registrarLog(transacaoId, 'ERRO', error.message, { error: error.message });
@@ -260,6 +283,16 @@ class TefManager {
     });
   }
 
+  async _buscarTransacaoCompleta(transacaoId) {
+    return new Promise((resolve, reject) => {
+      const db = require('../../database');
+      db.get('SELECT * FROM tef_transacoes WHERE id = ?', [transacaoId], (err, row) => {
+        if (err) return reject(err);
+        resolve(row || null);
+      });
+    });
+  }
+
   async cancelar(transacaoId, motivo = 'Cancelamento da venda') {
     return new Promise((resolve, reject) => {
       const db = require('../../database');
@@ -291,11 +324,23 @@ class TefManager {
 
         try {
           const adapter = await obterAdapter();
-          const retorno = await adapter.cancelarPagamento({
+          const retornoBruto = await adapter.cancelarPagamento({
             transacao_id: transacaoId,
             nsu: transacao.nsu,
             autorizacao: transacao.autorizacao,
             motivo
+          });
+
+          const retorno = tefContrato.criarRespostaCancelamento({
+            sucesso: retornoBruto.sucesso,
+            status: retornoBruto.status,
+            nsu: retornoBruto.nsu,
+            autorizacao: retornoBruto.autorizacao,
+            transacaoId: String(transacaoId),
+            codigo: retornoBruto.codigo,
+            mensagem: retornoBruto.mensagem,
+            payloadRetorno: retornoBruto.payloadRetorno || retornoBruto.payload_retorno,
+            modo: retornoBruto.modo
           });
 
           db.run(`
@@ -314,10 +359,11 @@ class TefManager {
 
             repository.registrarLog(transacaoId, 'CANCELAMENTO_RETORNO', retorno.mensagem, retorno);
 
-            resolve({
-              transacao_id: transacaoId,
-              ...retorno
-            });
+            resolve(tefContrato.paraRespostaApi({
+              ...retorno,
+              status: retorno.status,
+              sucesso: retorno.sucesso
+            }, transacaoId));
           });
 
         } catch (error) {
@@ -340,10 +386,10 @@ class TefManager {
     }
   }
 
-  async reimprimir(transacaoId) {
+  async reimprimir(transacaoId, tipo = 'cliente') {
     try {
       const adapter = await obterAdapter();
-      return await adapter.reimprimirComprovante(transacaoId);
+      return await adapter.reimprimirComprovante(transacaoId, tipo);
     } catch (error) {
       return Promise.reject(error);
     }

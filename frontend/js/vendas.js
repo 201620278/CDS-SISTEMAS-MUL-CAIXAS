@@ -114,7 +114,9 @@ function renderVendas(vendas) {
                                     <td>
                                         <button class="btn btn-sm btn-info" onclick="viewVenda(${v.id})"><i class="fas fa-eye"></i></button>
                                         <button class="btn btn-sm btn-secondary" title="Resumo Venda/NFC-e/TEF" onclick="verResumoVendaFiscalTEF(${v.id})">📄</button>
-                                        ${v.status !== 'cancelada' ? `<button class="btn btn-sm btn-danger" onclick="cancelarVendaNaoFiscal(${v.id})"><i class="fas fa-times"></i></button>` : ''}
+                                        ${v.status !== 'cancelada' ? `
+                                        <button class="btn btn-sm btn-warning" onclick="abrirDevolucaoVenda(${v.id})" title="Devolução parcial"><i class="fas fa-undo"></i></button>
+                                        <button class="btn btn-sm btn-danger" onclick="cancelarVendaNaoFiscal(${v.id})"><i class="fas fa-times"></i></button>` : ''}
                                     </td>
                                 </tr>
                             `).join('') || '<tr><td colspan="8" class="text-center">Nenhuma venda encontrada.</td></tr>'}
@@ -145,10 +147,14 @@ function showVendaModal(venda) {
             <td>${item.produto_id || '-'}</td>
             <td>${escapeHtml(item.produto_nome || '-')}</td>
             <td>${formatCurrency(item.preco_unitario)}</td>
+            <td>${Number(item.quantidade_fiscal ?? 0)}</td>
+            <td>${Number(item.quantidade_nao_fiscal ?? 0)}</td>
             <td>${Number(item.quantidade || 0)}</td>
+            <td>${formatCurrency(item.valor_fiscal ?? 0)}</td>
+            <td>${formatCurrency(item.valor_nao_fiscal ?? 0)}</td>
             <td>${formatCurrency(item.subtotal)}</td>
         </tr>
-    `).join('') || '<tr><td colspan="5" class="text-center">Nenhum item encontrado.</td></tr>';
+    `).join('') || '<tr><td colspan="9" class="text-center">Nenhum item encontrado.</td></tr>';
 
     const modalHtml = `
         <div class="modal fade" id="vendaModal" tabindex="-1" aria-labelledby="vendaModalLabel" aria-hidden="true">
@@ -181,7 +187,11 @@ function showVendaModal(venda) {
                                         <th>ID Produto</th>
                                         <th>Produto</th>
                                         <th>Preço</th>
-                                        <th>Quantidade</th>
+                                        <th>Qtd Fiscal</th>
+                                        <th>Qtd Não Fiscal</th>
+                                        <th>Qtd Total</th>
+                                        <th>Valor Fiscal</th>
+                                        <th>Valor Não Fiscal</th>
                                         <th>Subtotal</th>
                                     </tr>
                                 </thead>
@@ -335,6 +345,109 @@ function cancelarVendaNaoFiscal(vendaId) {
             );
         }
     });
+}
+
+function abrirDevolucaoVenda(vendaId) {
+    $.ajax({ url: `${API_URL}/vendas/${vendaId}`, method: 'GET' })
+        .done(function(venda) {
+            const itens = (venda.itens || []).map((item) => `
+                <tr>
+                    <td>${escapeHtml(item.produto_nome || '-')}</td>
+                    <td class="text-center">${Number(item.quantidade_fiscal ?? 0)}</td>
+                    <td class="text-center">${Number(item.quantidade_nao_fiscal ?? 0)}</td>
+                    <td class="text-center">${Number(item.quantidade || 0)}</td>
+                    <td>
+                        <input type="number" min="0" step="0.001" class="form-control form-control-sm devolucao-qtd"
+                            data-item-id="${item.id}" placeholder="0">
+                    </td>
+                </tr>
+            `).join('') || '<tr><td colspan="5" class="text-center">Sem itens</td></tr>';
+
+            const modalHtml = `
+                <div class="modal fade" id="modalDevolucaoVenda" tabindex="-1">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header bg-warning">
+                                <h5 class="modal-title">Devolução — Venda ${escapeHtml(venda.codigo || vendaId)}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <p class="text-muted small">Restaura estoque fiscal primeiro, depois não fiscal.</p>
+                                <div class="mb-3">
+                                    <label class="form-label fw-bold">Motivo (mín. 10 caracteres)</label>
+                                    <textarea id="motivoDevolucaoVenda" class="form-control" rows="2"></textarea>
+                                </div>
+                                <table class="table table-sm table-bordered">
+                                    <thead>
+                                        <tr>
+                                            <th>Produto</th>
+                                            <th>Fiscal</th>
+                                            <th>Não Fiscal</th>
+                                            <th>Total</th>
+                                            <th>Qtd devolver</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>${itens}</tbody>
+                                </table>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                                <button type="button" class="btn btn-warning" id="btnConfirmarDevolucaoVenda">Confirmar</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            $('#modal-container').html(modalHtml);
+            const modal = new bootstrap.Modal(document.getElementById('modalDevolucaoVenda'));
+            modal.show();
+
+            $('#btnConfirmarDevolucaoVenda').on('click', async function() {
+                const motivo = $('#motivoDevolucaoVenda').val().trim();
+                if (motivo.length < 10) {
+                    showNotification('Informe um motivo com no mínimo 10 caracteres.', 'warning');
+                    return;
+                }
+
+                const itensDevolver = [];
+                $('.devolucao-qtd').each(function() {
+                    const qtd = Number($(this).val() || 0);
+                    const vendaItemId = Number($(this).data('item-id'));
+                    if (qtd > 0 && vendaItemId > 0) {
+                        itensDevolver.push({ venda_item_id: vendaItemId, quantidade: qtd });
+                    }
+                });
+
+                if (!itensDevolver.length) {
+                    showNotification('Informe a quantidade de ao menos um item.', 'warning');
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`${API_URL}/vendas/${vendaId}/devolver`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('token')}`
+                        },
+                        body: JSON.stringify({ motivo, itens: itensDevolver })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Erro ao registrar devolução.');
+                    }
+                    modal.hide();
+                    showNotification(data.message || 'Devolução registrada.', 'success');
+                    loadVendas();
+                } catch (error) {
+                    showNotification(error.message, 'danger');
+                }
+            });
+        })
+        .fail(function() {
+            showNotification('Erro ao carregar venda para devolução.', 'danger');
+        });
 }
 
 async function verResumoVendaFiscalTEF(vendaId) {

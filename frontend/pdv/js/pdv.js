@@ -7,6 +7,7 @@ let vendaPrazoInfo = null;
 let vendaEmProcessamento = false;
 let pdvClockInterval = null;
 let caixaAberto = false;
+let pagamentoFiscalAtual = null;
 let pagamentosMistos = [];
 let formaPagamentoSelecionadaPDV = null;
 let supervisorAuthToken = null;
@@ -55,6 +56,21 @@ async function buscarPromocaoAtivaProduto(produtoId) {
     }
 }
 
+function normalizarProdutoPdvLista(produtos) {
+    return Array.isArray(produtos) ? produtos.map(p => ({
+        ...p,
+        saldo_fiscal: Number(p.saldo_fiscal ?? 0),
+        saldo_nao_fiscal: Number(p.saldo_nao_fiscal ?? 0),
+        estoque_atual: Number(p.estoque_atual || 0),
+        preco_venda: Number(p.preco_venda || 0)
+    })) : [];
+}
+
+function urlProdutosPdv() {
+    const modoFiscal = typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0';
+    return `${API_URL}/produtos?modo_fiscal=${modoFiscal}`;
+}
+
 function loadPDV() {
     console.log('Carregando PDV...');
 
@@ -62,15 +78,11 @@ function loadPDV() {
     autoRegistrarTerminal();
 
     $.ajax({
-        url: `${API_URL}/produtos`,
+        url: urlProdutosPdv(),
         method: 'GET',
         cache: false,
         success: function(produtos) {
-            produtosDisponiveis = Array.isArray(produtos) ? produtos.map(p => ({
-                ...p,
-                estoque_atual: Number(p.estoque_atual || 0),
-                preco_venda: Number(p.preco_venda || 0)
-            })) : [];
+            produtosDisponiveis = normalizarProdutoPdvLista(produtos);
 
             inicializarPDV();
         },
@@ -216,15 +228,27 @@ function mostrarModalAutorizacaoSupervisor(onAuthorized) {
     });
 }
 
-async function processarPagamentoTEF(tipo, valor, parcelas = 1) {
+async function processarPagamentoTEF(tipo, valor, parcelas = 1, opcoes = {}) {
     try {
-        showNotification('Processando pagamento TEF...', 'info');
+        if (window.__tefPagamentoEmAndamento) {
+            showNotification('Já existe um pagamento TEF em andamento.', 'warning');
+            return null;
+        }
 
-        console.log('CHAMANDO TEF:', {
-            tipo,
-            valor,
-            parcelas
-        });
+        window.__tefPagamentoEmAndamento = true;
+
+        const tipoTef = TefFluxoPagamento.normalizarTipoTef(tipo);
+        const ehPixTef = TefFluxoPagamento.ehPagamentoPixTef(tipoTef);
+
+        showNotification(
+            ehPixTef ? 'Gerando PIX TEF...' : 'Processando pagamento TEF...',
+            'info'
+        );
+
+        const idempotencyKey = opcoes.idempotency_key
+            || `pdv-${tipoTef}-${Number(valor).toFixed(2)}-${Date.now()}`;
+
+        console.log('CHAMANDO TEF:', { tipo, tipoTef, valor, parcelas, idempotencyKey });
 
         const response = await fetch(`${API_URL}/tef/pagar`, {
             method: 'POST',
@@ -232,9 +256,11 @@ async function processarPagamentoTEF(tipo, valor, parcelas = 1) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                tipo,
+                tipo: tipoTef,
                 valor: Number(valor),
-                parcelas: Number(parcelas || 1)
+                parcelas: Number(parcelas || 1),
+                venda_id: opcoes.venda_id || null,
+                idempotency_key: idempotencyKey
             })
         });
 
@@ -242,33 +268,46 @@ async function processarPagamentoTEF(tipo, valor, parcelas = 1) {
 
         console.log('RETORNO TEF:', data);
 
-        if (!response.ok) {
-            throw new Error(data.error || 'Erro ao processar TEF.');
+        if (response.status === 409 && data.codigo === 'TRANSACAO_DUPLICADA') {
+            if (data.transacao_id && (data.aprovado || data.status === 'aprovado')) {
+                showNotification('Pagamento TEF já autorizado.', 'info');
+                return data;
+            }
+            throw new Error(data.mensagem || 'Transação TEF duplicada.');
         }
 
-        if (!data.aprovado) {
+        if (!response.ok) {
+            throw new Error(data.error || data.mensagem || 'Erro ao processar TEF.');
+        }
+
+        const aprovado = data.aprovado === true
+            || data.sucesso === true
+            || data.status === 'aprovado';
+
+        if (!aprovado) {
             throw new Error(data.mensagem || 'Pagamento TEF negado.');
         }
 
-        showNotification('Pagamento TEF aprovado.', 'success');
+        if (ehPixTef) {
+            await mostrarModalPixTefPDV(data, valor);
+        }
+
+        showNotification(ehPixTef ? 'PIX TEF aprovado.' : 'Pagamento TEF aprovado.', 'success');
 
         try {
-
             await fetch(`${API_URL}/impressao/tef`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    comprovante_cliente: data.comprovante_cliente,
-                    comprovante_estabelecimento: data.comprovante_estabelecimento
+                    comprovante_cliente: data.comprovante_cliente || data.comprovanteCliente,
+                    comprovante_estabelecimento: data.comprovante_estabelecimento || data.comprovanteLoja
                 })
             });
 
             console.log('Comprovante TEF enviado para impressão.');
-
         } catch (printError) {
-
             console.error('Erro impressão TEF:', printError);
         }
 
@@ -278,6 +317,295 @@ async function processarPagamentoTEF(tipo, valor, parcelas = 1) {
         console.error('Erro TEF:', error);
         showNotification(error.message || 'Erro ao processar TEF.', 'danger');
         return null;
+    } finally {
+        window.__tefPagamentoEmAndamento = false;
+    }
+}
+
+function abrirModalPagamentoNaoFiscal(valor, onConfirm, onCancel) {
+    const valorNum = Number(valor || 0);
+
+    if (valorNum <= 0) {
+        if (typeof onConfirm === 'function') {
+            onConfirm({ forma_pagamento: 'dinheiro', valor: 0 });
+        }
+        return;
+    }
+
+    const modalHtml = `
+        <div class="modal fade" id="pagamentoNaoFiscalModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Pagamento Não Fiscal (PF)</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="text-muted mb-2">Itens não fiscais — conta pessoa física, sem TEF.</p>
+                        <h4 class="text-center mb-3">Valor: ${formatCurrency(valorNum)}</h4>
+                        <div class="payment-methods mb-3 d-flex flex-wrap gap-2">
+                            <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary active" data-pagamento="pix">PIX PF</button>
+                            <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary" data-pagamento="dinheiro">Dinheiro</button>
+                            <button type="button" class="nao-fiscal-method-btn btn btn-outline-primary" data-pagamento="cartao">Cartão PF</button>
+                        </div>
+                        <div id="nao-fiscal-dinheiro-area" style="display:none;" class="mt-3 p-3 bg-light rounded">
+                            <label for="nao-fiscal-valor-recebido" class="form-label fw-bold">Valor Recebido:</label>
+                            <input type="number" step="0.01" class="form-control form-control-lg text-end" id="nao-fiscal-valor-recebido" placeholder="0,00">
+                            <div class="mt-2">
+                                <span class="fw-bold text-success">Troco: </span>
+                                <span id="nao-fiscal-troco">${formatCurrency(0)}</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="confirmar-pagamento-nao-fiscal">Confirmar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    $('#modal-container').html(modalHtml);
+
+    const modalEl = document.getElementById('pagamentoNaoFiscalModal');
+    const modal = new bootstrap.Modal(modalEl);
+    let formaSelecionada = 'pix';
+    let confirmado = false;
+
+    function atualizarTrocoNaoFiscal() {
+        const recebido = parseFloat($('#nao-fiscal-valor-recebido').val()) || 0;
+        const troco = Math.max(0, recebido - valorNum);
+        $('#nao-fiscal-troco').text(formatCurrency(troco));
+    }
+
+    function selecionarFormaNaoFiscal(tipo) {
+        formaSelecionada = tipo;
+        $('.nao-fiscal-method-btn').removeClass('active btn-primary').addClass('btn-outline-primary');
+        $(`.nao-fiscal-method-btn[data-pagamento="${tipo}"]`).removeClass('btn-outline-primary').addClass('active btn-primary');
+
+        if (tipo === 'dinheiro') {
+            $('#nao-fiscal-dinheiro-area').show();
+            $('#nao-fiscal-valor-recebido').val(valorNum.toFixed(2));
+            atualizarTrocoNaoFiscal();
+        } else {
+            $('#nao-fiscal-dinheiro-area').hide();
+        }
+    }
+
+    modalEl.addEventListener('hidden.bs.modal', function handler() {
+        modalEl.removeEventListener('hidden.bs.modal', handler);
+        if (!confirmado && typeof onCancel === 'function') {
+            onCancel();
+        }
+    }, { once: true });
+
+    $('.nao-fiscal-method-btn').off('click').on('click', function() {
+        selecionarFormaNaoFiscal($(this).data('pagamento'));
+    });
+
+    $('#nao-fiscal-valor-recebido').off('input').on('input', atualizarTrocoNaoFiscal);
+
+    $('#confirmar-pagamento-nao-fiscal').off('click').on('click', function() {
+        if (formaSelecionada === 'dinheiro') {
+            const recebido = parseFloat($('#nao-fiscal-valor-recebido').val()) || 0;
+            if (recebido + 0.009 < valorNum) {
+                showNotification('Valor recebido insuficiente para o pagamento não fiscal.', 'warning');
+                return;
+            }
+        }
+
+        confirmado = true;
+        modal.hide();
+        if (typeof onConfirm === 'function') {
+            onConfirm({
+                forma_pagamento: formaSelecionada,
+                valor: valorNum
+            });
+        }
+    });
+
+    modal.show();
+    selecionarFormaNaoFiscal('pix');
+}
+
+function abrirModalConfirmacaoFiscalManual(valor, onConfirm, onCancel) {
+    const valorNum = Number(valor || 0);
+
+    if (valorNum <= 0) {
+        if (typeof onConfirm === 'function') {
+            onConfirm();
+        }
+        return;
+    }
+
+    const modalHtml = `
+        <div class="modal fade" id="confirmacaoFiscalManualModal" tabindex="-1" aria-hidden="true">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Confirmação de Recebimento Fiscal</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="mb-3">Confirme que o valor fiscal foi recebido.</p>
+                        <h4 class="text-center mb-0">Valor: ${formatCurrency(valorNum)}</h4>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="confirmar-recebimento-fiscal-manual">Confirmar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    $('#modal-container').html(modalHtml);
+
+    const modalEl = document.getElementById('confirmacaoFiscalManualModal');
+    const modal = new bootstrap.Modal(modalEl);
+    let confirmado = false;
+
+    modalEl.addEventListener('hidden.bs.modal', function handler() {
+        modalEl.removeEventListener('hidden.bs.modal', handler);
+        if (!confirmado && typeof onCancel === 'function') {
+            onCancel();
+        }
+    }, { once: true });
+
+    $('#confirmar-recebimento-fiscal-manual').off('click').on('click', function() {
+        confirmado = true;
+        modal.hide();
+        if (typeof onConfirm === 'function') {
+            onConfirm();
+        }
+    });
+
+    modal.show();
+}
+
+async function obterModoConfirmacaoFiscal() {
+    try {
+        const response = await fetch(`${API_URL}/configuracoes-avancadas/confirmacao-fiscal`, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            }
+        });
+
+        if (!response.ok) {
+            return 'TEF';
+        }
+
+        const data = await response.json();
+        const modo = String(data.modo_confirmacao_fiscal || 'TEF').toUpperCase().trim();
+        return modo === 'MANUAL' ? 'MANUAL' : 'TEF';
+    } catch (error) {
+        console.error('Erro ao obter modo de confirmação fiscal:', error);
+        return 'TEF';
+    }
+}
+
+async function obterTefHabilitadoConfig() {
+    try {
+        const response = await fetch(`${API_URL}/tef/fluxo-pdv`, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${localStorage.getItem('token')}`
+            }
+        });
+        if (!response.ok) return false;
+        const fluxo = await response.json();
+        return fluxo.tefHabilitado === true;
+    } catch (error) {
+        console.error('Erro ao verificar configuração TEF:', error);
+        return false;
+    }
+}
+
+function pagamentoMistoExigeTef(pagamentos) {
+    return (pagamentos || []).some((pagamento) =>
+        formaPagamentoUsaTEF(normalizarFormaPagamentoTEF(pagamento.forma_pagamento))
+    );
+}
+
+async function confirmarRecebimentoFiscalManual(valorFiscal) {
+    await new Promise((resolve, reject) => {
+        abrirModalConfirmacaoFiscalManual(
+            valorFiscal,
+            resolve,
+            () => reject(new Error('Confirmação de recebimento fiscal cancelada.'))
+        );
+    });
+}
+
+async function processarVendaFiscalManual(dadosVenda, valorFiscal) {
+    try {
+        await confirmarRecebimentoFiscalManual(valorFiscal);
+        pagamentoFiscalAtual = { manual: true, valor: valorFiscal };
+        return { sucesso: true };
+    } catch (error) {
+        console.error('Erro na confirmação fiscal manual:', error);
+        pagamentoFiscalAtual = null;
+        return { sucesso: false, erro: error.message };
+    }
+}
+
+function normalizarPagamentosSemTef(pagamentos) {
+    return (pagamentos || [])
+        .filter((pagamento) => Number(pagamento.valor) > 0)
+        .map((pagamento) => ({
+            ...pagamento,
+            forma_pagamento: normalizarFormaPagamentoTEF(pagamento.forma_pagamento),
+            valor: Number(pagamento.valor)
+        }));
+}
+
+async function concluirPagamentoNaoFiscalVenda(vendaId, pagamento, emitirFiscal = true) {
+    const response = await fetch(`${API_URL}/vendas/${vendaId}/pagamento-nao-fiscal`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+            pagamentos: [pagamento],
+            emitir_fiscal: emitirFiscal
+        })
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        throw new Error(data.error || 'Erro ao registrar pagamento não fiscal.');
+    }
+
+    return data;
+}
+
+async function processarVendaFiscalNaoFiscal(dadosVenda, totalFiscal) {
+    try {
+        const formaFiscal = obterFormaPagamentoFiscal();
+        const retorno = await processarPagamentoTEF(formaFiscal, totalFiscal, 1);
+
+        if (!retorno || !(retorno.aprovado || retorno.sucesso || retorno.status === 'aprovado')) {
+            throw new Error('Pagamento fiscal não aprovado.');
+        }
+
+        pagamentoFiscalAtual = retorno;
+
+        dadosVenda.pagamentoFiscal = {
+            valor: totalFiscal,
+            nsu: retorno.nsu,
+            autorizacao: retorno.autorizacao,
+            transacao_id: retorno.transacao_id
+        };
+
+        return { sucesso: true, tefFiscal: retorno };
+    } catch (error) {
+        console.error('Erro ao processar pagamento fiscal:', error);
+        pagamentoFiscalAtual = null;
+        return { sucesso: false, erro: error.message };
     }
 }
 
@@ -290,17 +618,80 @@ function normalizarFormaPagamentoTEF(forma) {
 }
 
 function formaPagamentoUsaTEF(forma) {
-    const f = normalizarFormaPagamentoTEF(forma);
+    return TefFluxoPagamento.formaPagamentoUsaTEF(forma);
+}
 
-    return [
-        'cartao',
-        'cartao_credito',
-        'cartao_debito',
-        'credito',
-        'debito',
-        'pix_tef',
-        'tef'
-    ].includes(f);
+function formaPagamentoGravacaoFiscalPDV(forma) {
+    return TefFluxoPagamento.formaPagamentoGravacaoFiscal(forma);
+}
+
+async function mostrarModalPixTefPDV(data, valor) {
+    const copiaCola = data.pix_copia_cola
+        || data.payloadRetorno?.pix_copia_cola
+        || data.payload_retorno?.pix_copia_cola
+        || '';
+
+    return new Promise((resolve) => {
+        const qrPlaceholder = `
+            <div class="border rounded p-3 mb-2" style="min-height:180px;display:flex;align-items:center;justify-content:center;background:#f8fafc;">
+                <div class="text-center">
+                    <div style="font-size:3rem;line-height:1;">&#9641;</div>
+                    <small class="text-muted d-block mt-2">QR Code PIX TEF (tela do PC)</small>
+                    <small class="text-muted">Na homologação: QR gerado pelo CliSiTef/PayGo</small>
+                </div>
+            </div>`;
+
+        $('#modal-container').html(`
+            <div class="modal fade" id="modalPixTefPDV" tabindex="-1" data-bs-backdrop="static">
+                <div class="modal-dialog modal-dialog-centered" style="max-width:420px;">
+                    <div class="modal-content border-0 shadow" style="border-radius:12px;overflow:hidden;">
+                        <div class="modal-header text-white py-2 px-3" style="background:#0f766e;">
+                            <div>
+                                <h6 class="modal-title mb-0 fw-bold">PIX TEF</h6>
+                                <small class="opacity-75" style="font-size:0.75rem;">Pagamento aprovado via middleware</small>
+                            </div>
+                        </div>
+                        <div class="modal-body p-3 text-center">
+                            <div class="mb-2" style="color:#0f766e;font-weight:700;font-size:1.4rem;">
+                                R$ ${Number(valor).toFixed(2).replace('.', ',')}
+                            </div>
+                            ${qrPlaceholder}
+                            <label class="form-label small text-start w-100 mb-1">Pix Copia e Cola</label>
+                            <textarea id="pixTefCopiaColaPDV" class="form-control form-control-sm" rows="3" readonly style="font-size:0.7rem;">${copiaCola || 'Aguardando retorno do middleware na homologação.'}</textarea>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="btnCopiarPixTefPDV">Copiar código PIX</button>
+                        </div>
+                        <div class="modal-footer py-2">
+                            <button type="button" class="btn btn-success w-100" id="btnFecharPixTefPDV">Continuar venda</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `);
+
+        const modalEl = document.getElementById('modalPixTefPDV');
+        const modal = new bootstrap.Modal(modalEl);
+
+        $('#btnCopiarPixTefPDV').on('click', function() {
+            const texto = $('#pixTefCopiaColaPDV').val();
+            if (navigator.clipboard && texto) {
+                navigator.clipboard.writeText(texto);
+                showNotification('Código PIX copiado.', 'success');
+            }
+        });
+
+        $('#btnFecharPixTefPDV').on('click', function() {
+            modal.hide();
+            resolve();
+        });
+
+        modalEl.addEventListener('hidden.bs.modal', () => resolve(), { once: true });
+        modal.show();
+    });
+}
+
+function obterFormaPagamentoFiscal() {
+    const forma = formaPagamentoSelecionadaPDV || $('#formaPagamentoPdv').val() || 'cartao';
+    return normalizarFormaPagamentoTEF(forma);
 }
 
 function montarObjetoTEF(retornoTef) {
@@ -320,24 +711,7 @@ function montarObjetoTEF(retornoTef) {
 
 async function processarPagamentosMistosTEF(pagamentos) {
     const pagamentosProcessados = [];
-
-    // Verificar se TEF está habilitado
-    let tefHabilitado = false;
-    try {
-        const tefConfigResponse = await fetch(`${API_URL}/tef/configuracao`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${localStorage.getItem('token')}`
-            }
-        });
-        if (tefConfigResponse.ok) {
-            const tefConfig = await tefConfigResponse.json();
-            tefHabilitado = tefConfig.tefHabilitado === true || tefConfig.tefHabilitado === 'true' || tefConfig.tefHabilitado === '1';
-        }
-    } catch (configError) {
-        console.error('Erro ao verificar configuração TEF:', configError);
-        tefHabilitado = false;
-    }
+    const tefHabilitado = await obterTefHabilitadoConfig();
 
     for (const pagamento of pagamentos) {
         const formaNormalizada = normalizarFormaPagamentoTEF(pagamento.forma_pagamento);
@@ -355,12 +729,12 @@ async function processarPagamentosMistosTEF(pagamentos) {
         const parcelasTef = formaNormalizada.includes('credito') ? 1 : 1;
 
         const retornoTef = await processarPagamentoTEF(
-            formaNormalizada,
+            TefFluxoPagamento.normalizarTipoTef(formaNormalizada),
             valorPagamento,
             parcelasTef
         );
 
-        if (!retornoTef || !retornoTef.aprovado) {
+        if (!retornoTef || !(retornoTef.aprovado || retornoTef.sucesso || retornoTef.status === 'aprovado')) {
             throw new Error(`Pagamento TEF não aprovado para ${pagamento.forma_pagamento}.`);
         }
 
@@ -368,7 +742,7 @@ async function processarPagamentosMistosTEF(pagamentos) {
 
         pagamentosProcessados.push({
             ...pagamento,
-            forma_pagamento: formaNormalizada,
+            forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaNormalizada),
             valor: valorPagamento,
             tef_transacao_id: retornoTef.transacao_id,
             tef,
@@ -451,6 +825,111 @@ function pdvModoFiscalAtivo() {
         return modoFiscalAtivoSistema();
     }
     return localStorage.getItem('pdv_modo_fiscal_ativo') === '1';
+}
+
+function pdvResolverSaldosProduto(produto) {
+    let item = produto || {};
+    if (typeof enriquecerProdutoComCacheEstoque === 'function') {
+        item = enriquecerProdutoComCacheEstoque(item);
+    }
+
+    const saldoFiscal = Number(item.saldo_fiscal ?? 0);
+    let saldoNaoFiscal = Number(item.saldo_nao_fiscal ?? 0);
+
+    if (item.saldo_nao_fiscal === undefined || item.saldo_nao_fiscal === null) {
+        const cached = (produtosDisponiveis || []).find(
+            (p) => String(p.id) === String(item.id ?? item.produto_id)
+        );
+        if (cached) {
+            saldoNaoFiscal = Number(cached.saldo_nao_fiscal ?? 0);
+        }
+    }
+
+    return {
+        saldo_fiscal: saldoFiscal,
+        saldo_nao_fiscal: saldoNaoFiscal,
+        estoque_atual: saldoFiscal + saldoNaoFiscal
+    };
+}
+
+function validarEstoqueVenda(produto, quantidade, modoFiscal) {
+    const saldos = pdvResolverSaldosProduto(produto);
+    const saldoFiscal = saldos.saldo_fiscal;
+    const saldoNaoFiscal = saldos.saldo_nao_fiscal;
+    const saldoTotal = saldos.estoque_atual;
+
+    if (modoFiscal) {
+        if (saldoFiscal <= 0) {
+            return {
+                sucesso: false,
+                mensagem:
+`Saldo insuficiente.
+
+Disponível: 0${saldoNaoFiscal > 0 ? '*' : ''}
+
+${saldoNaoFiscal > 0 ? '* Consulte o estoque disponível.' : ''}`
+            };
+        }
+
+        if (quantidade > saldoTotal) {
+            return {
+                sucesso: false,
+                mensagem:
+`Saldo insuficiente.
+
+Disponível: ${saldoFiscal}${saldoNaoFiscal > 0 ? '*' : ''}
+
+${saldoNaoFiscal > 0 ? '* Consulte o estoque disponível.' : ''}`
+            };
+        }
+
+        return { sucesso: true };
+    }
+
+    if (quantidade > saldoTotal) {
+        return {
+            sucesso: false,
+            mensagem:
+`Saldo insuficiente.
+
+Disponível: ${saldoTotal}`
+        };
+    }
+
+    return { sucesso: true };
+}
+
+function pdvValidarEstoqueVenda(produto, quantidade) {
+    return validarEstoqueVenda(produto, quantidade, pdvModoFiscalAtivo());
+}
+
+function pdvNotificarEstoqueInsuficiente(produto, quantidade) {
+    const resultado = pdvValidarEstoqueVenda(produto, quantidade);
+    if (!resultado.sucesso) {
+        const mensagem = produto?.nome
+            ? resultado.mensagem.replace('Saldo insuficiente.', `Saldo insuficiente para ${produto.nome}.`)
+            : resultado.mensagem;
+        showNotification(mensagem, 'danger');
+        return false;
+    }
+    return true;
+}
+
+function pdvEstoqueDisponivel(produto) {
+    if (typeof obterEstoqueDisponivelProduto === 'function') {
+        return obterEstoqueDisponivelProduto(produto);
+    }
+    return Number(produto?.estoque_atual || 0);
+}
+
+function pdvRotuloEstoque(produto) {
+    if (pdvModoFiscalAtivo()) {
+        return `Estoque fiscal: ${pdvEstoqueDisponivel(produto)}`;
+    }
+    const fiscal = Number(produto?.saldo_fiscal ?? 0);
+    const naoFiscal = Number(produto?.saldo_nao_fiscal ?? 0);
+    const total = Number(produto?.estoque_atual ?? (fiscal + naoFiscal));
+    return `F: ${fiscal} | NF: ${naoFiscal} | Total: ${total}`;
 }
 
 function aplicarModoFiscalPdv() {
@@ -966,8 +1445,7 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         return;
     }
 
-    if (quantidade > Number(produto.estoque_atual)) {
-        showNotification(`Estoque insuficiente para ${produto.nome}. Disponível: ${produto.estoque_atual}`, 'danger');
+    if (!pdvNotificarEstoqueInsuficiente(produto, quantidade)) {
         return;
     }
 
@@ -1014,8 +1492,7 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
     if (itemExistente) {
         const novaQuantidade = Number(itemExistente.quantidade) + quantidade;
 
-        if (novaQuantidade > Number(produto.estoque_atual)) {
-            showNotification(`Estoque insuficiente para ${produto.nome}. Disponível: ${produto.estoque_atual}`, 'danger');
+        if (!pdvNotificarEstoqueInsuficiente(produto, novaQuantidade)) {
             return;
         }
 
@@ -1057,7 +1534,8 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
             promocao_id: promocao?.id || null,
             desconto_atacado: descontoAtacadoItem,
                 tipo_preco: (Number(produto.venda_atacado || 0) === 1 && descontoAtacadoItem > 0) ? 'atacado' : 'varejo',
-            subtotal: Number((quantidade * precoFinal).toFixed(2))
+            subtotal: Number((quantidade * precoFinal).toFixed(2)),
+            item_fiscal: Number(produto.item_fiscal || 0)
         });
     }
 
@@ -1123,8 +1601,9 @@ function adicionarProdutoPorCodigo(codigo) {
         return;
     }
 
-    if (Number(produto.estoque_atual) <= 0) {
-        showNotification(`${produto.nome} está sem estoque.`, 'danger');
+    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
+    if (!validacaoMinima.sucesso) {
+        showNotification(validacaoMinima.mensagem, 'danger');
         return;
     }
 
@@ -1168,8 +1647,7 @@ function atualizarQuantidade(index, quantidade) {
         return;
     }
 
-    if (novaQuantidade > Number(produto.estoque_atual)) {
-        showNotification(`Estoque insuficiente para ${produto.nome}. Disponível: ${produto.estoque_atual}`, 'danger');
+    if (!pdvNotificarEstoqueInsuficiente(produto, novaQuantidade)) {
         atualizarCarrinho();
         return;
     }
@@ -1982,6 +2460,12 @@ function abrirPagamentoMisto() {
 
         if (tipoMisto === 'dinheiro_pix' && valorPix > 0) {
             setTimeout(async () => {
+                const tefOn = await obterTefHabilitadoConfig();
+                if (tefOn) {
+                    mostrarModalDecisaoFiscal();
+                    return;
+                }
+
                 const ativo = await pixAutomaticoHabilitado();
                 if (ativo) {
                     iniciarPixAutomaticoPDV(valorPix, {
@@ -2224,8 +2708,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         forma_pagamento: pagamentosMistos.length > 1 ? "misto" : formaPagamento,
         desconto,
         total,
-        emitir_fiscal: emitirFiscal,
-        cpf_cnpj_nota: emitirFiscal ? cpfCnpjNota : null,
+        emitir_fiscal: false,
+        cpf_cnpj_nota: null,
         pagamentos: pagamentosMistos.length > 0 ? pagamentosMistos : [
             {
                 forma_pagamento: formaPagamento,
@@ -2240,7 +2724,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             promocao_id: item.promocao_id || null,
             desconto_atacado: Number(item.desconto_atacado || 0),
             tipo_preco: item.tipo_preco || 'varejo',
-            subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100
+            subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100,
+            item_fiscal: Number(item.item_fiscal || 0)
         })),
         supervisor_token: supervisorAuthToken || null
     };
@@ -2258,11 +2743,56 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
 
     vendaEmProcessamento = true;
 
-    const formaPagamentoNormalizada = normalizarFormaPagamentoTEF(formaPagamento);
+    const itensFiscal =
+        carrinho.filter(
+            i =>
+                Number(i.item_fiscal || 0) === 1
+        );
+
+    const itensNaoFiscal =
+        carrinho.filter(
+            i =>
+                Number(i.item_fiscal || 0) !== 1
+        );
+
+    const totalFiscal =
+        itensFiscal.reduce(
+            (t, i) =>
+                t + Number(i.subtotal || 0),
+            0
+        );
+
+    const totalNaoFiscal =
+        itensNaoFiscal.reduce(
+            (t, i) =>
+                t + Number(i.subtotal || 0),
+            0
+        );
+
+    dados.valor_fiscal = totalFiscal;
+    dados.valor_nao_fiscal = totalNaoFiscal;
+
+    const deveEmitirFiscal = emitirFiscal && totalFiscal > 0;
+    dados.emitir_fiscal = deveEmitirFiscal;
+    dados.cpf_cnpj_nota = deveEmitirFiscal ? cpfCnpjNota : null;
+
+    if (emitirFiscal && totalFiscal === 0 && totalNaoFiscal > 0) {
+        showNotification('Venda sem itens fiscais. NFC-e não será emitida.', 'info');
+    }
 
     const ehPagamentoMisto =
         Array.isArray(pagamentosMistos) &&
         pagamentosMistos.length > 0;
+
+    if (totalFiscal === 0 && totalNaoFiscal > 0 && !ehPagamentoMisto) {
+        dados.pagamentos = dados.pagamentos.map((pagamento) => ({
+            ...pagamento,
+            valor: totalNaoFiscal,
+            tipo_recebimento: 'nao_fiscal'
+        }));
+    }
+
+    const formaPagamentoNormalizada = normalizarFormaPagamentoTEF(formaPagamento);
 
     console.log('VERIFICANDO TEF:', {
         formaPagamento,
@@ -2272,25 +2802,33 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
     });
 
     try {
-        // Verificar se TEF está habilitado antes de processar
-        let tefHabilitado = false;
-        try {
-            const tefConfigResponse = await fetch(`${API_URL}/tef/configuracao`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('token')}`
-                }
-            });
-            if (tefConfigResponse.ok) {
-                const tefConfig = await tefConfigResponse.json();
-                tefHabilitado = tefConfig.tefHabilitado === true || tefConfig.tefHabilitado === 'true' || tefConfig.tefHabilitado === '1';
-            }
-        } catch (configError) {
-            console.error('Erro ao verificar configuração TEF:', configError);
-            tefHabilitado = false;
-        }
+        const modoConfirmacaoFiscal = await obterModoConfirmacaoFiscal();
+        const tefHabilitado = await obterTefHabilitadoConfig();
 
-        if (ehPagamentoMisto) {
+        const fluxoResolvido = TefFluxoPagamento.resolverFluxoPagamentoFiscal({
+            modoConfirmacaoFiscal,
+            tefHabilitado,
+            formaPagamento: formaPagamentoNormalizada,
+            ehPagamentoMisto,
+            pagamentosMistos,
+            totalFiscal
+        });
+
+        const {
+            deveUsarTefAutomatico,
+            usarConfirmacaoManual,
+            pagamentoExigeTef
+        } = fluxoResolvido;
+
+        console.log('FLUXO PAGAMENTO FISCAL:', {
+            modoConfirmacaoFiscal,
+            tefHabilitado,
+            pagamentoExigeTef,
+            deveUsarTefAutomatico,
+            usarConfirmacaoManual
+        });
+
+        if (deveUsarTefAutomatico && ehPagamentoMisto) {
             const pagamentosComTEF = await processarPagamentosMistosTEF(pagamentosMistos);
 
             dados.pagamentos = pagamentosComTEF;
@@ -2301,39 +2839,121 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             if (primeiroTef && primeiroTef.tef) {
                 dados.tef = primeiroTef.tef;
             }
-        } else if (formaPagamentoUsaTEF(formaPagamentoNormalizada) && tefHabilitado) {
-            const parcelasTef = formaPagamentoNormalizada.includes('credito')
-                ? (Number($('#parcelasCartao').val()) || 1)
-                : 1;
+        } else if (deveUsarTefAutomatico) {
+            if (totalFiscal > 0) {
+                console.log('Processando pagamento fiscal com TEF');
+                const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, totalFiscal);
+                
+                if (!resultadoProcessamento.sucesso) {
+                    vendaEmProcessamento = false;
+                    showNotification(resultadoProcessamento.erro || 'Erro ao processar pagamento fiscal.', 'danger');
+                    return;
+                }
 
-            const retornoTef = await processarPagamentoTEF(
-                formaPagamentoNormalizada,
-                total,
-                parcelasTef
-            );
+                const formaFiscal = obterFormaPagamentoFiscal();
+                const tefFiscal = resultadoProcessamento.tefFiscal;
 
-            if (!retornoTef || !retornoTef.aprovado) {
+                dados.tef = montarObjetoTEF(tefFiscal);
+                dados.pagamentos = [
+                    {
+                        forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaFiscal),
+                        valor: totalFiscal,
+                        tipo_recebimento: 'fiscal',
+                        tef_transacao_id: tefFiscal.transacao_id,
+                        nsu: tefFiscal.nsu,
+                        autorizacao: tefFiscal.autorizacao
+                    }
+                ];
+
+                dados.pagamentos_processados_pdv = true;
+
+                console.log('Pagamento fiscal processado. Não fiscal será registrado após a venda.');
+            } else if (totalNaoFiscal > 0) {
+                const pagamentoNaoFiscal = await new Promise((resolve, reject) => {
+                    abrirModalPagamentoNaoFiscal(
+                        totalNaoFiscal,
+                        resolve,
+                        () => reject(new Error('Pagamento não fiscal cancelado.'))
+                    );
+                });
+
+                dados.pagamentos = [
+                    {
+                        forma_pagamento: pagamentoNaoFiscal.forma_pagamento,
+                        valor: totalNaoFiscal,
+                        tipo_recebimento: 'nao_fiscal'
+                    }
+                ];
+                dados.pagamentos_processados_pdv = true;
+            } else {
+                const parcelasTef = formaPagamentoNormalizada.includes('credito')
+                    ? (Number($('#parcelasCartao').val()) || 1)
+                    : 1;
+
+                const retornoTef = await processarPagamentoTEF(
+                    formaPagamentoNormalizada,
+                    total,
+                    parcelasTef
+                );
+
+                if (!retornoTef || !(retornoTef.aprovado || retornoTef.sucesso || retornoTef.status === 'aprovado')) {
+                    vendaEmProcessamento = false;
+                    showNotification('Venda cancelada: pagamento TEF não aprovado.', 'warning');
+                    return;
+                }
+
+                const tef = montarObjetoTEF(retornoTef);
+
+                dados.tef = tef;
+
+                dados.pagamentos = [
+                    {
+                        forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaPagamentoNormalizada),
+                        valor: total,
+                        tipo_recebimento: 'fiscal',
+                        tef_transacao_id: retornoTef.transacao_id,
+                        tef,
+                        nsu: retornoTef.nsu,
+                        autorizacao: retornoTef.autorizacao,
+                        bandeira: retornoTef.bandeira,
+                        adquirente: retornoTef.adquirente
+                    }
+                ];
+                dados.pagamentos_processados_pdv = true;
+            }
+        } else if (usarConfirmacaoManual) {
+            const resultadoManual = await processarVendaFiscalManual(dados, totalFiscal);
+
+            if (!resultadoManual.sucesso) {
                 vendaEmProcessamento = false;
-                showNotification('Venda cancelada: pagamento TEF não aprovado.', 'warning');
+                showNotification(resultadoManual.erro || 'Confirmação fiscal cancelada.', 'danger');
                 return;
             }
 
-            const tef = montarObjetoTEF(retornoTef);
+            if (ehPagamentoMisto) {
+                dados.pagamentos = normalizarPagamentosSemTef(pagamentosMistos);
+                dados.forma_pagamento = 'misto';
+            } else if (totalNaoFiscal > 0) {
+                const formaFiscal = obterFormaPagamentoFiscal();
+                dados.pagamentos = [
+                    {
+                        forma_pagamento: formaFiscal,
+                        valor: totalFiscal,
+                        tipo_recebimento: 'fiscal'
+                    }
+                ];
+            } else {
+                dados.pagamentos = [
+                    {
+                        forma_pagamento: formaPagamentoNormalizada,
+                        valor: totalFiscal,
+                        tipo_recebimento: 'fiscal'
+                    }
+                ];
+            }
 
-            dados.tef = tef;
-
-            dados.pagamentos = [
-                {
-                    forma_pagamento: formaPagamentoNormalizada,
-                    valor: total,
-                    tef_transacao_id: retornoTef.transacao_id,
-                    tef,
-                    nsu: retornoTef.nsu,
-                    autorizacao: retornoTef.autorizacao,
-                    bandeira: retornoTef.bandeira,
-                    adquirente: retornoTef.adquirente
-                }
-            ];
+            dados.pagamentos_processados_pdv = true;
+            dados.confirmacao_fiscal_manual = true;
         }
     } catch (error) {
         vendaEmProcessamento = false;
@@ -2350,6 +2970,35 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         };
     });
 
+    function processarFiscalPosPagamentoNaoFiscal(vendaId, resultado) {
+        pagamentoFiscalAtual = null;
+
+        if (resultado.fiscal?.status === 'sem_itens_fiscais') {
+            showNotification(
+                resultado.fiscal.message || 'Venda sem itens fiscais. NFC-e não necessária.',
+                'info'
+            );
+            return;
+        }
+
+        if (resultado.fiscal?.success === false) {
+            showNotification(resultado.fiscal.message || 'Erro ao emitir NFC-e.', 'danger');
+            mostrarModalErroNFCe(vendaId, resultado.fiscal.message || 'NFC-e não autorizada.');
+            return;
+        }
+
+        if (resultado.fiscal?.success && resultado.fiscal?.numero) {
+            showNotification('NFC-e autorizada pela SEFAZ!', 'success');
+            imprimirDANFEFiscal(vendaId);
+            return;
+        }
+
+        if (dados.emitir_fiscal) {
+            mostrarModalProcessandoNFCe(vendaId);
+            setTimeout(() => emitirNFCeVenda(vendaId), 300);
+        }
+    }
+
     function enviarVenda(payload) {
         payload = getTerminalRequestData(payload);
 
@@ -2359,25 +3008,62 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             contentType: 'application/json',
             data: JSON.stringify(payload),
             success: function(response) {
-                vendaEmProcessamento = false;
-
                 const vendaId = response.venda_id || response.id || response.vendaId || response.venda?.id;
+                const statusPagamento = response.status_pagamento;
 
                 if (!vendaId) {
+                    vendaEmProcessamento = false;
                     console.error('Resposta da venda sem ID:', response);
                     showNotification('Venda finalizada, mas não foi possível localizar o ID da venda.', 'danger');
                     return;
                 }
 
-                if (emitirFiscal) {
+                if (statusPagamento === 'aguardando_nao_fiscal' && totalNaoFiscal > 0) {
+                    showNotification('Pagamento fiscal confirmado. Cobre o valor não fiscal.', 'info');
+
+                    abrirModalPagamentoNaoFiscal(
+                        totalNaoFiscal,
+                        async function(pagamento) {
+                            try {
+                                const resultado = await concluirPagamentoNaoFiscalVenda(
+                                    vendaId,
+                                    pagamento,
+                                    !!dados.emitir_fiscal
+                                );
+
+                                processarFiscalPosPagamentoNaoFiscal(vendaId, resultado);
+                                finalizarPosVenda();
+                                vendaEmProcessamento = false;
+                                showNotification('Venda finalizada com sucesso.', 'success');
+                            } catch (error) {
+                                vendaEmProcessamento = false;
+                                showNotification(error.message || 'Erro ao registrar pagamento não fiscal.', 'danger');
+                            }
+                        },
+                        function() {
+                            vendaEmProcessamento = false;
+                            finalizarPosVenda();
+                            showNotification(
+                                `Venda #${vendaId} aguardando pagamento não fiscal.`,
+                                'warning'
+                            );
+                        }
+                    );
+                    return;
+                }
+
+                vendaEmProcessamento = false;
+                pagamentoFiscalAtual = null;
+
+                const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
+
+                if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
                     showNotification('Venda finalizada. Emitindo NFC-e...', 'info');
-
                     mostrarModalProcessandoNFCe(vendaId);
-
                     setTimeout(() => {
                         emitirNFCeVenda(vendaId);
                     }, 300);
-                } else {
+                } else if (vendaPrazoInfo) {
                     imprimirCupomNaoFiscal(vendaId, {
                         ...payload,
                         itens: itensParaCupom
@@ -2427,15 +3113,11 @@ function finalizarPosVenda() {
     focarCampoCodigo();
 
     $.ajax({
-        url: `${API_URL}/produtos`,
+        url: urlProdutosPdv(),
         method: 'GET',
         cache: false,
         success: function(produtos) {
-            produtosDisponiveis = Array.isArray(produtos) ? produtos.map(p => ({
-                ...p,
-                estoque_atual: Number(p.estoque_atual || 0),
-                preco_venda: Number(p.preco_venda || 0)
-            })) : [];
+            produtosDisponiveis = normalizarProdutoPdvLista(produtos);
         }
     });
 
@@ -2444,13 +3126,32 @@ function finalizarPosVenda() {
     }
 }
 
-function cancelarVendaAtual() {
+async function cancelarVendaAtual() {
     if (carrinho.length === 0) {
         showNotification('Não há venda em andamento para cancelar.', 'info');
         return;
     }
 
     if (!window.confirm('Tem certeza que deseja cancelar esta venda?')) return;
+
+    // Cancelar pagamento fiscal se existir
+    if (pagamentoFiscalAtual && pagamentoFiscalAtual.transacao_id) {
+        try {
+            await fetch(`${API_URL}/tef/cancelar/${pagamentoFiscalAtual.transacao_id}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    motivo: 'Cancelamento operador'
+                })
+            });
+            console.log('Pagamento fiscal cancelado pelo operador');
+        } catch (cancelError) {
+            console.error('Erro ao cancelar pagamento fiscal:', cancelError);
+        }
+        pagamentoFiscalAtual = null;
+    }
 
     carrinho = [];
     formaPagamentoSelecionada = null;
@@ -2494,6 +3195,14 @@ function emitirNFCeVenda(vendaId) {
             }
 
             limparModaisTravados();
+
+            if (response?.status === 'sem_itens_fiscais') {
+                showNotification(
+                    response.message || 'Venda sem itens fiscais. NFC-e não necessária.',
+                    'info'
+                );
+                return;
+            }
 
             if (!response || response.success === false) {
                 const mensagem = response?.message || 'NFC-e não autorizada pela SEFAZ.';
@@ -3049,8 +3758,7 @@ function confirmarQuantidadeProduto(produto, callback, modal) {
         return;
     }
 
-    if (quantidade > Number(produto.estoque_atual)) {
-        showNotification(`Estoque insuficiente. Disponível: ${produto.estoque_atual}`, 'danger');
+    if (!pdvNotificarEstoqueInsuficiente(produto, quantidade)) {
         $('#inputQuantidadeProduto').focus();
         return;
     }
@@ -3268,6 +3976,12 @@ function selecionarPagamentoPDV(forma) {
         mostrarModalTroco();
     } else if (forma === 'pix') {
         setTimeout(async () => {
+            const tefOn = await obterTefHabilitadoConfig();
+            if (tefOn) {
+                mostrarModalCpfCnpjNota();
+                return;
+            }
+
             const ativo = await pixAutomaticoHabilitado();
             if (ativo) {
                 iniciarPixAutomaticoPDV();
@@ -3915,7 +4629,7 @@ function toggleProdutosCategoria(categoriaId) {
                                     </div>
                                     <div class="text-end">
                                         <div class="fw-bold text-primary">${formatCurrency(p.preco_venda)}</div>
-                                        <small class="text-muted">Estoque: ${p.estoque_atual || 0}</small>
+                                        <small class="text-muted">${pdvRotuloEstoque(p)}</small>
                                     </div>
                                 </div>
                                 <button class="btn btn-sm btn-primary mt-2 w-100" onclick="adicionarProdutoConsultaPDV(${p.id})">
@@ -3949,8 +4663,9 @@ function adicionarProdutoConsultaPDV(produtoId) {
         return;
     }
 
-    if (Number(produto.estoque_atual) <= 0) {
-        showNotification(`${produto.nome} está sem estoque.`, 'danger');
+    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
+    if (!validacaoMinima.sucesso) {
+        showNotification(validacaoMinima.mensagem, 'danger');
         return;
     }
 
@@ -3991,7 +4706,7 @@ function buscarProdutosConsultaPDV() {
     `);
 
     $.ajax({
-        url: `${API_URL}/produtos/consulta-pdv/buscar?q=${encodeURIComponent(termo)}`,
+        url: `${API_URL}/produtos/consulta-pdv/buscar?q=${encodeURIComponent(termo)}&modo_fiscal=${typeof modoFiscalQueryParam === 'function' ? modoFiscalQueryParam() : '0'}`,
         method: 'GET',
         cache: false,
         success: function (produtos) {
@@ -4022,10 +4737,10 @@ function renderizarProdutosConsultaPDV(produtos) {
     }
 
     const linhas = produtos.map(p => {
-        const estoque = Number(p.estoque_atual || 0);
+        const estoque = pdvEstoqueDisponivel(p);
         const preco = Number(p.preco_venda || 0);
         const estoqueBaixo = estoque <= Number(p.estoque_minimo || 0);
-        const semEstoque = estoque <= 0;
+        const semEstoque = !pdvValidarEstoqueVenda(p, 1).sucesso;
         const temPromocao = p.tem_promocao === 1 || p.tem_promocao === true;
         const precoPromocional = Number(p.preco_promocional || 0);
         const descontoPercentual = Number(p.desconto_percentual || 0);
@@ -4096,8 +4811,9 @@ function adicionarProdutoConsultaPDV(idProduto) {
         return;
     }
 
-    if (Number(produto.estoque_atual || 0) <= 0) {
-        showNotification('Produto sem estoque.', 'warning');
+    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
+    if (!validacaoMinima.sucesso) {
+        showNotification(validacaoMinima.mensagem, 'warning');
         return;
     }
 

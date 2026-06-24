@@ -4,6 +4,7 @@ const db = require('../database');
 const moment = require('moment');
 const { gravarAuditoria } = require('../services/auditoria');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
+const { FILTRO_VENDA_VALIDA, isModoFiscalRelatorio } = require('../services/reportFiscalHelpers');
 
 console.log('ROTA FINANCEIRO CARREGADA:', __filename);
 
@@ -22,6 +23,68 @@ function parseNumber(value) {
 
 function arredondarCentavos(value) {
   return Math.round(parseNumber(value) * 100) / 100;
+}
+
+async function consultarRecebimentosVendaSplit(dataInicio, dataFim, modoFiscal) {
+  const modoFiscalAtivo = isModoFiscalRelatorio(modoFiscal);
+  const params = [];
+  let dateFilter = '';
+
+  if (dataInicio && dataFim) {
+    dateFilter = ' AND date(v.data_venda) BETWEEN date(?) AND date(?)';
+    params.push(dataInicio, dataFim);
+  }
+
+  const rows = await dbAllAsync(`
+    SELECT
+      vr.tipo_recebimento,
+      COALESCE(SUM(vr.valor), 0) AS total,
+      COUNT(*) AS quantidade
+    FROM venda_recebimentos vr
+    INNER JOIN vendas v ON v.id = vr.venda_id
+    WHERE ${FILTRO_VENDA_VALIDA}
+      AND COALESCE(vr.status, 'aprovado') != 'cancelado'
+      ${modoFiscalAtivo ? "AND vr.tipo_recebimento = 'fiscal'" : ''}
+      ${dateFilter}
+    GROUP BY vr.tipo_recebimento
+  `, params);
+
+  const map = (rows || []).reduce((acc, row) => {
+    acc[row.tipo_recebimento || 'fiscal'] = {
+      total: parseNumber(row.total),
+      quantidade: parseNumber(row.quantidade)
+    };
+    return acc;
+  }, {});
+
+  const fiscal = map.fiscal || { total: 0, quantidade: 0 };
+  const naoFiscal = map.nao_fiscal || { total: 0, quantidade: 0 };
+
+  return {
+    modo_fiscal_ativo: modoFiscalAtivo,
+    fiscal,
+    nao_fiscal: naoFiscal,
+    total: {
+      total: fiscal.total + (modoFiscalAtivo ? 0 : naoFiscal.total),
+      quantidade: fiscal.quantidade + (modoFiscalAtivo ? 0 : naoFiscal.quantidade)
+    }
+  };
+}
+
+function calcularValorFiscalConta(valor, vendaTotal, valorFiscal) {
+  const totalVenda = parseNumber(vendaTotal);
+  if (totalVenda <= 0) {
+    return parseNumber(valor);
+  }
+  return arredondarCentavos(parseNumber(valor) * (parseNumber(valorFiscal) / totalVenda));
+}
+
+function calcularValorNaoFiscalConta(valor, vendaTotal, valorNaoFiscal) {
+  const totalVenda = parseNumber(vendaTotal);
+  if (totalVenda <= 0) {
+    return 0;
+  }
+  return arredondarCentavos(parseNumber(valor) * (parseNumber(valorNaoFiscal) / totalVenda));
 }
 
 function dbGetAsync(sql, params = []) {
@@ -940,6 +1003,10 @@ router.get('/receber/agrupado/:clienteId', async (req, res) => {
           vi.produto_id,
           p.nome AS nome_produto,
           vi.quantidade,
+          vi.quantidade_fiscal,
+          vi.quantidade_nao_fiscal,
+          vi.valor_fiscal,
+          vi.valor_nao_fiscal,
           vi.preco_unitario,
           vi.subtotal
         FROM vendas_itens vi
@@ -996,6 +1063,10 @@ router.get('/receber/agrupado/:clienteId', async (req, res) => {
           produto_id: prod.produto_id,
           nome_produto: prod.nome_produto,
           quantidade: parseNumber(prod.quantidade),
+          quantidade_fiscal: parseNumber(prod.quantidade_fiscal),
+          quantidade_nao_fiscal: parseNumber(prod.quantidade_nao_fiscal),
+          valor_fiscal: parseNumber(prod.valor_fiscal),
+          valor_nao_fiscal: parseNumber(prod.valor_nao_fiscal),
           preco_unitario: parseNumber(prod.preco_unitario),
           subtotal: parseNumber(prod.subtotal)
         });
@@ -1108,6 +1179,10 @@ router.get('/receber/agrupado/:clienteId/extrato', async (req, res) => {
           vi.produto_id,
           p.nome AS nome_produto,
           vi.quantidade,
+          vi.quantidade_fiscal,
+          vi.quantidade_nao_fiscal,
+          vi.valor_fiscal,
+          vi.valor_nao_fiscal,
           vi.preco_unitario,
           vi.subtotal
         FROM vendas_itens vi
@@ -1160,6 +1235,10 @@ router.get('/receber/agrupado/:clienteId/extrato', async (req, res) => {
           produto_id: prod.produto_id,
           nome_produto: prod.nome_produto,
           quantidade: parseNumber(prod.quantidade),
+          quantidade_fiscal: parseNumber(prod.quantidade_fiscal),
+          quantidade_nao_fiscal: parseNumber(prod.quantidade_nao_fiscal),
+          valor_fiscal: parseNumber(prod.valor_fiscal),
+          valor_nao_fiscal: parseNumber(prod.valor_nao_fiscal),
           preco_unitario: parseNumber(prod.preco_unitario),
           subtotal: parseNumber(prod.subtotal)
         });
@@ -1653,8 +1732,8 @@ router.get('/contas-pagar', (req, res) => {
 // ========== RELATÓRIOS ==========
 
 // Relatório de Resumo Financeiro
-router.get('/relatorios/resumo', (req, res) => {
-  const { dataInicio, dataFim } = req.query;
+router.get('/relatorios/resumo', async (req, res) => {
+  const { dataInicio, dataFim, modo_fiscal } = req.query;
 
   let sql = `
     SELECT
@@ -1675,12 +1754,9 @@ router.get('/relatorios/resumo', (req, res) => {
 
   sql += ' GROUP BY tipo, status ORDER BY tipo, status';
 
-  db.all(sql, params, (err, rows) => {
-    if (err) {
-      console.error('Erro no relatório resumo:', err);
-      res.status(500).json({ error: err.message });
-      return;
-    }
+  try {
+    const rows = await dbAllAsync(sql, params);
+    const recebimentosVenda = await consultarRecebimentosVendaSplit(dataInicio, dataFim, modo_fiscal);
 
     const resumo = {
       receitas: {
@@ -1720,53 +1796,75 @@ router.get('/relatorios/resumo', (req, res) => {
 
     res.json({
       success: true,
-      resumo: resumo,
+      modo_fiscal_ativo: recebimentosVenda.modo_fiscal_ativo,
+      resumo,
+      recebimentos_venda: {
+        fiscal: recebimentosVenda.fiscal,
+        nao_fiscal: recebimentosVenda.nao_fiscal,
+        total: recebimentosVenda.total
+      },
       periodo: { dataInicio, dataFim }
     });
-  });
+  } catch (err) {
+    console.error('Erro no relatório resumo:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Relatório de Contas a Receber
 router.get('/relatorios/receber', (req, res) => {
-  const { dataInicio, dataFim, status, cliente } = req.query;
+  const { dataInicio, dataFim, status, cliente, modo_fiscal } = req.query;
+  const modoFiscalAtivo = isModoFiscalRelatorio(modo_fiscal);
 
   let sql = `
     SELECT
-      id,
-      descricao,
-      documento,
-      valor,
-      data_movimento,
-      vencimento,
-      status,
-      origem,
-      pessoa_nome
-    FROM financeiro
-    WHERE tipo = 'receita'
+      f.id,
+      f.descricao,
+      f.documento,
+      f.valor,
+      f.data_movimento,
+      f.vencimento,
+      f.status,
+      f.origem,
+      f.pessoa_nome,
+      f.venda_id,
+      v.total AS venda_total,
+      v.valor_fiscal AS venda_valor_fiscal,
+      v.valor_nao_fiscal AS venda_valor_nao_fiscal
+    FROM financeiro f
+    LEFT JOIN vendas v ON v.id = f.venda_id
+    WHERE f.tipo = 'receita'
   `;
 
   const params = [];
 
   if (dataInicio && dataFim) {
-    sql += ' AND date(COALESCE(vencimento, data_movimento)) BETWEEN date(?) AND date(?)';
+    sql += ' AND date(COALESCE(f.vencimento, f.data_movimento)) BETWEEN date(?) AND date(?)';
     params.push(dataInicio, dataFim);
   }
 
   if (status && status !== 'todas') {
     if (status === 'vencido') {
-      sql += " AND status NOT IN ('recebido','pago') AND date(COALESCE(vencimento, data_movimento)) < date('now')";
+      sql += " AND f.status NOT IN ('recebido','pago') AND date(COALESCE(f.vencimento, f.data_movimento)) < date('now')";
     } else {
-      sql += ' AND status = ?';
+      sql += ' AND f.status = ?';
       params.push(status);
     }
   }
 
   if (cliente && cliente.trim() !== '') {
-    sql += ' AND COALESCE(pessoa_nome, "") LIKE ?';
+    sql += ' AND COALESCE(f.pessoa_nome, "") LIKE ?';
     params.push(`%${cliente.trim()}%`);
   }
 
-  sql += ' ORDER BY date(COALESCE(vencimento, data_movimento)) DESC, id DESC';
+  if (modoFiscalAtivo) {
+    sql += ` AND (
+      f.venda_id IS NULL
+      OR COALESCE(v.valor_fiscal, 0) > 0
+    )`;
+  }
+
+  sql += ' ORDER BY date(COALESCE(f.vencimento, f.data_movimento)) DESC, f.id DESC';
 
   db.all(sql, params, (err, rows) => {
     if (err) {
@@ -1787,22 +1885,41 @@ router.get('/relatorios/receber', (req, res) => {
         statusFinal = 'vencido';
       }
 
+      const valorFiscal = calcularValorFiscalConta(row.valor, row.venda_total, row.venda_valor_fiscal);
+      const valorNaoFiscal = calcularValorNaoFiscalConta(row.valor, row.venda_total, row.venda_valor_nao_fiscal);
+      const valorExibido = modoFiscalAtivo ? valorFiscal : parseNumber(row.valor);
+
       return {
         id: row.id,
         cliente: row.pessoa_nome || '',
         descricao: row.descricao || '',
         documento: row.documento || '',
-        valor: parseNumber(row.valor),
+        valor: valorExibido,
+        valor_fiscal: valorFiscal,
+        valor_nao_fiscal: valorNaoFiscal,
+        valor_total: parseNumber(row.valor),
         dataEmissao: row.data_movimento || null,
         dataVencimento: row.vencimento || null,
         status: statusFinal,
-        origem: row.origem || ''
+        origem: row.origem || '',
+        venda_id: row.venda_id || null
       };
+    }).filter((conta) => {
+      if (!modoFiscalAtivo) return true;
+      return parseNumber(conta.valor_fiscal) > 0;
     });
 
     return res.json({
       success: true,
+      modo_fiscal_ativo: modoFiscalAtivo,
       contas,
+      totais: {
+        fiscal: contas.reduce((sum, c) => sum + parseNumber(c.valor_fiscal), 0),
+        nao_fiscal: modoFiscalAtivo
+          ? 0
+          : contas.reduce((sum, c) => sum + parseNumber(c.valor_nao_fiscal), 0),
+        total: contas.reduce((sum, c) => sum + parseNumber(modoFiscalAtivo ? c.valor_fiscal : c.valor_total), 0)
+      },
       periodo: { dataInicio, dataFim }
     });
   });
@@ -1858,8 +1975,8 @@ router.get('/relatorios/pagar', (req, res) => {
 });
 
 // Relatório de Fluxo Financeiro
-router.get('/relatorios/fluxo', (req, res) => {
-  const { dataInicio, dataFim } = req.query;
+router.get('/relatorios/fluxo', async (req, res) => {
+  const { dataInicio, dataFim, modo_fiscal } = req.query;
 
   let sql = `
     SELECT
@@ -1879,12 +1996,9 @@ router.get('/relatorios/fluxo', (req, res) => {
 
   sql += ' GROUP BY DATE(data_movimento), tipo ORDER BY data';
 
-  db.all(sql, params, (err, rows) => {
-    if (err) {
-      console.error('Erro no relatório fluxo:', err);
-      res.status(500).json({ error: err.message });
-      return;
-    }
+  try {
+    const rows = await dbAllAsync(sql, params);
+    const recebimentosVenda = await consultarRecebimentosVendaSplit(dataInicio, dataFim, modo_fiscal);
 
     const fluxo = {};
     rows.forEach(row => {
@@ -1900,14 +2014,28 @@ router.get('/relatorios/fluxo', (req, res) => {
     });
 
     const fluxoArray = Object.values(fluxo);
+    const entradasFinanceiro = fluxoArray.reduce((sum, item) => sum + item.receitas, 0);
+    const entradasVendaFiscal = recebimentosVenda.fiscal.total;
+    const entradasVendaNaoFiscal = recebimentosVenda.nao_fiscal.total;
+    const entradasVendaTotal = recebimentosVenda.total.total;
 
     res.json({
       success: true,
-      entradas: fluxoArray.reduce((sum, item) => sum + item.receitas, 0),
+      modo_fiscal_ativo: recebimentosVenda.modo_fiscal_ativo,
+      entradas: recebimentosVenda.modo_fiscal_ativo ? entradasVendaFiscal : entradasVendaTotal,
+      entradas_financeiro: entradasFinanceiro,
+      entradas_venda: {
+        fiscal: entradasVendaFiscal,
+        nao_fiscal: entradasVendaNaoFiscal,
+        total: entradasVendaTotal
+      },
       saidas: fluxoArray.reduce((sum, item) => sum + item.despesas, 0),
       periodo: { dataInicio, dataFim }
     });
-  });
+  } catch (err) {
+    console.error('Erro no relatório fluxo:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Relatório de Inadimplência

@@ -6,6 +6,11 @@ const multer = require('multer');
 const { gravarAuditoria } = require('../services/auditoria');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
 const lotesService = require('../services/lotesService');
+const {
+  resolverQuantidadesCompraItemPersistido,
+  calcularDevolucaoCompraFiscalPrimeiro,
+  resolverJaDevolvidoCompraFiscalPrimeiro
+} = require('../services/estoqueFiscalService');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const { emitirNFeDevolucaoCompra } = require('../services/fiscal/nfeDevolucaoCompra');
@@ -52,6 +57,32 @@ function createSlugCodigo(nome = '') {
 function moeda(value) {
   const numero = Number(value || 0);
   return Number.isFinite(numero) ? Math.round(numero * 100) / 100 : 0;
+}
+
+function resolverQuantidadesCompraItem(item = {}) {
+  const hasSplit = item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined;
+
+  if (hasSplit) {
+    const quantidade_fiscal = Number(item.quantidade_fiscal || 0);
+    const quantidade_nao_fiscal = Number(item.quantidade_nao_fiscal || 0);
+    const quantidade = quantidade_fiscal + quantidade_nao_fiscal;
+    return { quantidade_fiscal, quantidade_nao_fiscal, quantidade };
+  }
+
+  const quantidade = Number(item.quantidade || 0);
+  if (Number(item.item_fiscal) === 0) {
+    return {
+      quantidade_fiscal: 0,
+      quantidade_nao_fiscal: quantidade,
+      quantidade
+    };
+  }
+
+  return {
+    quantidade_fiscal: quantidade,
+    quantidade_nao_fiscal: 0,
+    quantidade
+  };
 }
 
 function calcularRateioItens(itens, totais = {}) {
@@ -250,6 +281,8 @@ function ensureProductForItem(item, callback) {
 
   const codigo = item.codigo_barras || createSlugCodigo(item.produto_nome || 'PRODUTO-IMPORTADO');
   const nome = item.produto_nome || `Produto ${codigo}`;
+  const qtds = resolverQuantidadesCompraItem(item);
+  const itemFiscal = qtds.quantidade_fiscal > 0 ? 1 : 0;
 
   db.get(
     'SELECT id FROM produtos WHERE codigo = ? OR codigo_barras = ? OR nome = ? LIMIT 1',
@@ -261,8 +294,9 @@ function ensureProductForItem(item, callback) {
       db.run(`
         INSERT INTO produtos (
           codigo, codigo_barras, nome, unidade, preco_compra, preco_venda,
-          lucro_percentual, estoque_atual, estoque_minimo, fornecedor, ncm, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, CURRENT_TIMESTAMP)
+          lucro_percentual, estoque_atual, estoque_minimo, fornecedor, ncm,
+          saldo_fiscal, saldo_nao_fiscal, item_fiscal, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, 0, ?, CURRENT_TIMESTAMP)
       `, [
         codigo,
         item.codigo_barras || codigo,
@@ -272,7 +306,8 @@ function ensureProductForItem(item, callback) {
         Number(item.preco_venda_sugerido || item.preco_unitario || 0),
         Number(item.margem_lucro || 30),
         item.fornecedor || null,
-        item.ncm || null
+        item.ncm || null,
+        itemFiscal
       ], function(insertErr) {
         if (insertErr) return callback(insertErr);
         callback(null, this.lastID);
@@ -291,7 +326,10 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
     }
 
     const item = itens[index++];
-    ensureProductForItem(item, (prodErr, produtoId) => {
+    const qtds = resolverQuantidadesCompraItem(item);
+    const itemProcessado = { ...item, ...qtds };
+
+    ensureProductForItem(itemProcessado, (prodErr, produtoId) => {
       if (prodErr) return done(prodErr);
 
       db.get('SELECT preco_compra, preco_venda, controlar_validade FROM produtos WHERE id = ?', [produtoId], (getErr, produto) => {
@@ -299,103 +337,112 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
 
         const antigo = { preco_compra: produto?.preco_compra, preco_venda: produto?.preco_venda };
         const controlarValidade = produto?.controlar_validade === 1;
+        const qtdTotal = qtds.quantidade;
+        const qtdFiscal = qtds.quantidade_fiscal;
+        const qtdNaoFiscal = qtds.quantidade_nao_fiscal;
 
         db.run(`
           INSERT INTO compras_itens (
             compra_id, produto_id, quantidade, preco_unitario, subtotal,
             descricao_produto, codigo_barras, margem_lucro, preco_venda_sugerido, unidade, ncm,
             frete_rateado, desconto_rateado, outras_despesas_rateado, custo_unitario_final,
-            vendido_por_peso, peso_total_compra, custo_por_kg, atualizar_preco_venda
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            vendido_por_peso, peso_total_compra, custo_por_kg, atualizar_preco_venda, item_fiscal,
+            quantidade_fiscal, quantidade_nao_fiscal
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           compraId,
           produtoId,
-          Number(item.quantidade || 0),
-          Number(item.preco_unitario || 0),
-          Number(item.subtotal || 0),
-          item.produto_nome || null,
-          item.codigo_barras || null,
-          Number(item.margem_lucro || 30),
-          Number(item.preco_venda_sugerido || 0),
-          item.unidade || 'UN',
-          item.ncm || null,
-          Number(item.frete_rateado || 0),
-          Number(item.desconto_rateado || 0),
-          Number(item.outras_despesas_rateado || 0),
-          Number(item.custo_unitario_final || item.preco_unitario || 0),
-          Number(item.vendido_por_peso || 0),
-          Number(item.peso_total_compra || 0),
-          Number(item.custo_por_kg || 0),
-          Number(item.atualizar_preco_venda ?? 1)
+          qtdTotal,
+          Number(itemProcessado.preco_unitario || 0),
+          Number(itemProcessado.subtotal || 0),
+          itemProcessado.produto_nome || null,
+          itemProcessado.codigo_barras || null,
+          Number(itemProcessado.margem_lucro || 30),
+          Number(itemProcessado.preco_venda_sugerido || 0),
+          itemProcessado.unidade || 'UN',
+          itemProcessado.ncm || null,
+          Number(itemProcessado.frete_rateado || 0),
+          Number(itemProcessado.desconto_rateado || 0),
+          Number(itemProcessado.outras_despesas_rateado || 0),
+          Number(itemProcessado.custo_unitario_final || itemProcessado.preco_unitario || 0),
+          Number(itemProcessado.vendido_por_peso || 0),
+          Number(itemProcessado.peso_total_compra || 0),
+          Number(itemProcessado.custo_por_kg || 0),
+          Number(itemProcessado.atualizar_preco_venda ?? 1),
+          qtdFiscal > 0 ? 1 : 0,
+          qtdFiscal,
+          qtdNaoFiscal
         ], (insertErr) => {
           if (insertErr) return done(insertErr);
 
           db.run(`
             UPDATE produtos
-            SET estoque_atual = estoque_atual + ?,
-                preco_compra = ?,
-                preco_venda = CASE WHEN ? = 1 THEN ? ELSE preco_venda END,
-                lucro_percentual = CASE WHEN ? = 1 THEN ? ELSE lucro_percentual END,
-                fornecedor = COALESCE(?, fornecedor),
-                ncm = COALESCE(?, ncm),
-                codigo_barras = COALESCE(?, codigo_barras),
-                unidade = COALESCE(?, unidade),
-                vendido_por_peso = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(vendido_por_peso, 0) END,
-                peso_total_compra = CASE WHEN ? = 1 THEN ? ELSE COALESCE(peso_total_compra, 0) END,
-                valor_total_compra = CASE WHEN ? = 1 THEN ? ELSE COALESCE(valor_total_compra, 0) END,
-                custo_por_kg = CASE WHEN ? = 1 THEN ? ELSE COALESCE(custo_por_kg, 0) END,
-                updated_at = CURRENT_TIMESTAMP
+            SET
+              saldo_fiscal = COALESCE(saldo_fiscal, 0) + ?,
+              saldo_nao_fiscal = COALESCE(saldo_nao_fiscal, 0) + ?,
+              estoque_atual = COALESCE(estoque_atual, 0) + ?,
+              preco_compra = ?,
+              preco_venda = CASE WHEN ? = 1 THEN ? ELSE preco_venda END,
+              lucro_percentual = CASE WHEN ? = 1 THEN ? ELSE lucro_percentual END,
+              fornecedor = COALESCE(?, fornecedor),
+              ncm = COALESCE(?, ncm),
+              codigo_barras = COALESCE(?, codigo_barras),
+              unidade = COALESCE(?, unidade),
+              vendido_por_peso = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(vendido_por_peso, 0) END,
+              peso_total_compra = CASE WHEN ? = 1 THEN ? ELSE COALESCE(peso_total_compra, 0) END,
+              valor_total_compra = CASE WHEN ? = 1 THEN ? ELSE COALESCE(valor_total_compra, 0) END,
+              custo_por_kg = CASE WHEN ? = 1 THEN ? ELSE COALESCE(custo_por_kg, 0) END,
+              updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `, [
-            Number(item.quantidade || 0),
-            Number(item.custo_unitario_final || item.preco_unitario || 0),
+            qtdFiscal,
+            qtdNaoFiscal,
+            qtdTotal,
+            Number(itemProcessado.custo_unitario_final || itemProcessado.preco_unitario || 0),
 
-            Number(item.atualizar_preco_venda ?? 1),
-            Number(item.preco_venda_sugerido || 0),
+            Number(itemProcessado.atualizar_preco_venda ?? 1),
+            Number(itemProcessado.preco_venda_sugerido || 0),
 
-            Number(item.atualizar_preco_venda ?? 1),
-            Number(item.margem_lucro || 30),
+            Number(itemProcessado.atualizar_preco_venda ?? 1),
+            Number(itemProcessado.margem_lucro || 30),
 
             fornecedor || null,
-            item.ncm || null,
-            item.codigo_barras || null,
-            item.unidade || 'UN',
+            itemProcessado.ncm || null,
+            itemProcessado.codigo_barras || null,
+            itemProcessado.unidade || 'UN',
 
-            Number(item.vendido_por_peso || 0),
+            Number(itemProcessado.vendido_por_peso || 0),
 
-            Number(item.vendido_por_peso || 0),
-            Number(item.peso_total_compra || item.quantidade || 0),
+            Number(itemProcessado.vendido_por_peso || 0),
+            Number(itemProcessado.peso_total_compra || qtdTotal || 0),
 
-            Number(item.vendido_por_peso || 0),
-            Number(item.subtotal || 0),
+            Number(itemProcessado.vendido_por_peso || 0),
+            Number(itemProcessado.subtotal || 0),
 
-            Number(item.vendido_por_peso || 0),
-            Number(item.custo_por_kg || item.custo_unitario_final || item.preco_unitario || 0),
+            Number(itemProcessado.vendido_por_peso || 0),
+            Number(itemProcessado.custo_por_kg || itemProcessado.custo_unitario_final || itemProcessado.preco_unitario || 0),
 
             produtoId
           ], (upErr) => {
             if (upErr) return done(upErr);
 
-            // Se o produto controla validade, criar lote
             if (controlarValidade) {
-              if (!item.data_validade) {
-                return done(new Error(`Produto "${item.produto_nome || produtoId}" controla validade. Informe a data de validade.`));
+              if (!itemProcessado.data_validade) {
+                return done(new Error(`Produto "${itemProcessado.produto_nome || produtoId}" controla validade. Informe a data de validade.`));
               }
 
               const hoje = new Date().toISOString().split('T')[0];
 
-              // Lote gerado automaticamente pelo serviço
               lotesService.criarLote({
                 produto_id: produtoId,
-                quantidade_inicial: Number(item.quantidade || 0),
-                data_validade: item.data_validade,
+                quantidade_inicial: qtdTotal,
+                data_validade: itemProcessado.data_validade,
                 data_entrada: hoje,
                 origem: 'COMPRA',
                 compra_id: compraId
               }, (loteErr) => {
                 if (loteErr) {
                   console.error('Erro ao criar lote para compra:', loteErr.message);
-                  // Continuar mesmo se o lote falhar, mas logar o erro
                 }
 
                 continuarProcessamento();
@@ -403,20 +450,20 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
             } else {
               continuarProcessamento();
             }
-
-            function continuarProcessamento() {
-              if (antigo && (Number(antigo.preco_compra) !== Number(item.preco_unitario) || Number(antigo.preco_venda) !== Number(item.preco_venda_sugerido || 0))) {
-                db.run(`
-                  INSERT INTO produtos_preco_historico (
-                    produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
-                  ) VALUES (?, ?, ?, ?, ?)
-                `, [produtoId, antigo.preco_compra, item.preco_unitario, antigo.preco_venda, item.preco_venda_sugerido || 0], () => next());
-              } else {
-                next();
-              }
-            }
           });
         });
+
+          function continuarProcessamento() {
+            if (antigo && (Number(antigo.preco_compra) !== Number(itemProcessado.preco_unitario) || Number(antigo.preco_venda) !== Number(itemProcessado.preco_venda_sugerido || 0))) {
+              db.run(`
+                INSERT INTO produtos_preco_historico (
+                  produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
+                ) VALUES (?, ?, ?, ?, ?)
+              `, [produtoId, antigo.preco_compra, itemProcessado.preco_unitario, antigo.preco_venda, itemProcessado.preco_venda_sugerido || 0], () => next());
+            } else {
+              next();
+            }
+          }
       });
     });
   }
@@ -557,12 +604,24 @@ router.post('/:id/devolver', validarCaixaAberto, (req, res) => {
                 return res.status(500).json({ error: insertErr.message });
               }
 
+              const jaDevolvido = resolverJaDevolvidoCompraFiscalPrimeiro(item, qtdJaDevolvida);
+              const splitDevolucao = calcularDevolucaoCompraFiscalPrimeiro(item, qtdDevolver, jaDevolvido);
+
               db.run(`
                 UPDATE produtos
-                SET estoque_atual = estoque_atual - ?,
-                    updated_at = CURRENT_TIMESTAMP
+                SET
+                  saldo_fiscal = saldo_fiscal - ?,
+                  saldo_nao_fiscal = saldo_nao_fiscal - ?,
+                  estoque_atual = (saldo_fiscal - ?) + (saldo_nao_fiscal - ?),
+                  updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-              `, [qtdDevolver, item.produto_id], (estoqueErr) => {
+              `, [
+                splitDevolucao.qtdFiscal,
+                splitDevolucao.qtdNaoFiscal,
+                splitDevolucao.qtdFiscal,
+                splitDevolucao.qtdNaoFiscal,
+                item.produto_id
+              ], (estoqueErr) => {
                 if (estoqueErr) {
                   db.run('ROLLBACK');
                   return res.status(500).json({ error: estoqueErr.message });
@@ -1042,13 +1101,23 @@ router.post('/:id/cancelar', (req, res) => {
           if (index >= itens.length) return finalizarCancelamento();
 
           const item = itens[index];
+          const qtds = resolverQuantidadesCompraItemPersistido(item);
 
           db.run(`
             UPDATE produtos
-            SET estoque_atual = estoque_atual - ?,
-                updated_at = CURRENT_TIMESTAMP
+            SET
+              saldo_fiscal = saldo_fiscal - ?,
+              saldo_nao_fiscal = saldo_nao_fiscal - ?,
+              estoque_atual = (saldo_fiscal - ?) + (saldo_nao_fiscal - ?),
+              updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-          `, [Number(item.quantidade || 0), item.produto_id], (upErr) => {
+          `, [
+            qtds.quantidade_fiscal,
+            qtds.quantidade_nao_fiscal,
+            qtds.quantidade_fiscal,
+            qtds.quantidade_nao_fiscal,
+            item.produto_id
+          ], (upErr) => {
             if (upErr) {
               db.run('ROLLBACK');
               return res.status(500).json({ error: upErr.message });

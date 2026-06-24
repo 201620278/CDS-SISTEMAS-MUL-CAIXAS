@@ -3,9 +3,40 @@ const router = express.Router();
 const configService = require('../services/configuracaoService');
 const { exigirSuperAdmin } = require('./auth');
 
+router.get('/confirmacao-fiscal', (req, res) => {
+  try {
+    res.json({
+      modo_confirmacao_fiscal: configService.getModoConfirmacaoFiscal()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/recursos', (req, res) => {
   try {
     res.json(configService.getRecursos());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/padrao-fiscal', (req, res) => {
+  try {
+    res.json(configService.getPadraoFiscal());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/padrao-fiscal', exigirSuperAdmin, (req, res) => {
+  try {
+    const saved = configService.savePadraoFiscal(req.body || {});
+    res.json({
+      success: true,
+      message: 'Padrão Fiscal da Empresa atualizado com sucesso.',
+      padrao_fiscal: configService.getPadraoFiscal(saved)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -6,7 +6,6 @@ const moment = require('moment');
 const { gravarAuditoria } = require('../services/auditoria');
 const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
 
-// Listar contas a receber em aberto
 router.get('/em-aberto', (req, res) => {
   db.all(`
     SELECT cr.*, c.nome as cliente_nome, v.codigo as venda_codigo
@@ -16,32 +15,18 @@ router.get('/em-aberto', (req, res) => {
     WHERE cr.status = 'aberto'
     ORDER BY cr.data_vencimento ASC
   `, (err, rows) => {
-                          if (credErr) {
-                            db.run('ROLLBACK');
-                            res.status(500).json({ error: credErr.message });
-                            return;
-                          }
-                          db.run('COMMIT');
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(rows);
+  });
+});
 
-                          // registrar auditoria do pagamento de parcela
-                          gravarAuditoria({
-                            usuario_id: req.user?.id || null,
-                            usuario_nome: req.user?.nome || req.user?.username || null,
-                            modulo: 'contas_receber',
-                            acao: 'pagar_parcela',
-                            referencia_tipo: 'conta_receber',
-                            referencia_id: id,
-                            detalhes: { valor_pago: valorNum, forma_pagamento: forma_pagamento || null },
-                            ip_requisicao: req.ip || null
-                          }).catch((auditErr) => console.error('Erro ao gravar auditoria de pagamento de parcela:', auditErr));
-
-                          res.json({
-                            message: 'Pagamento registrado',
-                            id,
-                            valor_pago: valorNum,
-                            valor_restante_anterior: restante,
-                            valor_restante_novo: restante - valorNum
-                          });
+router.get('/vencidas', (req, res) => {
+  const hoje = moment().format('YYYY-MM-DD');
+  db.all(`
+    SELECT cr.*, c.nome as cliente_nome, v.codigo as venda_codigo
     FROM contas_receber cr
     LEFT JOIN clientes c ON cr.cliente_id = c.id
     LEFT JOIN vendas v ON cr.venda_id = v.id
@@ -56,7 +41,6 @@ router.get('/em-aberto', (req, res) => {
   });
 });
 
-// Histórico de vendas a prazo de um cliente
 router.get('/historico/:cliente_id', (req, res) => {
   const { cliente_id } = req.params;
   db.all(`
@@ -74,12 +58,11 @@ router.get('/historico/:cliente_id', (req, res) => {
   });
 });
 
-// Verificar débitos em aberto e vencidos de um cliente
 router.get('/verificar/:cliente_id', (req, res) => {
   const { cliente_id } = req.params;
   const hoje = moment().format('YYYY-MM-DD');
   db.get(`
-    SELECT 
+    SELECT
       SUM(CASE WHEN status = 'aberto' THEN valor_restante ELSE 0 END) as total_em_aberto,
       COUNT(CASE WHEN status = 'aberto' AND data_vencimento < ? THEN 1 END) as parcelas_vencidas
     FROM contas_receber
@@ -93,7 +76,6 @@ router.get('/verificar/:cliente_id', (req, res) => {
   });
 });
 
-// Registrar pagamento de parcela
 router.post('/pagar/:id', validarCaixaAberto, (req, res) => {
   const { id } = req.params;
   const { valor_pago, data_pagamento, forma_pagamento } = req.body;
@@ -154,7 +136,6 @@ router.post('/pagar/:id', validarCaixaAberto, (req, res) => {
               return;
             }
 
-            // Atualizar registro anterior em financeiro para registrar a data correta do pagamento
             db.run(
               `
                 UPDATE financeiro
@@ -162,12 +143,7 @@ router.post('/pagar/:id', validarCaixaAberto, (req, res) => {
                 WHERE referencia_id = ? AND referencia_tipo = 'venda' AND status = 'pendente'
               `,
               [data, data, data, conta.venda_id],
-              (updateErr) => {
-                if (updateErr) {
-                  console.log('Aviso: Não foi possível atualizar registro anterior de financeiro (pode não existir):', updateErr.message);
-                }
-                
-                // Inserir novo registro também para auditoria completa
+              () => {
                 db.run(
                   `
                     INSERT INTO financeiro (tipo, descricao, valor, data_movimento, categoria, forma_pagamento, referencia_id, referencia_tipo, status, baixado_em)
@@ -188,6 +164,33 @@ router.post('/pagar/:id', validarCaixaAberto, (req, res) => {
                       return;
                     }
 
+                    const finalizar = () => {
+                      db.run('COMMIT');
+
+                      gravarAuditoria({
+                        usuario_id: req.operadorId || req.user?.id || null,
+                        usuario_nome: req.user?.nome || req.user?.username || null,
+                        modulo: 'contas_receber',
+                        acao: 'pagar_parcela',
+                        referencia_tipo: 'conta_receber',
+                        referencia_id: id,
+                        detalhes: {
+                          valor_pago: valorNum,
+                          forma_pagamento: forma_pagamento || null,
+                          sessao_id: req.caixaSessaoId || null
+                        },
+                        ip_requisicao: req.ip || null
+                      }).catch((auditErr) => console.error('Erro ao gravar auditoria de pagamento de parcela:', auditErr));
+
+                      res.json({
+                        message: 'Pagamento registrado',
+                        id,
+                        valor_pago: valorNum,
+                        valor_restante_anterior: restante,
+                        valor_restante_novo: restante - valorNum
+                      });
+                    };
+
                     if (conta.cliente_id) {
                       db.run(
                         `
@@ -205,51 +208,11 @@ router.post('/pagar/:id', validarCaixaAberto, (req, res) => {
                             res.status(500).json({ error: credErr.message });
                             return;
                           }
-                          db.run('COMMIT');
-
-                          // registrar auditoria do pagamento de parcela (associando sessao)
-                          gravarAuditoria({
-                            usuario_id: req.operadorId || req.user?.id || null,
-                            usuario_nome: req.user?.nome || req.user?.username || null,
-                            modulo: 'contas_receber',
-                            acao: 'pagar_parcela',
-                            referencia_tipo: 'conta_receber',
-                            referencia_id: id,
-                            detalhes: { valor_pago: valorNum, forma_pagamento: forma_pagamento || null, sessao_id: req.caixaSessaoId || null },
-                            ip_requisicao: req.ip || null
-                          }).catch((auditErr) => console.error('Erro ao gravar auditoria de pagamento de parcela:', auditErr));
-
-                          res.json({
-                            message: 'Pagamento registrado',
-                            id,
-                            valor_pago: valorNum,
-                            valor_restante_anterior: restante,
-                            valor_restante_novo: restante - valorNum
-                          });
+                          finalizar();
                         }
                       );
                     } else {
-                      db.run('COMMIT');
-
-                      // registrar auditoria do pagamento de parcela (associando sessao)
-                      gravarAuditoria({
-                        usuario_id: req.operadorId || req.user?.id || null,
-                        usuario_nome: req.user?.nome || req.user?.username || null,
-                        modulo: 'contas_receber',
-                        acao: 'pagar_parcela',
-                        referencia_tipo: 'conta_receber',
-                        referencia_id: id,
-                        detalhes: { valor_pago: valorNum, forma_pagamento: forma_pagamento || null, sessao_id: req.caixaSessaoId || null },
-                        ip_requisicao: req.ip || null
-                      }).catch((auditErr) => console.error('Erro ao gravar auditoria de pagamento de parcela:', auditErr));
-
-                      res.json({
-                        message: 'Pagamento registrado',
-                        id,
-                        valor_pago: valorNum,
-                        valor_restante_anterior: restante,
-                        valor_restante_novo: restante - valorNum
-                      });
+                      finalizar();
                     }
                   }
                 );

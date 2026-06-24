@@ -71,6 +71,36 @@ function aplicarAlteracaoSegura(tabela, sql) {
   });
 }
 
+function migrarColunaTefConfiguracaoId(tabela) {
+  db.all(`PRAGMA table_info(${tabela})`, (err, cols) => {
+    if (err || !Array.isArray(cols) || cols.length === 0) {
+      return;
+    }
+
+    const nomes = cols.map((c) => c.name);
+    const temLegado = nomes.includes('tef_config_id');
+    const temAtual = nomes.includes('tef_configuracao_id');
+
+    if (temLegado && !temAtual) {
+      db.run(
+        `ALTER TABLE ${tabela} RENAME COLUMN tef_config_id TO tef_configuracao_id`,
+        (renameErr) => {
+          if (renameErr) {
+            console.error(`Erro ao renomear tef_config_id em ${tabela}:`, renameErr.message);
+            return;
+          }
+          console.log(`Coluna tef_config_id renomeada para tef_configuracao_id em ${tabela}`);
+        }
+      );
+      return;
+    }
+
+    if (!temAtual && !temLegado) {
+      aplicarAlteracaoSegura(tabela, `ALTER TABLE ${tabela} ADD COLUMN tef_configuracao_id INTEGER`);
+    }
+  });
+}
+
 function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('categorias', `ALTER TABLE categorias ADD COLUMN tipo TEXT DEFAULT 'produto'`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN status TEXT DEFAULT 'aberto'`);
@@ -78,6 +108,8 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN caixa_id INTEGER REFERENCES caixa(id)`);
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN terminal_id INTEGER REFERENCES terminais(id)`);
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN operador_id INTEGER REFERENCES usuarios(id)`);
+  aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN status_pagamento TEXT DEFAULT 'pendente'`);
+  aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN tef_transacao_id INTEGER`);
   aplicarAlteracaoSegura('caixa_movimentacoes', `ALTER TABLE caixa_movimentacoes ADD COLUMN terminal_id INTEGER`);
   aplicarAlteracaoSegura('vendas', `ALTER TABLE vendas ADD COLUMN caixa_sessao_id INTEGER REFERENCES caixa_sessoes(id)`);
   aplicarAlteracaoSegura('caixa_movimentacoes', `ALTER TABLE caixa_movimentacoes ADD COLUMN sessao_id INTEGER REFERENCES caixa_sessoes(id)`);
@@ -90,6 +122,11 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN promocao_id INTEGER`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_atacado DECIMAL(10,2) DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN tipo_preco TEXT DEFAULT 'varejo'`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN item_fiscal INTEGER DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_fiscal REAL DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_fiscal REAL DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`);
 
   // Adicionar colunas faltantes na tabela configuracoes
   aplicarAlteracaoSegura('configuracoes', `ALTER TABLE configuracoes ADD COLUMN fiscal_emitente_logradouro TEXT DEFAULT ''`);
@@ -135,9 +172,12 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE produtos ADD COLUMN aliquota_icms REAL DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN aliquota_pis REAL DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN aliquota_cofins REAL DEFAULT 0`,
-    `ALTER TABLE produtos ADD COLUMN lucro_percentual DECIMAL(10,2)`
-    , `ALTER TABLE produtos ADD COLUMN venda_atacado INTEGER DEFAULT 0`
-    , `ALTER TABLE produtos ADD COLUMN ativo INTEGER DEFAULT 1`
+    `ALTER TABLE produtos ADD COLUMN lucro_percentual DECIMAL(10,2)`,
+    `ALTER TABLE produtos ADD COLUMN venda_atacado INTEGER DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN ativo INTEGER DEFAULT 1`,
+    `ALTER TABLE produtos ADD COLUMN item_fiscal INTEGER DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN saldo_fiscal REAL DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN saldo_nao_fiscal REAL DEFAULT 0`
   ];
 
   const alteracoesCompras = [
@@ -195,7 +235,10 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras_itens ADD COLUMN vendido_por_peso INTEGER DEFAULT 0`,
     `ALTER TABLE compras_itens ADD COLUMN peso_total_compra DECIMAL(10,3) DEFAULT 0`,
     `ALTER TABLE compras_itens ADD COLUMN custo_por_kg DECIMAL(10,2) DEFAULT 0`,
-    `ALTER TABLE compras_itens ADD COLUMN atualizar_preco_venda INTEGER DEFAULT 1`
+    `ALTER TABLE compras_itens ADD COLUMN atualizar_preco_venda INTEGER DEFAULT 1`,
+    `ALTER TABLE compras_itens ADD COLUMN item_fiscal INTEGER DEFAULT 1`,
+    `ALTER TABLE compras_itens ADD COLUMN quantidade_fiscal REAL DEFAULT 0`,
+    `ALTER TABLE compras_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`
   ];
 
   const alteracoesVendas = [
@@ -206,7 +249,9 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE vendas ADD COLUMN data_cancelamento DATETIME`,
     `ALTER TABLE vendas ADD COLUMN desconto_autorizado_por_id INTEGER`,
     `ALTER TABLE vendas ADD COLUMN desconto_autorizado_por TEXT`,
-    `ALTER TABLE vendas ADD COLUMN desconto_autorizado_em DATETIME`
+    `ALTER TABLE vendas ADD COLUMN desconto_autorizado_em DATETIME`,
+    `ALTER TABLE vendas ADD COLUMN valor_fiscal REAL DEFAULT 0`,
+    `ALTER TABLE vendas ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`
   ];
 
   const alteracoesContasReceber = [
@@ -224,6 +269,33 @@ function aplicarAlteracoesPosCriacao() {
   alteracoesVendas.forEach(sql => aplicarAlteracaoSegura('vendas', sql));
   alteracoesContasReceber.forEach(sql => aplicarAlteracaoSegura('contas_receber', sql));
   alteracoesCaixaMovimentacoes.forEach(sql => aplicarAlteracaoSegura('caixa_movimentacoes', sql));
+
+  aplicarAlteracaoSegura('tef_pinpads', `ALTER TABLE tef_pinpads ADD COLUMN codigo TEXT`);
+  aplicarAlteracaoSegura('tef_pinpads', `ALTER TABLE tef_pinpads ADD COLUMN nome TEXT`);
+  aplicarAlteracaoSegura('tef_pinpads', `ALTER TABLE tef_pinpads ADD COLUMN ativo INTEGER DEFAULT 1`);
+
+  const alteracoesTefTransacoes = [
+    `ALTER TABLE tef_transacoes ADD COLUMN idempotency_key TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN payload_retorno TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN comprovante_cliente TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN comprovante_estabelecimento TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN codigo_transacao TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN codigo_resposta TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN mensagem_resposta TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN nfce_numero INTEGER`,
+    `ALTER TABLE tef_transacoes ADD COLUMN nfce_chave TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN criado_em DATETIME`,
+    `ALTER TABLE tef_transacoes ADD COLUMN atualizado_em DATETIME`,
+    `ALTER TABLE tef_transacoes ADD COLUMN created_at DATETIME`,
+    `ALTER TABLE tef_transacoes ADD COLUMN updated_at DATETIME`
+  ];
+  alteracoesTefTransacoes.forEach((sql) => aplicarAlteracaoSegura('tef_transacoes', sql));
+  aplicarAlteracaoSegura(
+    'tef_transacoes',
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_tef_transacoes_idempotency_key ON tef_transacoes(idempotency_key) WHERE idempotency_key IS NOT NULL`
+  );
+
+  ['tef_pinpads', 'tef_servidores', 'tef_operacoes'].forEach(migrarColunaTefConfiguracaoId);
 }
 
 function criarTabelas() {
@@ -502,6 +574,8 @@ function criarTabelas() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tef_configuracao_id INTEGER,
         habilitado INTEGER,
+        codigo TEXT,
+        nome TEXT,
         fabricante TEXT,
         modelo TEXT,
         tipo_conexao TEXT,
@@ -511,7 +585,21 @@ function criarTabelas() {
         serial TEXT,
         status TEXT,
         ultima_conexao TEXT,
+        ativo INTEGER DEFAULT 1,
         FOREIGN KEY (tef_configuracao_id) REFERENCES tef_configuracao(id)
+      )
+    `);
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS tef_pinpad_catalogo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        codigo TEXT UNIQUE NOT NULL,
+        nome TEXT NOT NULL,
+        fabricante TEXT,
+        modelo TEXT,
+        adquirente_sugerido TEXT,
+        ativo INTEGER DEFAULT 1,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -700,6 +788,30 @@ function criarTabelas() {
     `, (err) => {
       if (err) console.error('Erro ao criar tabela venda_lotes:', err);
       else console.log('Tabela venda_lotes criada/verificada');
+    });
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS produtos_ajustes_estoque (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        produto_id INTEGER NOT NULL,
+        usuario_id INTEGER,
+        usuario_nome TEXT,
+        motivo TEXT NOT NULL,
+        ajuste_fiscal REAL DEFAULT 0,
+        ajuste_nao_fiscal REAL DEFAULT 0,
+        saldo_fiscal_antes REAL DEFAULT 0,
+        saldo_fiscal_depois REAL DEFAULT 0,
+        saldo_nao_fiscal_antes REAL DEFAULT 0,
+        saldo_nao_fiscal_depois REAL DEFAULT 0,
+        estoque_total_antes REAL DEFAULT 0,
+        estoque_total_depois REAL DEFAULT 0,
+        criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (produto_id) REFERENCES produtos(id),
+        FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela produtos_ajustes_estoque:', err);
+      else console.log('Tabela produtos_ajustes_estoque criada/verificada');
     });
 
     // Tabela de configurações de validade
@@ -948,6 +1060,7 @@ function criarTabelas() {
         quantidade DECIMAL(10,2) NOT NULL,
         preco_unitario DECIMAL(10,2) NOT NULL,
         subtotal DECIMAL(10,2) NOT NULL,
+        item_fiscal INTEGER DEFAULT 1,
         FOREIGN KEY (compra_id) REFERENCES compras(id) ON DELETE CASCADE,
         FOREIGN KEY (produto_id) REFERENCES produtos(id)
       )
@@ -971,6 +1084,25 @@ function criarTabelas() {
     `, (err) => {
       if (err) console.error('Erro ao criar tabela compras_devolucoes:', err);
       else console.log('Tabela compras_devolucoes criada/verificada');
+    });
+
+    db.run(`
+      CREATE TABLE IF NOT EXISTS vendas_devolucoes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        venda_id INTEGER NOT NULL,
+        venda_item_id INTEGER NOT NULL,
+        produto_id INTEGER NOT NULL,
+        quantidade DECIMAL(10,3) NOT NULL,
+        quantidade_fiscal DECIMAL(10,3) NOT NULL DEFAULT 0,
+        quantidade_nao_fiscal DECIMAL(10,3) NOT NULL DEFAULT 0,
+        valor_unitario DECIMAL(10,2) NOT NULL,
+        valor_total DECIMAL(10,2) NOT NULL,
+        motivo TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela vendas_devolucoes:', err);
+      else console.log('Tabela vendas_devolucoes criada/verificada');
     });
 
     // Tabela de vendas
@@ -1136,6 +1268,26 @@ function criarTabelas() {
       else console.log('Tabela produtos_preco_historico criada/verificada');
     });
 
+    // Tabela de recebimentos de vendas
+    db.run(`
+      CREATE TABLE IF NOT EXISTS venda_recebimentos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        venda_id INTEGER NOT NULL,
+        tipo_recebimento TEXT NOT NULL,
+        forma_pagamento TEXT NOT NULL,
+        valor REAL NOT NULL,
+        tef_transacao_id INTEGER,
+        nsu TEXT,
+        autorizacao TEXT,
+        status TEXT DEFAULT 'aprovado',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (venda_id) REFERENCES vendas(id) ON DELETE CASCADE
+      )
+    `, (err) => {
+      if (err) console.error('Erro ao criar tabela venda_recebimentos:', err);
+      else console.log('Tabela venda_recebimentos criada/verificada');
+    });
+
     // Usuários do sistema (login)
     db.run(`
       CREATE TABLE IF NOT EXISTS usuarios (
@@ -1265,14 +1417,163 @@ function criarTabelas() {
   });
 }
 
+function recuperarItemFiscalComprasItens() {
+  db.all(`PRAGMA table_info(compras_itens)`, [], (err, rows) => {
+    if (err) {
+      console.error('Erro ao verificar coluna item_fiscal em compras_itens:', err.message);
+      return;
+    }
+    if (!(rows || []).some((col) => col.name === 'item_fiscal')) {
+      return;
+    }
+
+    db.get(`SELECT valor FROM configuracoes WHERE chave = ?`, ['migracao_item_fiscal_compras_itens'], (cfgErr, cfg) => {
+      if (cfgErr) {
+        console.error('Erro ao verificar migração item_fiscal compras_itens:', cfgErr.message);
+        return;
+      }
+
+      const sqlRecuperacao = `
+        UPDATE compras_itens
+        SET item_fiscal = (
+          SELECT COALESCE(p.item_fiscal, 0)
+          FROM produtos p
+          WHERE p.id = compras_itens.produto_id
+        )
+      `;
+      const whereClause = cfg && cfg.valor === '1' ? ' WHERE item_fiscal IS NULL' : '';
+
+      db.run(sqlRecuperacao + whereClause, (updateErr) => {
+        if (updateErr) {
+          console.error('Erro ao recuperar item_fiscal em compras_itens:', updateErr.message);
+          return;
+        }
+
+        if (cfg && cfg.valor === '1') {
+          console.log('Recuperação item_fiscal compras_itens (pendentes) concluída');
+          return;
+        }
+
+        db.run(`
+          INSERT INTO configuracoes (chave, valor, tipo, descricao)
+          VALUES ('migracao_item_fiscal_compras_itens', '1', 'migracao', 'Recuperação item_fiscal compras_itens')
+          ON CONFLICT(chave) DO UPDATE SET valor = '1', updated_at = CURRENT_TIMESTAMP
+        `, (flagErr) => {
+          if (flagErr) {
+            console.error('Erro ao marcar migração item_fiscal compras_itens:', flagErr.message);
+            return;
+          }
+          console.log('Recuperação item_fiscal compras_itens concluída');
+        });
+      });
+    });
+  });
+}
+
+function recuperarQuantidadesFiscaisComprasItens() {
+  db.all(`PRAGMA table_info(compras_itens)`, [], (err, rows) => {
+    if (err) {
+      console.error('Erro ao verificar colunas de quantidade fiscal em compras_itens:', err.message);
+      return;
+    }
+    const colunas = (rows || []).map((col) => col.name);
+    if (!colunas.includes('quantidade_fiscal') || !colunas.includes('quantidade_nao_fiscal')) {
+      return;
+    }
+
+    db.run(`
+      UPDATE compras_itens
+      SET
+        quantidade_fiscal = CASE
+          WHEN quantidade_fiscal IS NOT NULL THEN quantidade_fiscal
+          WHEN COALESCE(item_fiscal, 1) = 0 THEN 0
+          ELSE quantidade
+        END,
+        quantidade_nao_fiscal = CASE
+          WHEN quantidade_nao_fiscal IS NOT NULL THEN quantidade_nao_fiscal
+          WHEN COALESCE(item_fiscal, 1) = 0 THEN quantidade
+          ELSE 0
+        END
+      WHERE quantidade_fiscal IS NULL OR quantidade_nao_fiscal IS NULL
+    `, (updateErr) => {
+      if (updateErr) {
+        console.error('Erro ao recuperar quantidades fiscais em compras_itens:', updateErr.message);
+        return;
+      }
+      console.log('Recuperação quantidade_fiscal/nao_fiscal compras_itens concluída');
+      corrigirQuantidadesFiscaisComprasItensLegacy();
+    });
+  });
+}
+
+function corrigirQuantidadesFiscaisComprasItensLegacy() {
+  db.run(`
+    UPDATE compras_itens
+    SET
+      quantidade_fiscal = CASE
+        WHEN COALESCE(item_fiscal, 1) = 0 THEN 0
+        ELSE quantidade
+      END,
+      quantidade_nao_fiscal = CASE
+        WHEN COALESCE(item_fiscal, 1) = 0 THEN quantidade
+        ELSE 0
+      END
+    WHERE quantidade > 0
+      AND COALESCE(quantidade_fiscal, 0) = 0
+      AND COALESCE(quantidade_nao_fiscal, 0) = 0
+  `, (updateErr) => {
+    if (updateErr) {
+      console.error('Erro ao corrigir quantidades fiscais legadas em compras_itens:', updateErr.message);
+      return;
+    }
+    console.log('Correção quantidades fiscais legadas compras_itens concluída');
+    migrarRecalcularSaldosEstoque();
+  });
+}
+
+function migrarRecalcularSaldosEstoque() {
+  db.get(`SELECT valor FROM configuracoes WHERE chave = ?`, ['migracao_recalc_saldos_estoque_v1'], (cfgErr, cfg) => {
+    if (cfgErr) {
+      console.error('Erro ao verificar migração recalc saldos:', cfgErr.message);
+      return;
+    }
+    if (cfg && cfg.valor === '1') {
+      return;
+    }
+
+    const { recalcularSaldosTodosProdutos } = require('./services/estoqueFiscalService');
+    recalcularSaldosTodosProdutos(db, (recErr, result) => {
+      if (recErr) {
+        console.error('Erro ao recalcular saldos de estoque:', recErr.message);
+        return;
+      }
+
+      db.run(`
+        INSERT INTO configuracoes (chave, valor, tipo, descricao)
+        VALUES ('migracao_recalc_saldos_estoque_v1', '1', 'migracao', 'Recálculo saldos fiscal/não fiscal')
+        ON CONFLICT(chave) DO UPDATE SET valor = '1', updated_at = CURRENT_TIMESTAMP
+      `, (flagErr) => {
+        if (flagErr) {
+          console.error('Erro ao marcar migração recalc saldos:', flagErr.message);
+          return;
+        }
+        console.log(`Recálculo saldos estoque concluído (${result?.atualizados || 0} produtos)`);
+      });
+    });
+  });
+}
+
 function inicializarBanco() {
   db.serialize(() => {
     criarTabelas();
     aplicarAlteracoesPosCriacao();
     inserirConfiguracoesPadrao();
+    seedPinpadCatalogoTEF();
     criarUsuarioAdminPadrao();
     garantirCategoriasPadraoDespesa();
     garantirColunasFinanceiro();
+    recuperarItemFiscalComprasItens();
+    recuperarQuantidadesFiscaisComprasItens();
   });
 }
 
@@ -1507,6 +1808,7 @@ function inserirConfiguracoesPadrao() {
     ['backup_google_redirect_uris', '[]', 'text', 'Google Redirect URIs para OAuth'],
     ['backup_google_refresh_token', '', 'text', 'Google Refresh Token para backup']
     ,['tef_ativo', 'true', 'boolean', 'TEF habilitado']
+    ,['modo_dashboard_fiscal', '0', 'boolean', 'Dashboard exibe apenas valor fiscal (F12)']
   ];
 
   configs.forEach(config => {
@@ -1521,6 +1823,23 @@ function inserirConfiguracoesPadrao() {
   });
   
   console.log('Configurações padrão inseridas/verificadas');
+}
+
+function seedPinpadCatalogoTEF() {
+  const modelos = [
+    ['GERTEC_PPC930', 'Gertec PPC930', 'Gertec', 'PPC930', 'Rede', 1]
+  ];
+
+  modelos.forEach((row) => {
+    db.run(`
+      INSERT OR IGNORE INTO tef_pinpad_catalogo (codigo, nome, fabricante, modelo, adquirente_sugerido, ativo)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, row, (err) => {
+      if (err) {
+        console.error('Erro ao inserir catálogo PinPad TEF:', err.message);
+      }
+    });
+  });
 }
 
 function seedUsuarioAdmin() {

@@ -1,143 +1,44 @@
-const { obterAdapter } = require('./tefFactory');
-const repository = require('./tefRepository');
-const tefEvents = require('./tefEvents');
+const tefManager = require('./TefManager');
+const tefContrato = require('./tefContrato');
 
+/**
+ * Fachada única TEF — delega sempre ao TefManager.
+ * Elimina duplicação de fluxo entre rotas e vendas.
+ */
 async function iniciarPagamento(dados) {
-  try {
-    const adapter = await obterAdapter();
+  const resultado = await tefManager.autorizar(dados);
 
-    return new Promise((resolve, reject) => {
-      repository.criarTransacao({
-        venda_id: dados.venda_id || null,
-        tipo: dados.tipo,
-        valor: dados.valor,
-        parcelas: dados.parcelas || 1,
-        status: 'pendente',
-        provedor: adapter.nome
-      }, async (err, transacaoId) => {
-        if (err) {
-          return reject(err);
-        }
-
-        repository.registrarLog(transacaoId, 'INICIO', 'Transação TEF iniciada', dados);
-
-        tefEvents.emitirEstado(tefEvents.estados.INSIRA_CARTAO);
-
-        try {
-          const retorno = await adapter.autorizarPagamento(dados);
-
-          tefEvents.emitirEstado(tefEvents.estados.PROCESSANDO);
-
-          repository.atualizarTransacao(transacaoId, {
-            venda_id: dados.venda_id || null,
-            status: retorno.status,
-            adquirente: retorno.adquirente,
-            bandeira: retorno.bandeira,
-            nsu: retorno.nsu,
-            autorizacao: retorno.autorizacao,
-            codigo_transacao: retorno.codigo_transacao,
-            comprovante_cliente: retorno.comprovante_cliente,
-            comprovante_estabelecimento: retorno.comprovante_estabelecimento,
-            payload_retorno: retorno.payload_retorno
-          }, (updateErr) => {
-            if (updateErr) {
-              return reject(updateErr);
-            }
-
-            if (retorno.status === 'aprovado') {
-              tefEvents.emitirEstado(tefEvents.estados.APROVADO);
-            }
-
-            repository.registrarLog(transacaoId, 'RETORNO', retorno.mensagem, retorno);
-
-            resolve({
-              transacao_id: transacaoId,
-              ...retorno
-            });
-          });
-        } catch (error) {
-          repository.registrarLog(transacaoId, 'ERRO', error.message, { error: error.message });
-          reject(error);
-        }
-      });
-    });
-  } catch (error) {
-    return Promise.reject(error);
+  if (resultado.transacao_id || resultado.transacaoId) {
+    return tefContrato.paraRespostaApi(resultado, resultado.transacao_id || resultado.transacaoId);
   }
+
+  if (resultado.transacao_existente && resultado.transacao_id) {
+    return tefContrato.paraRespostaApi({
+      sucesso: resultado.status === tefContrato.STATUS.APROVADO,
+      status: resultado.status || tefContrato.STATUS.PENDENTE,
+      codigo: resultado.codigo,
+      mensagem: resultado.mensagem
+    }, resultado.transacao_id);
+  }
+
+  return resultado;
 }
 
 async function cancelarPagamento(transacaoId, motivo = 'Cancelamento da venda') {
-  return new Promise((resolve, reject) => {
-    const db = require('../../database');
+  return tefManager.cancelar(Number(transacaoId), motivo);
+}
 
-    db.get(`
-      SELECT *
-      FROM tef_transacoes
-      WHERE id = ?
-    `, [transacaoId], async (err, transacao) => {
-      if (err) return reject(err);
+async function consultarPagamento(transacaoId) {
+  return tefManager.consultar(Number(transacaoId));
+}
 
-      if (!transacao) {
-        return reject(new Error('Transação TEF não encontrada.'));
-      }
-
-      if (transacao.status === 'cancelado') {
-        return resolve({
-          cancelado: true,
-          status: 'cancelado',
-          mensagem: 'Transação TEF já estava cancelada.',
-          transacao_id: transacaoId
-        });
-      }
-
-      repository.registrarLog(transacaoId, 'CANCELAMENTO_INICIO', 'Cancelamento TEF iniciado', {
-        transacaoId,
-        motivo
-      });
-
-      try {
-        const adapter = await obterAdapter();
-        const retorno = await adapter.cancelarPagamento({
-          transacao_id: transacaoId,
-          nsu: transacao.nsu,
-          autorizacao: transacao.autorizacao,
-          motivo
-        });
-
-        db.run(`
-          UPDATE tef_transacoes
-          SET
-            status = ?,
-            payload_retorno = ?,
-            atualizado_em = datetime('now')
-          WHERE id = ?
-        `, [
-          retorno.status,
-          JSON.stringify(retorno),
-          transacaoId
-        ], (updateErr) => {
-          if (updateErr) return reject(updateErr);
-
-          repository.registrarLog(transacaoId, 'CANCELAMENTO_RETORNO', retorno.mensagem, retorno);
-
-          resolve({
-            transacao_id: transacaoId,
-            ...retorno
-          });
-        });
-
-      } catch (error) {
-        repository.registrarLog(transacaoId, 'CANCELAMENTO_ERRO', error.message, {
-          error: error.message
-        });
-
-        reject(error);
-      }
-    });
-  });
+async function reimprimirPagamento(transacaoId, tipo = 'cliente') {
+  return tefManager.reimprimir(Number(transacaoId), tipo);
 }
 
 module.exports = {
   iniciarPagamento,
-  cancelarPagamento
+  cancelarPagamento,
+  consultarPagamento,
+  reimprimirPagamento
 };

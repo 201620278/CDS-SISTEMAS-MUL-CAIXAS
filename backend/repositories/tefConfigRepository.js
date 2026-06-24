@@ -41,6 +41,20 @@ function intToBool(valor) {
   return valor === 1 || valor === '1' || valor === true;
 }
 
+function normalizarServidorPersistencia(dados = {}) {
+  return {
+    base_url: dados.base_url || '',
+    ip: dados.ip || null,
+    porta: dados.porta ?? null,
+    client_id: dados.client_id || '',
+    client_secret: dados.client_secret || '',
+    access_token: dados.access_token || null,
+    refresh_token: dados.refresh_token || null,
+    chave_comunicacao: dados.chave_comunicacao || null,
+    operador: dados.operador || null
+  };
+}
+
 async function contarConfiguracoes() {
   const row = await get('SELECT COUNT(*) AS total FROM tef_configuracao');
   return Number(row?.total || 0);
@@ -183,6 +197,7 @@ async function atualizarConfiguracaoPrincipal(id, dados) {
 }
 
 async function salvarServidor(configId, dados) {
+  const servidor = normalizarServidorPersistencia(dados);
   const existente = await buscarServidorPorConfigId(configId);
 
   if (existente) {
@@ -200,15 +215,15 @@ async function salvarServidor(configId, dados) {
         operador = ?
       WHERE id = ?
     `, [
-      dados.base_url || null,
-      dados.ip || null,
-      dados.porta ?? null,
-      dados.client_id || null,
-      dados.client_secret || null,
-      dados.access_token || null,
-      dados.refresh_token || null,
-      dados.chave_comunicacao || null,
-      dados.operador || null,
+      servidor.base_url,
+      servidor.ip,
+      servidor.porta,
+      servidor.client_id,
+      servidor.client_secret,
+      servidor.access_token,
+      servidor.refresh_token,
+      servidor.chave_comunicacao,
+      servidor.operador,
       existente.id
     ]);
     return existente.id;
@@ -229,15 +244,15 @@ async function salvarServidor(configId, dados) {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     configId,
-    dados.base_url || null,
-    dados.ip || null,
-    dados.porta ?? null,
-    dados.client_id || null,
-    dados.client_secret || null,
-    dados.access_token || null,
-    dados.refresh_token || null,
-    dados.chave_comunicacao || null,
-    dados.operador || null
+    servidor.base_url,
+    servidor.ip,
+    servidor.porta,
+    servidor.client_id,
+    servidor.client_secret,
+    servidor.access_token,
+    servidor.refresh_token,
+    servidor.chave_comunicacao,
+    servidor.operador
   ]);
 
   return resultado.lastID;
@@ -251,6 +266,8 @@ async function salvarPinpad(configId, dados) {
       UPDATE tef_pinpads
       SET
         habilitado = ?,
+        codigo = ?,
+        nome = ?,
         fabricante = ?,
         modelo = ?,
         tipo_conexao = ?,
@@ -258,11 +275,14 @@ async function salvarPinpad(configId, dados) {
         ip = ?,
         porta = ?,
         serial = ?,
+        ativo = ?,
         status = COALESCE(?, status),
         ultima_conexao = COALESCE(?, ultima_conexao)
       WHERE id = ?
     `, [
       boolToInt(dados.habilitado),
+      dados.codigo || null,
+      dados.nome || null,
       dados.fabricante || null,
       dados.modelo || null,
       dados.tipo_conexao || null,
@@ -270,6 +290,7 @@ async function salvarPinpad(configId, dados) {
       dados.ip || null,
       dados.porta ?? null,
       dados.serial || null,
+      dados.ativo != null ? boolToInt(dados.ativo) : 1,
       dados.status || null,
       dados.ultima_conexao || null,
       existente.id
@@ -281,6 +302,8 @@ async function salvarPinpad(configId, dados) {
     INSERT INTO tef_pinpads (
       tef_configuracao_id,
       habilitado,
+      codigo,
+      nome,
       fabricante,
       modelo,
       tipo_conexao,
@@ -288,12 +311,15 @@ async function salvarPinpad(configId, dados) {
       ip,
       porta,
       serial,
+      ativo,
       status,
       ultima_conexao
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     configId,
     boolToInt(dados.habilitado),
+    dados.codigo || null,
+    dados.nome || null,
     dados.fabricante || null,
     dados.modelo || null,
     dados.tipo_conexao || null,
@@ -301,6 +327,7 @@ async function salvarPinpad(configId, dados) {
     dados.ip || null,
     dados.porta ?? null,
     dados.serial || null,
+    dados.ativo != null ? boolToInt(dados.ativo) : 1,
     dados.status || 'desconhecido',
     dados.ultima_conexao || null
   ]);

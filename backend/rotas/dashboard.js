@@ -1,10 +1,19 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const fs = require('fs');
-const path = require('path');
 const { listarHistoricoBackups } = require('../services/backupManual');
 const { verificarPermissaoEspecifica } = require('./auth');
+const {
+  FILTRO_VENDA_VALIDA,
+  isModoFiscalRelatorio,
+  getExprValorVenda,
+  getExprValorVendaFiscal,
+  getExprValorVendaNaoFiscal,
+  getExprQuantidadeItem,
+  getFiltroItensFiscal,
+  getExprLucroItem,
+  sqlRankingProdutos
+} = require('../services/reportFiscalHelpers');
 
 function parseNumber(valor) {
   const n = Number(valor);
@@ -41,48 +50,17 @@ function dbAll(sql, params = []) {
   });
 }
 
-const FILTRO_VENDA_VALIDA = `(v.status IS NULL OR v.status != 'cancelada')`;
-
-function getFiltroFiscal(modoFiscal) {
-  if (modoFiscal === '1' || modoFiscal === true) {
-    return `AND EXISTS (SELECT 1 FROM nfce_notas n WHERE n.venda_id = v.id)`;
-  }
-  return '';
+function exprEstoqueDashboard(modoFiscal) {
+  return isModoFiscalRelatorio(modoFiscal)
+    ? 'COALESCE(saldo_fiscal, 0)'
+    : 'COALESCE(estoque_atual, 0)';
 }
 
-const SQL_RANKING_PRODUTOS = `
-  SELECT
-    p.id,
-    p.nome,
-    COALESCE(SUM(vi.quantidade), 0) AS quantidade_vendida
-  FROM produtos p
-  LEFT JOIN vendas_itens vi ON vi.produto_id = p.id
-  LEFT JOIN vendas v ON v.id = vi.venda_id
-    AND date(v.data_venda) BETWEEN date(?) AND date(?)
-    AND ${FILTRO_VENDA_VALIDA}
-  GROUP BY p.id, p.nome
-`;
-
-const SQL_LUCRO_BASE = `
-  SELECT COALESCE(SUM(
-    vi.subtotal - (vi.quantidade * COALESCE(p.preco_compra, 0))
-  ), 0) AS lucro_estimado
-  FROM vendas_itens vi
-  INNER JOIN vendas v ON v.id = vi.venda_id
-  INNER JOIN produtos p ON p.id = vi.produto_id
-`;
-
-const SQL_LUCRO_PERIODO = `
-  ${SQL_LUCRO_BASE}
-  WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
-    AND ${FILTRO_VENDA_VALIDA}
-`;
-
-const SQL_LUCRO_HOJE = `
-  ${SQL_LUCRO_BASE}
-  WHERE date(v.data_venda) = date(?)
-    AND ${FILTRO_VENDA_VALIDA}
-`;
+function filtroProdutoFiscalDashboard(modoFiscal) {
+  return isModoFiscalRelatorio(modoFiscal)
+    ? ' AND COALESCE(item_fiscal, 1) = 1'
+    : '';
+}
 
 router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, res) => {
   try {
@@ -94,16 +72,23 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
     const dataFim = req.query.fim || hoje.toISOString().slice(0, 10);
     const dataHoje = dataHojeBrasil();
     const modoFiscal = req.query.modo_fiscal || '0';
+    const modoFiscalAtivo = isModoFiscalRelatorio(modoFiscal);
 
-    console.log('Dashboard - modo_fiscal recebido:', modoFiscal);
-
-    const filtroFiscal = getFiltroFiscal(modoFiscal);
-
-    console.log('Dashboard - filtro fiscal:', filtroFiscal);
+    const exprValor = getExprValorVenda(modoFiscal);
+    const exprValorFiscal = getExprValorVendaFiscal();
+    const exprValorNaoFiscal = getExprValorVendaNaoFiscal();
+    const exprQuantidade = getExprQuantidadeItem(modoFiscal);
+    const filtroItensFiscal = getFiltroItensFiscal(modoFiscal);
+    const exprLucro = getExprLucroItem(modoFiscal);
+    const exprEstoque = exprEstoqueDashboard(modoFiscal);
+    const filtroProdutoFiscal = filtroProdutoFiscalDashboard(modoFiscal);
+    const sqlRanking = sqlRankingProdutos(modoFiscal);
 
     const [
       resumoPeriodo,
+      resumoPeriodoSplit,
       resumoHoje,
+      resumoHojeSplit,
       lucroPeriodo,
       lucroHoje,
       produtosVendidos,
@@ -113,45 +98,79 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
       contasReceberFin,
       contasPagar,
       vendasPorForma,
+      recebimentosVenda,
       produtosVencidos,
       produtosProximoVencimento
     ] = await Promise.all([
       dbGet(`
         SELECT
-          COALESCE(SUM(total), 0) AS faturamento,
+          COALESCE(SUM(${exprValor}), 0) AS faturamento,
           COUNT(id) AS total_vendas,
-          COALESCE(AVG(total), 0) AS ticket_medio
+          COALESCE(AVG(${exprValor}), 0) AS ticket_medio
         FROM vendas v
         WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
-          AND (v.status IS NULL OR v.status != 'cancelada')
-          ${filtroFiscal}
+          AND ${FILTRO_VENDA_VALIDA}
       `, [dataInicio, dataFim]),
 
       dbGet(`
         SELECT
-          COALESCE(SUM(total), 0) AS faturamento_hoje,
-          COUNT(id) AS vendas_hoje,
-          COALESCE(AVG(total), 0) AS ticket_medio_hoje
+          COALESCE(SUM(${exprValorFiscal}), 0) AS faturamento_fiscal,
+          COALESCE(SUM(${exprValorNaoFiscal}), 0) AS faturamento_nao_fiscal
         FROM vendas v
-        WHERE date(v.data_venda) = date(?)
-          AND (v.status IS NULL OR v.status != 'cancelada')
-          ${filtroFiscal}
-      `, [dataHoje]),
-
-      dbGet(SQL_LUCRO_PERIODO.replace(FILTRO_VENDA_VALIDA, `${FILTRO_VENDA_VALIDA} ${filtroFiscal}`), [dataInicio, dataFim]),
-      dbGet(SQL_LUCRO_HOJE.replace(FILTRO_VENDA_VALIDA, `${FILTRO_VENDA_VALIDA} ${filtroFiscal}`), [dataHoje]),
+        WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
+          AND ${FILTRO_VENDA_VALIDA}
+      `, [dataInicio, dataFim]),
 
       dbGet(`
-        SELECT COALESCE(SUM(vi.quantidade), 0) AS produtos_vendidos
+        SELECT
+          COALESCE(SUM(${exprValor}), 0) AS faturamento_hoje,
+          COUNT(id) AS vendas_hoje,
+          COALESCE(AVG(${exprValor}), 0) AS ticket_medio_hoje
+        FROM vendas v
+        WHERE date(v.data_venda) = date(?)
+          AND ${FILTRO_VENDA_VALIDA}
+      `, [dataHoje]),
+
+      dbGet(`
+        SELECT
+          COALESCE(SUM(${exprValorFiscal}), 0) AS faturamento_fiscal,
+          COALESCE(SUM(${exprValorNaoFiscal}), 0) AS faturamento_nao_fiscal
+        FROM vendas v
+        WHERE date(v.data_venda) = date(?)
+          AND ${FILTRO_VENDA_VALIDA}
+      `, [dataHoje]),
+
+      dbGet(`
+        SELECT COALESCE(SUM(${exprLucro}), 0) AS lucro_estimado
+        FROM vendas_itens vi
+        INNER JOIN vendas v ON v.id = vi.venda_id
+        INNER JOIN produtos p ON p.id = vi.produto_id
+        WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
+          AND ${FILTRO_VENDA_VALIDA}
+          ${filtroItensFiscal}
+      `, [dataInicio, dataFim]),
+
+      dbGet(`
+        SELECT COALESCE(SUM(${exprLucro}), 0) AS lucro_estimado
+        FROM vendas_itens vi
+        INNER JOIN vendas v ON v.id = vi.venda_id
+        INNER JOIN produtos p ON p.id = vi.produto_id
+        WHERE date(v.data_venda) = date(?)
+          AND ${FILTRO_VENDA_VALIDA}
+          ${filtroItensFiscal}
+      `, [dataHoje]),
+
+      dbGet(`
+        SELECT COALESCE(SUM(${exprQuantidade}), 0) AS produtos_vendidos
         FROM vendas_itens vi
         INNER JOIN vendas v ON v.id = vi.venda_id
         WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
           AND ${FILTRO_VENDA_VALIDA}
-          ${filtroFiscal}
+          ${filtroItensFiscal}
       `, [dataInicio, dataFim]),
 
       dbAll(`
-        ${SQL_RANKING_PRODUTOS.replace(FILTRO_VENDA_VALIDA, `${FILTRO_VENDA_VALIDA} ${filtroFiscal}`)}
+        ${sqlRanking}
         HAVING quantidade_vendida > 0
         ORDER BY quantidade_vendida DESC
         LIMIT 3
@@ -161,12 +180,15 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
         SELECT
           id,
           nome,
-          estoque_atual,
+          ${exprEstoque} AS estoque_atual,
+          COALESCE(saldo_fiscal, 0) AS saldo_fiscal,
+          COALESCE(saldo_nao_fiscal, 0) AS saldo_nao_fiscal,
           estoque_minimo,
           unidade
         FROM produtos
-        WHERE estoque_atual <= estoque_minimo
-        ORDER BY estoque_atual ASC, nome ASC
+        WHERE ${exprEstoque} <= estoque_minimo
+          ${filtroProdutoFiscal}
+        ORDER BY ${exprEstoque} ASC, nome ASC
         LIMIT 10
       `),
 
@@ -200,30 +222,47 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
         SELECT
           COALESCE(NULLIF(TRIM(LOWER(forma_pagamento)), ''), 'nao_informado') AS forma_pagamento,
           COUNT(*) AS quantidade,
-          COALESCE(SUM(total), 0) AS total
+          COALESCE(SUM(${exprValor}), 0) AS total
         FROM vendas v
         WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
-          AND (v.status IS NULL OR v.status != 'cancelada')
-          ${filtroFiscal}
+          AND ${FILTRO_VENDA_VALIDA}
         GROUP BY COALESCE(NULLIF(TRIM(LOWER(forma_pagamento)), ''), 'nao_informado')
         ORDER BY total DESC
       `, [dataInicio, dataFim]),
 
       dbAll(`
-        SELECT id, nome, estoque_atual, data_validade
+        SELECT
+          vr.tipo_recebimento,
+          COALESCE(SUM(vr.valor), 0) AS total,
+          COUNT(*) AS quantidade
+        FROM venda_recebimentos vr
+        INNER JOIN vendas v ON v.id = vr.venda_id
+        WHERE date(v.data_venda) BETWEEN date(?) AND date(?)
+          AND ${FILTRO_VENDA_VALIDA}
+          AND COALESCE(vr.status, 'aprovado') != 'cancelado'
+          ${modoFiscalAtivo ? "AND vr.tipo_recebimento = 'fiscal'" : ''}
+        GROUP BY vr.tipo_recebimento
+      `, [dataInicio, dataFim]),
+
+      dbAll(`
+        SELECT id, nome, ${exprEstoque} AS estoque_atual, data_validade
         FROM produtos
         WHERE data_validade IS NOT NULL
           AND data_validade <> ''
+          AND ${exprEstoque} > 0
+          ${filtroProdutoFiscal}
           AND date(data_validade) < date('now', 'localtime')
         ORDER BY date(data_validade) ASC
         LIMIT 10
       `),
 
       dbAll(`
-        SELECT id, nome, estoque_atual, data_validade
+        SELECT id, nome, ${exprEstoque} AS estoque_atual, data_validade
         FROM produtos
         WHERE data_validade IS NOT NULL
           AND data_validade <> ''
+          AND ${exprEstoque} > 0
+          ${filtroProdutoFiscal}
           AND date(data_validade) >= date('now', 'localtime')
           AND date(data_validade) <= date('now', 'localtime', '+30 days')
         ORDER BY date(data_validade) ASC
@@ -231,10 +270,11 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
       `)
     ]);
 
-    // Contagem de auditoria últimos 7 dias
-    const auditoriaUltimos7 = await dbGet(`SELECT COUNT(*) AS total FROM auditoria WHERE date(criado_em) >= date(?)`, [seteDiasAtras.toISOString().slice(0,10)]);
+    const auditoriaUltimos7 = await dbGet(
+      `SELECT COUNT(*) AS total FROM auditoria WHERE date(criado_em) >= date(?)`,
+      [seteDiasAtras.toISOString().slice(0, 10)]
+    );
 
-    // Histórico de backups (local)
     let historicoBackups = [];
     try {
       historicoBackups = listarHistoricoBackups(null, 1000);
@@ -243,7 +283,6 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
       historicoBackups = [];
     }
 
-    // Detectar ações suspeitas: deleções nas últimas 24h
     const delecoes24 = await dbGet(`
       SELECT COUNT(*) AS total FROM auditoria
       WHERE date(criado_em) >= date('now','-1 day')
@@ -252,7 +291,6 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
       )
     `);
 
-    // Usuários com atividade muito alta na última hora (limiar 20)
     const usuariosAltamenteAtivos = await dbAll(`
       SELECT usuario_nome, COUNT(*) AS total FROM auditoria
       WHERE datetime(criado_em) >= datetime('now','localtime','-1 hour')
@@ -261,7 +299,6 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
       ORDER BY total DESC
     `, [20]);
 
-    // Verificar última execução de backup (horas desde o último backup)
     let ultimoBackupHoras = null;
     if (historicoBackups.length > 0) {
       try {
@@ -275,35 +312,47 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
 
     const alertaBackupAtrasado = ultimoBackupHoras !== null && ultimoBackupHoras > 24;
 
-    // Persistir alertas se necessário (evitar duplicatas: apenas um alerta não resolvido por tipo)
     try {
       if (parseNumber(delecoes24.total) > 0) {
-        const existente = await dbGet(`SELECT id FROM auditoria_alertas WHERE tipo = ? AND resolvido = 0 LIMIT 1`, ['delecoes_24h']);
+        const existente = await dbGet(
+          `SELECT id FROM auditoria_alertas WHERE tipo = ? AND resolvido = 0 LIMIT 1`,
+          ['delecoes_24h']
+        );
         if (!existente || !existente.id) {
-          db.run(`INSERT INTO auditoria_alertas (tipo, descricao, dados) VALUES (?, ?, ?)`, ['delecoes_24h', 'Deleções detectadas nas últimas 24 horas', JSON.stringify({ quantidade: delecoes24.total })]);
+          db.run(
+            `INSERT INTO auditoria_alertas (tipo, descricao, dados) VALUES (?, ?, ?)`,
+            ['delecoes_24h', 'Deleções detectadas nas últimas 24 horas', JSON.stringify({ quantidade: delecoes24.total })]
+          );
         }
       }
 
       if (alertaBackupAtrasado) {
-        const existenteB = await dbGet(`SELECT id FROM auditoria_alertas WHERE tipo = ? AND resolvido = 0 LIMIT 1`, ['backup_atrasado']);
+        const existenteB = await dbGet(
+          `SELECT id FROM auditoria_alertas WHERE tipo = ? AND resolvido = 0 LIMIT 1`,
+          ['backup_atrasado']
+        );
         if (!existenteB || !existenteB.id) {
-          db.run(`INSERT INTO auditoria_alertas (tipo, descricao, dados) VALUES (?, ?, ?)`, ['backup_atrasado', 'Último backup com mais de 24 horas', JSON.stringify({ horas: ultimoBackupHoras })]);
+          db.run(
+            `INSERT INTO auditoria_alertas (tipo, descricao, dados) VALUES (?, ?, ?)`,
+            ['backup_atrasado', 'Último backup com mais de 24 horas', JSON.stringify({ horas: ultimoBackupHoras })]
+          );
         }
       }
     } catch (e) {
       console.error('Erro ao persistir alertas:', e);
     }
 
-    // Buscar alertas não resolvidos para exibir no dashboard
-    const alertasNaoResolvidos = await dbAll(`SELECT id, tipo, descricao, dados, criado_em FROM auditoria_alertas WHERE resolvido = 0 ORDER BY criado_em DESC LIMIT 50`);
+    const alertasNaoResolvidos = await dbAll(
+      `SELECT id, tipo, descricao, dados, criado_em FROM auditoria_alertas WHERE resolvido = 0 ORDER BY criado_em DESC LIMIT 50`
+    );
 
     const idsMais = maisVendidos.map((p) => p.id);
     const filtroExcluirMais = idsMais.length
       ? `AND p.id NOT IN (${idsMais.map(() => '?').join(',')})`
       : '';
     const menosVendidos = await dbAll(`
-      ${SQL_RANKING_PRODUTOS.replace(FILTRO_VENDA_VALIDA, `${FILTRO_VENDA_VALIDA} ${filtroFiscal}`)}
-      ${filtroExcluirMais}
+      ${sqlRanking}
+      HAVING quantidade_vendida > 0 ${idsMais.length ? `AND p.id NOT IN (${idsMais.map(() => '?').join(',')})` : ''}
       ORDER BY quantidade_vendida ASC, p.nome ASC
       LIMIT 3
     `, [dataInicio, dataFim, ...idsMais]);
@@ -313,42 +362,57 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
     const qtdReceberCr = parseNumber(contasReceberCr.quantidade);
     const qtdReceberFin = parseNumber(contasReceberFin.quantidade);
 
-    const resposta = {
+    const faturamentoFiscalPeriodo = parseNumber(resumoPeriodoSplit.faturamento_fiscal);
+    const faturamentoNaoFiscalPeriodo = parseNumber(resumoPeriodoSplit.faturamento_nao_fiscal);
+    const faturamentoFiscalHoje = parseNumber(resumoHojeSplit.faturamento_fiscal);
+    const faturamentoNaoFiscalHoje = parseNumber(resumoHojeSplit.faturamento_nao_fiscal);
+
+    const recebimentosMap = (recebimentosVenda || []).reduce((acc, row) => {
+      acc[row.tipo_recebimento || 'fiscal'] = {
+        total: parseNumber(row.total),
+        quantidade: parseNumber(row.quantidade)
+      };
+      return acc;
+    }, {});
+
+    res.json({
       periodo: {
         inicio: dataInicio,
         fim: dataFim
       },
       data_hoje: dataHoje,
+      modo_fiscal_ativo: modoFiscalAtivo,
 
-      // Período (compatível com frontend atual)
       faturamento: parseNumber(resumoPeriodo.faturamento),
+      faturamento_fiscal: faturamentoFiscalPeriodo,
+      faturamento_nao_fiscal: faturamentoNaoFiscalPeriodo,
       total_vendas: parseNumber(resumoPeriodo.total_vendas),
       ticket_medio: parseNumber(resumoPeriodo.ticket_medio),
       produtos_vendidos: parseNumber(produtosVendidos.produtos_vendidos),
       lucro_estimado: parseNumber(lucroPeriodo.lucro_estimado),
 
-      // Hoje
       vendas_hoje: parseNumber(resumoHoje.vendas_hoje),
       faturamento_hoje: parseNumber(resumoHoje.faturamento_hoje),
+      faturamento_hoje_fiscal: faturamentoFiscalHoje,
+      faturamento_hoje_nao_fiscal: faturamentoNaoFiscalHoje,
       ticket_medio_hoje: parseNumber(resumoHoje.ticket_medio_hoje),
       lucro_estimado_hoje: parseNumber(lucroHoje.lucro_estimado),
 
-      // Rankings
       mais_vendidos: maisVendidos,
       menos_vendidos: menosVendidos,
       produtos_mais_vendidos: maisVendidos,
       produtos_menos_vendidos: menosVendidos,
 
-      // Estoque
       estoque_baixo: estoqueBaixo.map((p) => ({
         id: p.id,
         nome: p.nome,
         estoque_atual: parseNumber(p.estoque_atual),
+        saldo_fiscal: parseNumber(p.saldo_fiscal),
+        saldo_nao_fiscal: parseNumber(p.saldo_nao_fiscal),
         estoque_minimo: parseNumber(p.estoque_minimo),
         unidade: p.unidade || ''
       })),
 
-      // Financeiro
       contas_receber: {
         total: totalReceberCr + totalReceberFin,
         quantidade: qtdReceberCr + qtdReceberFin,
@@ -366,33 +430,34 @@ router.get('/resumo', verificarPermissaoEspecifica('relatorios'), async (req, re
         quantidade: parseNumber(contasPagar.quantidade)
       },
 
-      // Formas de pagamento (período)
+      recebimentos_venda: {
+        fiscal: recebimentosMap.fiscal || { total: 0, quantidade: 0 },
+        nao_fiscal: recebimentosMap.nao_fiscal || { total: 0, quantidade: 0 }
+      },
+
       vendas_por_forma_pagamento: vendasPorForma.map((row) => ({
         forma_pagamento: row.forma_pagamento,
         quantidade: parseNumber(row.quantidade),
         total: parseNumber(row.total)
       })),
 
-      // Validade de produtos
       produtos_vencidos: produtosVencidos,
-      produtos_proximo_vencimento: produtosProximoVencimento
-      , auditoria: {
+      produtos_proximo_vencimento: produtosProximoVencimento,
+      auditoria: {
         ultimos_7_dias: parseNumber(auditoriaUltimos7.total)
-      }
-      , backups: {
+      },
+      backups: {
         total: historicoBackups.length,
         recentes: historicoBackups.slice(0, 10)
-      }
-      , alerts: {
+      },
+      alerts: {
         delecoes_24h: parseNumber(delecoes24.total),
         usuarios_ativos_ultima_hora: usuariosAltamenteAtivos,
         ultimo_backup_horas: ultimoBackupHoras,
         backup_atrasado: !!alertaBackupAtrasado,
         persistentes: alertasNaoResolvidos
       }
-    };
-
-    res.json(resposta);
+    });
   } catch (err) {
     console.error('Erro no dashboard /resumo:', err);
     res.status(500).json({ error: err.message });

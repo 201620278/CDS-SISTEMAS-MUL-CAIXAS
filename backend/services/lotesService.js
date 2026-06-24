@@ -328,18 +328,37 @@ function produtoControlaValidade(produtoId, callback) {
 
 // Atualizar estoque consolidado do produto baseado nos lotes
 function atualizarEstoqueConsolidado(produtoId, callback) {
-  const sql = `
-    UPDATE produtos
-    SET estoque_atual = (
-      SELECT COALESCE(SUM(quantidade_atual), 0)
-      FROM produtos_lotes
-      WHERE produto_id = ? AND ativo = 1
-    ),
-    updated_at = CURRENT_TIMESTAMP
+  db.get(`
+    SELECT
+      COALESCE((
+        SELECT SUM(quantidade_atual)
+        FROM produtos_lotes
+        WHERE produto_id = ? AND ativo = 1
+      ), 0) AS somaLotes,
+      COALESCE(saldo_fiscal, 0) AS saldo_fiscal,
+      COALESCE(saldo_nao_fiscal, 0) AS saldo_nao_fiscal
+    FROM produtos
     WHERE id = ?
-  `;
+  `, [produtoId, produtoId], (err, row) => {
+    if (err) return callback(err);
+    if (!row) return callback(new Error('Produto não encontrado'));
 
-  db.run(sql, [produtoId, produtoId], callback);
+    const somaLotes = Number(row.somaLotes || 0);
+    const totalSaldos =
+      Number(row.saldo_fiscal || 0) +
+      Number(row.saldo_nao_fiscal || 0);
+
+    if (Math.abs(somaLotes - totalSaldos) > 0.001) {
+      console.warn('Divergência estoque fiscal.');
+    }
+
+    db.run(`
+      UPDATE produtos
+      SET estoque_atual = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [somaLotes, produtoId], callback);
+  });
 }
 
 // Obter configurações de validade

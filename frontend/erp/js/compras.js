@@ -3,6 +3,7 @@ let fornecedoresList = [];
 let itensCompraAtual = [];
 let compraImportadaXml = null;
 let dfeConsultaInterval = null;
+let modoEntradaF7Compra = false;
 
 function loadCompras() {
     $.when(
@@ -214,9 +215,83 @@ function formatNumberInput(value, decimals = 2) {
     return Number.isFinite(num) ? num.toFixed(decimals) : Number(0).toFixed(decimals);
 }
 
+function isModoEntradaF7CompraAtivo() {
+    return !!modoEntradaF7Compra;
+}
+
+function toggleModoEntradaF7Compra() {
+    modoEntradaF7Compra = !modoEntradaF7Compra;
+    atualizarCamposQuantidadeCompra();
+    const status = modoEntradaF7Compra ? 'ativado' : 'desativado';
+    showNotification(`Modo F7 (entrada fiscal/não fiscal) ${status}.`, 'info');
+}
+
+function atualizarCamposQuantidadeCompra() {
+    const ativo = isModoEntradaF7CompraAtivo();
+    $('#campoQuantidadeSimplesCompra').toggleClass('d-none', ativo);
+    $('#campoQuantidadeFiscalCompra').toggleClass('d-none', !ativo);
+    $('#campoQuantidadeNaoFiscalCompra').toggleClass('d-none', !ativo);
+    $('#indicadorModoF7Compra')
+        .toggleClass('d-none', !ativo)
+        .text(ativo ? 'F7 ativo: informe Qtd Fiscal e/ou Qtd Não Fiscal' : '');
+    $('#colunaQuantidadeCompraHeader').text(ativo ? 'Qtd' : 'Qtd Fiscal');
+    if ($('#itensCompraBody').length) {
+        renderItensCompraTabela();
+    }
+}
+
+function onCompraModalKeyDown(event) {
+    if (event.key !== 'F7') return;
+    if (!$('#compraModal').hasClass('show')) return;
+    event.preventDefault();
+    toggleModoEntradaF7Compra();
+}
+
+function resolverQuantidadesItemCompra(quantidadeSimples, quantidadeFiscal, quantidadeNaoFiscal) {
+    if (isModoEntradaF7CompraAtivo()) {
+        const qtdFiscal = Number(quantidadeFiscal || 0);
+        const qtdNaoFiscal = Number(quantidadeNaoFiscal || 0);
+        return {
+            quantidade_fiscal: qtdFiscal,
+            quantidade_nao_fiscal: qtdNaoFiscal,
+            quantidade: qtdFiscal + qtdNaoFiscal
+        };
+    }
+
+    const qtd = Number(quantidadeSimples || 0);
+    return {
+        quantidade_fiscal: qtd,
+        quantidade_nao_fiscal: 0,
+        quantidade: qtd
+    };
+}
+
+function formatarQuantidadeItemCompra(item = {}) {
+    const qtdFiscal = Number(item.quantidade_fiscal ?? item.quantidade ?? 0);
+    const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
+    const qtdTotal = Number(item.quantidade ?? (qtdFiscal + qtdNaoFiscal));
+
+    if (isModoEntradaF7CompraAtivo()) {
+        return formatNumberInput(qtdTotal);
+    }
+
+    return formatNumberInput(qtdFiscal);
+}
+
 function normalizeItemCompra(item = {}) {
     const custo = Number(item.preco_unitario || item.preco_compra || 0);
-    const quantidade = Number(item.quantidade || 1);
+    const qtds = item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined
+        ? {
+            quantidade_fiscal: Number(item.quantidade_fiscal || 0),
+            quantidade_nao_fiscal: Number(item.quantidade_nao_fiscal || 0),
+            quantidade: Number(item.quantidade_fiscal || 0) + Number(item.quantidade_nao_fiscal || 0)
+        }
+        : {
+            quantidade_fiscal: Number(item.quantidade || 1),
+            quantidade_nao_fiscal: 0,
+            quantidade: Number(item.quantidade || 1)
+        };
+    const quantidade = qtds.quantidade || Number(item.quantidade || 1);
     const margem = Number(item.margem_lucro ?? item.lucro_percentual ?? 30);
     const ultimoPrecoCompra = Number(item.ultimo_preco_compra || custo);
     const precoVenda = Number(item.preco_venda_sugerido || item.preco_venda || (custo * (1 + margem / 100)) || 0);
@@ -227,6 +302,8 @@ function normalizeItemCompra(item = {}) {
         unidade: item.unidade || 'UN',
         ncm: item.ncm || '',
         quantidade,
+        quantidade_fiscal: qtds.quantidade_fiscal,
+        quantidade_nao_fiscal: qtds.quantidade_nao_fiscal,
         preco_unitario: Number(custo.toFixed(2)),
         ultimo_preco_compra: Number(ultimoPrecoCompra.toFixed(2)),
         margem_lucro: Number(margem.toFixed(2)),
@@ -312,7 +389,8 @@ function renderItensCompraTabela() {
                 <div>${escapeHtml(item.produto_nome || '')}</div>
             </td>
             <td style="min-width:120px;">${escapeHtml(item.codigo_barras || '')}</td>
-            <td style="min-width:90px;">${formatNumberInput(item.quantidade)}</td>
+            <td style="min-width:110px;">${item.data_validade ? escapeHtml(item.data_validade) : '<span class="text-muted">-</span>'}</td>
+            <td style="min-width:90px;">${formatarQuantidadeItemCompra(item)}</td>
             <td style="min-width:110px;">
               ${formatCurrency(item.preco_unitario)}
               ${item.custo_unitario_final && Number(item.custo_unitario_final) !== Number(item.preco_unitario)
@@ -337,7 +415,7 @@ function renderItensCompraTabela() {
                 <button class="btn btn-sm btn-danger" onclick="removerItemCompra(${index})"><i class="fas fa-trash"></i></button>
             </td>
         </tr>
-    `).join('') || '<tr><td colspan="8" class="text-center">Nenhum item adicionado.</td></tr>');
+    `).join('') || '<tr><td colspan="9" class="text-center">Nenhum item adicionado.</td></tr>');
     recalcularTotaisCompraNota();
     calcularParcelasCompra();
 }
@@ -393,14 +471,21 @@ function alterarProdutoItemCompra(index, produtoId) {
 function adicionarItemCompra() {
     const produtoId = $('#produto_id_item').val();
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
-    const quantidade = Number($('#quantidade_item').val());
+    const qtds = resolverQuantidadesItemCompra(
+        $('#quantidade_item').val(),
+        $('#quantidade_fiscal_item').val(),
+        $('#quantidade_nao_fiscal_item').val()
+    );
     const preco = Number($('#preco_item').val());
     const margemInput = Number($('#margem_padrao_item').val());
     const precoVendaInput = Number($('#preco_venda_item').val());
     const margem = Number.isFinite(margemInput) ? margemInput : 30;
 
-    if ((!produtoId && !descricaoLivre) || !quantidade || !preco) {
-        showNotification('Informe produto ou descrição, quantidade e preço.', 'warning');
+    if ((!produtoId && !descricaoLivre) || !qtds.quantidade || !preco) {
+        const msgQtd = isModoEntradaF7CompraAtivo()
+            ? 'Informe produto, preço e ao menos uma quantidade (fiscal ou não fiscal).'
+            : 'Informe produto ou descrição, quantidade e preço.';
+        showNotification(msgQtd, 'warning');
         return;
     }
 
@@ -430,7 +515,9 @@ function adicionarItemCompra() {
         produto_id: produto ? produto.id : '',
         produto_nome: produto ? produto.nome : descricaoLivre,
         codigo_barras: produto ? (produto.codigo_barras || produto.codigo || '') : '',
-        quantidade,
+        quantidade: qtds.quantidade,
+        quantidade_fiscal: qtds.quantidade_fiscal,
+        quantidade_nao_fiscal: qtds.quantidade_nao_fiscal,
         preco_unitario: preco,
         ultimo_preco_compra: produto ? Number(produto.preco_compra || 0) : preco,
         margem_lucro: margemFinal,
@@ -450,12 +537,14 @@ function limparFormularioItemCompra() {
     $('#codigo_barras_item').val('');
     $('#produto_id_item').val('');
     $('#quantidade_item').val('1');
+    $('#quantidade_fiscal_item').val('1');
+    $('#quantidade_nao_fiscal_item').val('0');
     $('#preco_item').val('');
     $('#margem_padrao_item').val('30');
     $('#preco_venda_item').val('');
     // Limpar campos de lote
     $('#data_validade_item').val('');
-    $('#camposLoteCompra').hide();
+    atualizarCamposValidadeCompra();
     $('#codigo_barras_item').focus();
 }
 
@@ -478,10 +567,15 @@ function calcularMargemItem() {
 function editarItemCompra(index) {
     const item = itensCompraAtual[index];
     if (!item) return;
-    // Preencher os campos do formulário
+
+    const temSplit = Number(item.quantidade_nao_fiscal || 0) > 0;
+    modoEntradaF7Compra = temSplit;
+
     $('#codigo_barras_item').val(item.produto_nome || item.codigo_barras || '');
     $('#produto_id_item').val(item.produto_id || '');
     $('#quantidade_item').val(formatNumberInput(item.quantidade));
+    $('#quantidade_fiscal_item').val(formatNumberInput(item.quantidade_fiscal ?? item.quantidade));
+    $('#quantidade_nao_fiscal_item').val(formatNumberInput(item.quantidade_nao_fiscal || 0));
     $('#preco_item').val(formatNumberInput(item.preco_unitario));
     $('#margem_padrao_item').val(formatNumberInput(item.margem_lucro));
     $('#preco_venda_item').val(formatNumberInput(item.preco_venda_sugerido));
@@ -489,7 +583,7 @@ function editarItemCompra(index) {
     $('#data_validade_item').val(item.data_validade || '');
     // Mostrar campos de lote se o produto controlar validade
     onProdutoSelecionado();
-    // Recalcular para consistência
+    atualizarCamposQuantidadeCompra();
     calcularValorVendaItem();
     // Remover o item da lista
     itensCompraAtual.splice(index, 1);
@@ -506,17 +600,23 @@ function onFornecedorInput() {
     }
 }
 
-function onProdutoSelecionado() {
+function atualizarCamposValidadeCompra() {
     const produtoId = $('#produto_id_item').val();
     const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
-    
-    console.log('onProdutoSelecionado - produtoId:', produtoId, 'produto:', produto, 'controlar_validade:', produto ? produto.controlar_validade : null);
-    
-    if (produto && Number(produto.controlar_validade || 0) === 1) {
-        $('#camposLoteCompra').show();
-    } else {
-        $('#camposLoteCompra').hide();
-    }
+    const exigeValidade = !!(produto && Number(produto.controlar_validade || 0) === 1);
+
+    $('#labelDataValidadeItem')
+        .html(exigeValidade ? 'Data Validade *' : 'Data Validade');
+    $('#hintDataValidadeItem').text(
+        exigeValidade
+            ? 'Obrigatório para produtos com controle de validade. O lote será gerado automaticamente.'
+            : 'Opcional. Informe quando o produto tiver controle de validade.'
+    );
+    $('#data_validade_item').prop('required', exigeValidade);
+}
+
+function onProdutoSelecionado() {
+    atualizarCamposValidadeCompra();
 }
 
 function onFornecedorKeyDown(event) {
@@ -534,6 +634,7 @@ function onProdutoInput() {
     const inputValue = $('#codigo_barras_item').val().trim();
     if (!inputValue) {
         $('#produto_id_item').val('');
+        atualizarCamposValidadeCompra();
         return;
     }
     const produto = findProdutoByInput(inputValue);
@@ -542,8 +643,10 @@ function onProdutoInput() {
         $('#preco_item').val(produto.preco_compra || '');
         $('#margem_padrao_item').val(produto.lucro_percentual || 30);
         calcularValorVendaItem();
+        onProdutoSelecionado();
     } else {
         $('#produto_id_item').val('');
+        atualizarCamposValidadeCompra();
     }
 }
 
@@ -603,6 +706,7 @@ function showCompraModal() {
     console.log('showCompraModal chamada - gerando modal');
     itensCompraAtual = [];
     compraImportadaXml = null;
+    modoEntradaF7Compra = false;
     const hoje = new Date().toISOString().split('T')[0];
     const modalHtml = `
         <div class="modal fade" id="compraModal" tabindex="-1">
@@ -740,44 +844,66 @@ function showCompraModal() {
                             </div>
                         </div>
 
-                        <!-- Linha 2: Campos do item -->
-                        <div class="row g-2 align-items-end mb-3" id="adicionarItemRow">
-                            <div class="col-md-3">
-                                <label class="form-label">Produto</label>
-                                <select class="form-control" id="produto_id_item" onchange="onProdutoSelecionado()">
-                                    <option value="">Selecione</option>
-                                    ${produtosCompraList.map(p => `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`).join('')}
-                                </select>
+                        <div id="adicionarItemRow">
+                            <div class="row g-2 align-items-end mb-2">
+                                <div class="col-md-6">
+                                    <label class="form-label">Produto</label>
+                                    <select class="form-control" id="produto_id_item" onchange="onProdutoSelecionado()">
+                                        <option value="">Selecione</option>
+                                        ${produtosCompraList.map(p => `<option value="${p.id}" data-controlar-validade="${p.controlar_validade || 0}">${escapeHtml(p.nome)}</option>`).join('')}
+                                    </select>
+                                </div>
                             </div>
-                            <div class="col-md-2">
-                                <label class="form-label">Qtd</label>
-                                <input type="number" step="0.01" class="form-control" id="quantidade_item" value="1">
+
+                            <div class="row g-2 align-items-end mb-2" id="linhaQuantidadeCompra">
+                                <div class="col-md-2" id="campoQuantidadeSimplesCompra">
+                                    <label class="form-label">Qtd</label>
+                                    <input type="number" step="0.01" class="form-control" id="quantidade_item" value="1">
+                                </div>
+                                <div class="col-md-2 d-none" id="campoQuantidadeFiscalCompra">
+                                    <label class="form-label">Qtd Fiscal</label>
+                                    <input type="number" step="0.01" class="form-control" id="quantidade_fiscal_item" value="1">
+                                </div>
+                                <div class="col-md-2 d-none" id="campoQuantidadeNaoFiscalCompra">
+                                    <label class="form-label">Qtd Não Fiscal</label>
+                                    <input type="number" step="0.01" class="form-control" id="quantidade_nao_fiscal_item" value="0">
+                                </div>
                             </div>
-                            <div class="col-md-2">
-                                <label class="form-label">Preço compra</label>
-                                <input type="number" step="0.01" class="form-control" id="preco_item" oninput="calcularValorVendaItem()">
+
+                            <div class="row g-2 align-items-end mb-2">
+                                <div class="col-md-2">
+                                    <label class="form-label">Preço compra</label>
+                                    <input type="number" step="0.01" class="form-control" id="preco_item" oninput="calcularValorVendaItem()">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Margem %</label>
+                                    <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="30" oninput="calcularValorVendaItem()">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label">Valor venda</label>
+                                    <input type="number" step="0.01" class="form-control" id="preco_venda_item" oninput="calcularMargemItem()">
+                                </div>
+                                <div class="col-md-2">
+                                    <button class="btn btn-success w-100" onclick="adicionarItemCompra()"><i class="fas fa-plus"></i> Adicionar</button>
+                                </div>
                             </div>
-                            <div class="col-md-2">
-                                <label class="form-label">Margem %</label>
-                                <input type="number" step="0.01" class="form-control" id="margem_padrao_item" value="30" oninput="calcularValorVendaItem()">
-                            </div>
-                            <div class="col-md-2">
-                                <label class="form-label">Valor venda</label>
-                                <input type="number" step="0.01" class="form-control" id="preco_venda_item" oninput="calcularMargemItem()">
-                            </div>
-                            <div class="col-md-1">
-                                <button class="btn btn-success w-100" onclick="adicionarItemCompra()"><i class="fas fa-plus"></i></button>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-12">
+                                    <small id="indicadorModoF7Compra" class="text-primary fw-semibold d-none"></small>
+                                    <small class="text-muted">Pressione <strong>F7</strong> para alternar entre Qtd única e Qtd Fiscal / Não Fiscal.</small>
+                                </div>
                             </div>
                         </div>
 
-                        <!-- Campos de lote para produtos com controle de validade -->
-                        <div class="row g-2 mt-2" id="camposLoteCompra" style="display: none;">
-                            <div class="col-md-6">
-                                <label class="form-label">Data Validade *</label>
+                        <!-- Campos de lote / validade -->
+                        <div class="row g-2 mt-2" id="camposLoteCompra">
+                            <div class="col-md-4">
+                                <label class="form-label" id="labelDataValidadeItem">Data Validade</label>
                                 <input type="date" class="form-control" id="data_validade_item">
                             </div>
-                            <div class="col-md-6">
-                                <small class="text-muted">Campo obrigatório para produtos com controle de validade. O lote será gerado automaticamente.</small>
+                            <div class="col-md-8 d-flex align-items-end">
+                                <small class="text-muted" id="hintDataValidadeItem">Informe quando o produto tiver controle de validade.</small>
                             </div>
                         </div>
                         <div class="table-responsive mt-3" id="itensCompraTable">
@@ -786,7 +912,8 @@ function showCompraModal() {
                                     <tr>
                                         <th>Produto / descrição</th>
                                         <th>Cód. barras</th>
-                                        <th>Qtd</th>
+                                        <th>Validade</th>
+                                        <th id="colunaQuantidadeCompraHeader">Qtd Fiscal</th>
                                         <th>Preço compra</th>
                                         <th>Margem %</th>
                                         <th>Venda sugerida</th>
@@ -796,7 +923,7 @@ function showCompraModal() {
                                 </thead>
 
                                 <tbody id="itensCompraBody"></tbody>
-                                <tfoot><tr><th colspan="6" class="text-end">Total</th><th id="totalCompra">${formatCurrency(0)}</th><th></th></tr></tfoot>
+                                <tfoot><tr><th colspan="7" class="text-end">Total</th><th id="totalCompra">${formatCurrency(0)}</th><th></th></tr></tfoot>
                             </table>
                         </div>
 
@@ -882,6 +1009,13 @@ function showCompraModal() {
     $('#modal-container').html(modalHtml);
     $('#compraModal').modal('show');
     console.log('Modal exibido');
+    $(document).off('keydown.compraF7', onCompraModalKeyDown).on('keydown.compraF7', onCompraModalKeyDown);
+    $('#compraModal').off('hidden.bs.modal.compraF7').on('hidden.bs.modal.compraF7', function() {
+        $(document).off('keydown.compraF7', onCompraModalKeyDown);
+        modoEntradaF7Compra = false;
+    });
+    atualizarCamposQuantidadeCompra();
+    atualizarCamposValidadeCompra();
     renderItensCompraTabela();
     atualizarVisibilidadePagamentoCompra();
     recalcularTotaisCompraNota();
@@ -946,6 +1080,8 @@ function saveCompra() {
             unidade: item.unidade,
             ncm: item.ncm,
             quantidade: Number(item.quantidade || 0),
+            quantidade_fiscal: Number(item.quantidade_fiscal ?? item.quantidade ?? 0),
+            quantidade_nao_fiscal: Number(item.quantidade_nao_fiscal || 0),
             preco_unitario: Number(item.preco_unitario || 0),
             margem_lucro: Number(item.margem_lucro || 0),
             preco_venda_sugerido: Number(item.preco_venda_sugerido || 0),
