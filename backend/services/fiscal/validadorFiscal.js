@@ -1,3 +1,7 @@
+const {
+  validarItemComercialFracionadoFiscal
+} = require('./unidadeFiscal');
+
 function onlyDigits(str) {
   return String(str || '').replace(/\D/g, '');
 }
@@ -26,6 +30,7 @@ function validarItensFiscal(itens, ambiente = 2) {
 
   itens.forEach(item => {
     erros.push(...validarProdutoFiscal(item));
+    erros.push(...validarItemComercialFracionadoFiscal(item));
   });
 
   // Em PRODUÇÃO trava tudo

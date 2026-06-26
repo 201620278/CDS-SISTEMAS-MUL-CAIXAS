@@ -47,7 +47,9 @@ function carregarVenda(vendaId) {
           p.origem,
           p.cest as produto_cest,
           p.codigo_barras as produto_codigo_barras,
-          p.unidade
+          p.unidade,
+          p.produto_fracionado,
+          p.vendido_por_peso
         FROM vendas_itens vi
         INNER JOIN produtos p ON p.id = vi.produto_id
         WHERE vi.venda_id = ?

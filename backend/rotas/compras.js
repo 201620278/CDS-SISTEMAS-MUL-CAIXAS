@@ -11,6 +11,22 @@ const {
   calcularDevolucaoCompraFiscalPrimeiro,
   resolverJaDevolvidoCompraFiscalPrimeiro
 } = require('../services/estoqueFiscalService');
+const {
+  moeda,
+  custoUnitarioVenda,
+  itemCompraUsaConversaoUnidades,
+  resolverCustoUnitarioCadastro,
+  resolverPrecosCadastroAposCompra,
+  obterTotalConvertidoItemCompra,
+  validarDistribuicaoConversaoUnidadesItem,
+  resolverQuantidadesEstoqueCompraItem,
+  calcularSubtotalFinanceiroItemCompra,
+  resolverQuantidadesCompraItem
+} = require('../lib/motorConversaoUnidades');
+
+const itemCompraEhFracionado = itemCompraUsaConversaoUnidades;
+const obterTotalConvertidoItemCompraBackend = obterTotalConvertidoItemCompra;
+const validarDistribuicaoFracionadoItem = validarDistribuicaoConversaoUnidadesItem;
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const { emitirNFeDevolucaoCompra } = require('../services/fiscal/nfeDevolucaoCompra');
@@ -54,37 +70,6 @@ function createSlugCodigo(nome = '') {
     .toUpperCase();
 }
 
-function moeda(value) {
-  const numero = Number(value || 0);
-  return Number.isFinite(numero) ? Math.round(numero * 100) / 100 : 0;
-}
-
-function resolverQuantidadesCompraItem(item = {}) {
-  const hasSplit = item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined;
-
-  if (hasSplit) {
-    const quantidade_fiscal = Number(item.quantidade_fiscal || 0);
-    const quantidade_nao_fiscal = Number(item.quantidade_nao_fiscal || 0);
-    const quantidade = quantidade_fiscal + quantidade_nao_fiscal;
-    return { quantidade_fiscal, quantidade_nao_fiscal, quantidade };
-  }
-
-  const quantidade = Number(item.quantidade || 0);
-  if (Number(item.item_fiscal) === 0) {
-    return {
-      quantidade_fiscal: 0,
-      quantidade_nao_fiscal: quantidade,
-      quantidade
-    };
-  }
-
-  return {
-    quantidade_fiscal: quantidade,
-    quantidade_nao_fiscal: 0,
-    quantidade
-  };
-}
-
 function calcularRateioItens(itens, totais = {}) {
   const valorProdutos = moeda(
     itens.reduce((sum, item) => sum + moeda(item.subtotal), 0)
@@ -95,16 +80,22 @@ function calcularRateioItens(itens, totais = {}) {
   const outras = moeda(totais.valor_outras_despesas);
 
   return itens.map((item) => {
-    const subtotal = moeda(item.subtotal);
+    const subtotalItem = calcularSubtotalFinanceiroItemCompra(item);
+    const subtotal = moeda(item.subtotal !== undefined ? item.subtotal : subtotalItem);
     const proporcao = valorProdutos > 0 ? subtotal / valorProdutos : 0;
 
     const freteRateado = moeda(frete * proporcao);
     const descontoRateado = moeda(desconto * proporcao);
     const outrasRateado = moeda(outras * proporcao);
 
-    const quantidade = Number(item.quantidade || 0);
+    const quantidade = itemCompraEhFracionado(item)
+      ? resolverQuantidadesEstoqueCompraItem(item).quantidade
+      : Number(item.quantidade || 0);
     const custoTotalFinal = moeda(subtotal + freteRateado + outrasRateado - descontoRateado);
-    const custoUnitarioFinal = quantidade > 0 ? moeda(custoTotalFinal / quantidade) : moeda(item.preco_unitario);
+    const fracionado = Number(item.produto_fracionado ?? item.vendido_por_peso ?? 0) === 1;
+    const custoUnitarioFinal = quantidade > 0
+      ? (fracionado ? custoUnitarioVenda(custoTotalFinal / quantidade) : moeda(custoTotalFinal / quantidade))
+      : (fracionado ? custoUnitarioVenda(item.preco_unitario) : moeda(item.preco_unitario));
 
     return {
       ...item,
@@ -291,6 +282,8 @@ function ensureProductForItem(item, callback) {
       if (findErr) return callback(findErr);
       if (existente) return callback(null, existente.id);
 
+      const precosCadastro = resolverPrecosCadastroAposCompra(item);
+
       db.run(`
         INSERT INTO produtos (
           codigo, codigo_barras, nome, unidade, preco_compra, preco_venda,
@@ -302,9 +295,9 @@ function ensureProductForItem(item, callback) {
         item.codigo_barras || codigo,
         nome,
         item.unidade || 'UN',
-        Number(item.preco_unitario || 0),
-        Number(item.preco_venda_sugerido || item.preco_unitario || 0),
-        Number(item.margem_lucro || 30),
+        precosCadastro.precoCompra,
+        precosCadastro.precoVenda ?? precosCadastro.precoCompra,
+        precosCadastro.lucroPercentual,
         item.fornecedor || null,
         item.ncm || null,
         itemFiscal
@@ -326,8 +319,14 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
     }
 
     const item = itens[index++];
-    const qtds = resolverQuantidadesCompraItem(item);
-    const itemProcessado = { ...item, ...qtds };
+    const qtdsEstoque = resolverQuantidadesEstoqueCompraItem(item);
+    const itemProcessado = {
+      ...item,
+      quantidade_fiscal: qtdsEstoque.quantidade_fiscal,
+      quantidade_nao_fiscal: qtdsEstoque.quantidade_nao_fiscal,
+      quantidade: qtdsEstoque.quantidade,
+      peso_total_compra: qtdsEstoque.quantidade_convertida
+    };
 
     ensureProductForItem(itemProcessado, (prodErr, produtoId) => {
       if (prodErr) return done(prodErr);
@@ -337,9 +336,19 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
 
         const antigo = { preco_compra: produto?.preco_compra, preco_venda: produto?.preco_venda };
         const controlarValidade = produto?.controlar_validade === 1;
-        const qtdTotal = qtds.quantidade;
-        const qtdFiscal = qtds.quantidade_fiscal;
-        const qtdNaoFiscal = qtds.quantidade_nao_fiscal;
+        const qtdTotal = qtdsEstoque.quantidade;
+        const qtdFiscal = qtdsEstoque.quantidade_fiscal;
+        const qtdNaoFiscal = qtdsEstoque.quantidade_nao_fiscal;
+        const fracionado = itemCompraEhFracionado(itemProcessado);
+        const precosCadastro = resolverPrecosCadastroAposCompra(itemProcessado);
+        const precoUnitarioGravar = fracionado
+          ? precosCadastro.precoCompra
+          : moeda(itemProcessado.preco_unitario || precosCadastro.precoCompra || 0);
+        const custoFinalGravar = precosCadastro.precoCompra;
+        const precoVendaGravar = precosCadastro.atualizarVenda
+          ? (precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0))
+          : Number(itemProcessado.preco_venda_sugerido || 0);
+        const subtotalGravar = calcularSubtotalFinanceiroItemCompra(itemProcessado);
 
         db.run(`
           INSERT INTO compras_itens (
@@ -347,31 +356,36 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
             descricao_produto, codigo_barras, margem_lucro, preco_venda_sugerido, unidade, ncm,
             frete_rateado, desconto_rateado, outras_despesas_rateado, custo_unitario_final,
             vendido_por_peso, peso_total_compra, custo_por_kg, atualizar_preco_venda, item_fiscal,
-            quantidade_fiscal, quantidade_nao_fiscal
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            quantidade_fiscal, quantidade_nao_fiscal,
+            compra_em, quantidade_embalagens, quantidade_por_embalagem, valor_total_embalagem
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
           compraId,
           produtoId,
           qtdTotal,
-          Number(itemProcessado.preco_unitario || 0),
-          Number(itemProcessado.subtotal || 0),
+          precoUnitarioGravar,
+          subtotalGravar,
           itemProcessado.produto_nome || null,
           itemProcessado.codigo_barras || null,
           Number(itemProcessado.margem_lucro || 30),
-          Number(itemProcessado.preco_venda_sugerido || 0),
+          Number(precoVendaGravar || 0),
           itemProcessado.unidade || 'UN',
           itemProcessado.ncm || null,
           Number(itemProcessado.frete_rateado || 0),
           Number(itemProcessado.desconto_rateado || 0),
           Number(itemProcessado.outras_despesas_rateado || 0),
-          Number(itemProcessado.custo_unitario_final || itemProcessado.preco_unitario || 0),
-          Number(itemProcessado.vendido_por_peso || 0),
-          Number(itemProcessado.peso_total_compra || 0),
-          Number(itemProcessado.custo_por_kg || 0),
+          custoFinalGravar,
+          Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
+          qtdsEstoque.quantidade_convertida,
+          custoFinalGravar,
           Number(itemProcessado.atualizar_preco_venda ?? 1),
           qtdFiscal > 0 ? 1 : 0,
           qtdFiscal,
-          qtdNaoFiscal
+          qtdNaoFiscal,
+          itemProcessado.compra_em || null,
+          Number(itemProcessado.quantidade_embalagens || 0),
+          Number(itemProcessado.quantidade_por_embalagem || 0),
+          Number(itemProcessado.valor_total_embalagem || itemProcessado.subtotal || 0)
         ], (insertErr) => {
           if (insertErr) return done(insertErr);
 
@@ -380,7 +394,7 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
             SET
               saldo_fiscal = COALESCE(saldo_fiscal, 0) + ?,
               saldo_nao_fiscal = COALESCE(saldo_nao_fiscal, 0) + ?,
-              estoque_atual = COALESCE(estoque_atual, 0) + ?,
+              estoque_atual = (COALESCE(saldo_fiscal, 0) + ?) + (COALESCE(saldo_nao_fiscal, 0) + ?),
               preco_compra = ?,
               preco_venda = CASE WHEN ? = 1 THEN ? ELSE preco_venda END,
               lucro_percentual = CASE WHEN ? = 1 THEN ? ELSE lucro_percentual END,
@@ -388,39 +402,31 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
               ncm = COALESCE(?, ncm),
               codigo_barras = COALESCE(?, codigo_barras),
               unidade = COALESCE(?, unidade),
+              produto_fracionado = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(produto_fracionado, 0) END,
               vendido_por_peso = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(vendido_por_peso, 0) END,
-              peso_total_compra = CASE WHEN ? = 1 THEN ? ELSE COALESCE(peso_total_compra, 0) END,
-              valor_total_compra = CASE WHEN ? = 1 THEN ? ELSE COALESCE(valor_total_compra, 0) END,
-              custo_por_kg = CASE WHEN ? = 1 THEN ? ELSE COALESCE(custo_por_kg, 0) END,
               updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `, [
             qtdFiscal,
             qtdNaoFiscal,
-            qtdTotal,
-            Number(itemProcessado.custo_unitario_final || itemProcessado.preco_unitario || 0),
+            qtdFiscal,
+            qtdNaoFiscal,
+            precosCadastro.precoCompra,
 
-            Number(itemProcessado.atualizar_preco_venda ?? 1),
-            Number(itemProcessado.preco_venda_sugerido || 0),
+            precosCadastro.atualizarVenda ? 1 : 0,
+            precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0),
 
-            Number(itemProcessado.atualizar_preco_venda ?? 1),
-            Number(itemProcessado.margem_lucro || 30),
+            precosCadastro.atualizarVenda ? 1 : 0,
+            precosCadastro.lucroPercentual,
 
             fornecedor || null,
             itemProcessado.ncm || null,
             itemProcessado.codigo_barras || null,
             itemProcessado.unidade || 'UN',
 
-            Number(itemProcessado.vendido_por_peso || 0),
+            Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
 
-            Number(itemProcessado.vendido_por_peso || 0),
-            Number(itemProcessado.peso_total_compra || qtdTotal || 0),
-
-            Number(itemProcessado.vendido_por_peso || 0),
-            Number(itemProcessado.subtotal || 0),
-
-            Number(itemProcessado.vendido_por_peso || 0),
-            Number(itemProcessado.custo_por_kg || itemProcessado.custo_unitario_final || itemProcessado.preco_unitario || 0),
+            Number(itemProcessado.produto_fracionado ?? itemProcessado.vendido_por_peso ?? 0),
 
             produtoId
           ], (upErr) => {
@@ -454,12 +460,17 @@ function processarItensCompra(compraId, itens, fornecedor, done) {
         });
 
           function continuarProcessamento() {
-            if (antigo && (Number(antigo.preco_compra) !== Number(itemProcessado.preco_unitario) || Number(antigo.preco_venda) !== Number(itemProcessado.preco_venda_sugerido || 0))) {
+            const precoCompraNovo = precosCadastro.precoCompra;
+            const precoVendaNovo = precosCadastro.atualizarVenda
+              ? (precosCadastro.precoVenda ?? Number(itemProcessado.preco_venda_sugerido || 0))
+              : Number(antigo.preco_venda || 0);
+
+            if (antigo && (Number(antigo.preco_compra) !== Number(precoCompraNovo) || Number(antigo.preco_venda) !== Number(precoVendaNovo))) {
               db.run(`
                 INSERT INTO produtos_preco_historico (
                   produto_id, preco_compra_anterior, preco_compra_novo, preco_venda_anterior, preco_venda_novo
                 ) VALUES (?, ?, ?, ?, ?)
-              `, [produtoId, antigo.preco_compra, itemProcessado.preco_unitario, antigo.preco_venda, itemProcessado.preco_venda_sugerido || 0], () => next());
+              `, [produtoId, antigo.preco_compra, precoCompraNovo, antigo.preco_venda, precoVendaNovo], () => next());
             } else {
               next();
             }
@@ -812,6 +823,13 @@ router.post('/', (req, res) => {
   if (!isNotaAvulsa) {
     if (!Array.isArray(itens) || itens.length === 0) {
       return res.status(400).json({ error: 'Informe ao menos um item para a compra.' });
+    }
+
+    for (const item of itens) {
+      const erroDistribuicao = validarDistribuicaoFracionadoItem(item);
+      if (erroDistribuicao) {
+        return res.status(400).json({ error: erroDistribuicao });
+      }
     }
   }
 

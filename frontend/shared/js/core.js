@@ -142,7 +142,10 @@ function aplicarModoFiscalGlobal() {
 
     const btnFinalizar = document.getElementById('btnFinalizarVendaPdv');
     if (btnFinalizar) {
-        btnFinalizar.textContent = ativo ? 'Emitir NFC-e' : 'Finalizar Venda';
+        const titulo = btnFinalizar.querySelector('.btn-finalizar-titulo');
+        if (!titulo) {
+            btnFinalizar.textContent = ativo ? 'Emitir NFC-e' : 'Finalizar Venda';
+        }
     }
 }
 
@@ -539,6 +542,14 @@ function inicializarShellModulo(options = {}) {
         }
     });
 }
+
+window.produtoUsaConversaoUnidades = function produtoUsaConversaoUnidades(produto) {
+    if (!produto) return false;
+    return Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) === 1;
+};
+
+/** @deprecated Alias legado — use produtoUsaConversaoUnidades */
+window.produtoEhFracionado = window.produtoUsaConversaoUnidades;
 
 $.ajaxSetup({
     beforeSend: function (xhr, settings) {

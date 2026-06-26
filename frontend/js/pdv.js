@@ -516,7 +516,7 @@ function abrirModalConfirmacaoFiscalManual(valor, onConfirm, onCancel) {
                     </div>
                     <div class="modal-body">
                         <p class="mb-3">Confirme que o valor fiscal foi recebido.</p>
-                        <h4 class="text-center mb-0">Valor: ${formatCurrency(valorNum)}</h4>
+                        <h4 class="text-center mb-0">Valor fiscal: ${formatCurrency(valorNum)}</h4>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
@@ -591,7 +591,9 @@ async function obterTefHabilitadoConfig() {
 }
 
 function pagamentoMistoExigeTef(pagamentos) {
-    return TefFluxoPagamento.pagamentoMistoExigeTef(pagamentos);
+    return (pagamentos || []).some((pagamento) =>
+        formaPagamentoUsaTEF(normalizarFormaPagamentoTEF(pagamento.forma_pagamento))
+    );
 }
 
 async function confirmarRecebimentoFiscalManual(valorFiscal) {
@@ -602,6 +604,137 @@ async function confirmarRecebimentoFiscalManual(valorFiscal) {
             () => reject(new Error('Confirmação de recebimento fiscal cancelada.'))
         );
     });
+}
+
+function distribuirQuantidadeVendaLocal(quantidadeVendida, saldoFiscal, saldoNaoFiscal) {
+    quantidadeVendida = Number(quantidadeVendida || 0);
+    saldoFiscal = Number(saldoFiscal || 0);
+    saldoNaoFiscal = Number(saldoNaoFiscal || 0);
+
+    const estoqueTotal = saldoFiscal + saldoNaoFiscal;
+
+    if (quantidadeVendida > estoqueTotal) {
+        return {
+            sucesso: false,
+            estoqueTotal
+        };
+    }
+
+    const quantidadeFiscal = Math.min(quantidadeVendida, saldoFiscal);
+    const quantidadeNaoFiscal = quantidadeVendida - quantidadeFiscal;
+
+    return {
+        sucesso: true,
+        quantidadeFiscal,
+        quantidadeNaoFiscal
+    };
+}
+
+function calcularDistribuicaoFiscalLocal(itens) {
+    let totalFiscal = 0;
+    let totalNaoFiscal = 0;
+    const itensDistribuidos = [];
+
+    for (const item of itens) {
+        const produto = produtosDisponiveis.find(
+            (p) => Number(p.id) === Number(item.produto_id || item.id)
+        );
+        const saldos = pdvResolverSaldosProduto(produto || {});
+        const resultado = distribuirQuantidadeVendaLocal(
+            Number(item.quantidade || 0),
+            saldos.saldo_fiscal,
+            saldos.saldo_nao_fiscal
+        );
+
+        if (!resultado.sucesso) {
+            return {
+                sucesso: false,
+                error: `Saldo insuficiente para ${produto?.nome || 'produto'}. Disponível: ${resultado.estoqueTotal}`
+            };
+        }
+
+        const precoUnitario = Number(item.preco_unitario || 0);
+        const valorFiscal = Number((resultado.quantidadeFiscal * precoUnitario).toFixed(2));
+        const valorNaoFiscal = Number((resultado.quantidadeNaoFiscal * precoUnitario).toFixed(2));
+
+        totalFiscal += valorFiscal;
+        totalNaoFiscal += valorNaoFiscal;
+
+        itensDistribuidos.push({
+            produto_id: item.produto_id || item.id,
+            quantidade_fiscal: resultado.quantidadeFiscal,
+            quantidade_nao_fiscal: resultado.quantidadeNaoFiscal,
+            valor_fiscal: valorFiscal,
+            valor_nao_fiscal: valorNaoFiscal
+        });
+    }
+
+    return {
+        sucesso: true,
+        valor_fiscal: Number(totalFiscal.toFixed(2)),
+        valor_nao_fiscal: Number(totalNaoFiscal.toFixed(2)),
+        itens: itensDistribuidos
+    };
+}
+
+async function precalcularDistribuicaoFiscalVenda(itens) {
+    try {
+        const response = await fetch(`${API_URL}/vendas/pre-calcular-distribuicao`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            },
+            body: JSON.stringify(getTerminalRequestData({ itens }))
+        });
+
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok && data.sucesso) {
+            return data;
+        }
+
+        if (!response.ok && data.error) {
+            return { sucesso: false, error: data.error };
+        }
+    } catch (error) {
+        console.warn('Falha na API pre-calcular-distribuicao, usando cálculo local:', error);
+    }
+
+    return calcularDistribuicaoFiscalLocal(itens);
+}
+
+function aplicarDescontoProporcionalDistribuicao(distribuicao, subtotal, desconto) {
+    const brutoFiscal = Number(distribuicao?.valor_fiscal || 0);
+    const brutoNaoFiscal = Number(distribuicao?.valor_nao_fiscal || 0);
+    const subtotalNum = Number(subtotal || 0);
+    const descontoNum = Number(desconto || 0);
+    const totalLiquido = Math.max(0, subtotalNum - descontoNum);
+
+    if (subtotalNum <= 0 || descontoNum <= 0 || totalLiquido === subtotalNum) {
+        return {
+            valor_fiscal: brutoFiscal,
+            valor_nao_fiscal: brutoNaoFiscal
+        };
+    }
+
+    const fator = totalLiquido / subtotalNum;
+    let valorFiscal = Math.round(brutoFiscal * fator * 100) / 100;
+    let valorNaoFiscal = Math.round(brutoNaoFiscal * fator * 100) / 100;
+    const diff = Math.round((totalLiquido - valorFiscal - valorNaoFiscal) * 100) / 100;
+
+    if (diff !== 0) {
+        if (valorFiscal >= valorNaoFiscal) {
+            valorFiscal = Math.round((valorFiscal + diff) * 100) / 100;
+        } else {
+            valorNaoFiscal = Math.round((valorNaoFiscal + diff) * 100) / 100;
+        }
+    }
+
+    return {
+        valor_fiscal: valorFiscal,
+        valor_nao_fiscal: valorNaoFiscal
+    };
 }
 
 async function processarVendaFiscalManual(dadosVenda, valorFiscal) {
@@ -648,35 +781,10 @@ async function concluirPagamentoNaoFiscalVenda(vendaId, pagamento, emitirFiscal 
     return data;
 }
 
-async function calcularDistribuicaoFinanceiraVenda(itensCarrinho) {
-    const itens = (itensCarrinho || []).map((item) => ({
-        produto_id: Number(item.id),
-        quantidade: Number(item.quantidade),
-        preco_unitario: Number(item.preco_unitario)
-    }));
-
-    const response = await fetch(`${API_URL}/vendas/pre-calcular-distribuicao`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer ' + (localStorage.getItem('token') || '')
-        },
-        body: JSON.stringify(getTerminalRequestData({ itens }))
-    });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-        throw new Error(data.error || 'Erro ao calcular distribuição financeira da venda.');
-    }
-
-    return data;
-}
-
-async function processarVendaFiscalNaoFiscal(dadosVenda, valorFiscal) {
+async function processarVendaFiscalNaoFiscal(dadosVenda, totalFiscal) {
     try {
         const formaFiscal = obterFormaPagamentoFiscal();
-        const retorno = await processarPagamentoTEF(formaFiscal, valorFiscal, 1);
+        const retorno = await processarPagamentoTEF(formaFiscal, totalFiscal, 1);
 
         if (!retorno || !(retorno.aprovado || retorno.sucesso || retorno.status === 'aprovado')) {
             throw new Error('Pagamento fiscal não aprovado.');
@@ -685,7 +793,7 @@ async function processarVendaFiscalNaoFiscal(dadosVenda, valorFiscal) {
         pagamentoFiscalAtual = retorno;
 
         dadosVenda.pagamentoFiscal = {
-            valor: valorFiscal,
+            valor: totalFiscal,
             nsu: retorno.nsu,
             autorizacao: retorno.autorizacao,
             transacao_id: retorno.transacao_id
@@ -1035,7 +1143,12 @@ function aplicarModoFiscalPdv() {
     if (faixa) faixa.style.display = ativo ? 'block' : 'none';
 
     const btnFinalizar = document.getElementById('btnFinalizarVendaPdv');
-    if (btnFinalizar) btnFinalizar.textContent = ativo ? 'Emitir NFC-e' : 'Finalizar Venda';
+    if (btnFinalizar) {
+        const titulo = btnFinalizar.querySelector('.btn-finalizar-titulo');
+        if (!titulo) {
+            btnFinalizar.textContent = ativo ? 'Emitir NFC-e' : 'Finalizar Venda';
+        }
+    }
 }
 
 function alternarModoFiscalPdv() {
@@ -1162,6 +1275,14 @@ function bindEventosPDV() {
     $('#btnCancelarVendaPdv').off('click').on('click', cancelarVendaAtual);
     $('#btnFinalizarVendaPdv').off('click').on('click', abrirTelaPagamento);
     $('#btnFechamentoCaixaPdv').off('click').on('click', abrirFechamentoCaixa);
+
+    $('#btnCalculadoraPdv').off('click').on('click', function() {
+        $('#pdvCalculadoraFlutuante').toggleClass('d-none');
+    });
+    $('#btnFecharCalculadoraPdv').off('click').on('click', function() {
+        $('#pdvCalculadoraFlutuante').addClass('d-none');
+    });
+
     $('#formaPagamentoPdv').off('change').on('change', function () {
         if ($(this).val() === 'misto') {
             abrirPagamentoMisto();
@@ -1414,42 +1535,39 @@ function abrirCadastroCliente() {
 
 function renderCarrinhoItens() {
     if (!Array.isArray(carrinho) || carrinho.length === 0) {
-        return '<tr><td colspan="6" class="text-center">Nenhum item no carrinho</td></tr>';
+        return '<tr><td colspan="7" class="text-center vazio">Nenhum item no carrinho</td></tr>';
     }
 
     return carrinho.map((item, index) => {
+        const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
+        const decimal = produtoUsaConversaoUnidadesPdv(produto);
+        const unidade = String(produto?.unidade || item.unidade || 'UN').toUpperCase();
         const temDesconto = Number(item.desconto_percentual || 0) > 0;
         const classe = temDesconto ? 'table-warning' : '';
         const badgeDesconto = temDesconto ? `<small class="badge bg-danger">-${Number(item.desconto_percentual).toFixed(2)}%</small>` : '';
         const descontoAtacadoValor = Number(item.desconto_atacado || 0);
-        const badgeDescontoAtacado = descontoAtacadoValor > 0 ? `<div><small class="text-success">Desconto atacado: -${formatCurrency(descontoAtacadoValor)}</small></div>` : '';
-        
-        const modoAtacadoBadge = item.tipo_preco === 'atacado' ? `<div><small class="badge bg-info">ATACADO</small></div>` : '';
+        const badgeDescontoAtacado = descontoAtacadoValor > 0 ? `<div><small class="text-success">Atacado: -${formatCurrency(descontoAtacadoValor)}</small></div>` : '';
+        const modoAtacadoBadge = item.tipo_preco === 'atacado' ? `<div><small class="badge bg-secondary">ATACADO</small></div>` : '';
+
         return `
             <tr ${classe ? `class="${classe}"` : ''}>
-                <td>
-                    <input type="number"
+                <td class="col-qtd">
+                    <input type="${decimal ? 'text' : 'number'}"
                            class="form-control form-control-sm quantidade-item"
-                           value="${Number(item.quantidade)}"
-                           min="0.01"
-                           step="0.001"
+                           value="${formatarQuantidadePdv(item.quantidade, produto)}"
+                           min="${decimal ? '0.01' : '1'}"
+                           step="${decimal ? '0.01' : '1'}"
+                           inputmode="${decimal ? 'decimal' : 'numeric'}"
                            data-index="${index}">
                 </td>
-                <td>
-                    <input type="number"
-                           class="form-control form-control-sm percentual-item"
-                           value="${Number(item.desconto_percentual || 0).toFixed(2)}"
-                           min="-100"
-                           step="0.01"
-                           data-index="${index}">
-                </td>
-                <td>
-                    ${escapeHtml(item.nome)}
+                <td class="col-un"><span class="pdv-unidade-badge">${escapeHtml(unidade)}</span></td>
+                <td class="col-produto">
+                    <span class="pdv-produto-nome">${escapeHtml(item.nome)}</span>
                     ${badgeDesconto}
                     ${badgeDescontoAtacado}
                     ${modoAtacadoBadge}
                 </td>
-                <td>
+                <td class="col-unit">
                     <input type="number"
                            class="form-control form-control-sm valor-item text-end"
                            value="${Number(item.preco_unitario).toFixed(2)}"
@@ -1457,9 +1575,17 @@ function renderCarrinhoItens() {
                            step="0.01"
                            data-index="${index}">
                 </td>
-                <td>${formatCurrency(item.subtotal)}</td>
-                <td class="text-center">
-                    <button type="button" class="btn btn-sm btn-outline-danger item-remover" data-index="${index}">
+                <td class="col-desc">
+                    <input type="number"
+                           class="form-control form-control-sm percentual-item"
+                           value="${Number(item.desconto_percentual || 0).toFixed(2)}"
+                           min="-100"
+                           step="0.01"
+                           data-index="${index}">
+                </td>
+                <td class="col-total pdv-total-linha">${formatCurrency(item.subtotal)}</td>
+                <td class="col-acao text-center">
+                    <button type="button" class="btn btn-sm btn-outline-danger item-remover" data-index="${index}" title="Remover">
                         <i class="fas fa-trash"></i>
                     </button>
                 </td>
@@ -1481,6 +1607,66 @@ function codigoEhBalanca(codigo) {
 
 function unidadeEhKg(produto) {
     return String(produto?.unidade || '').toLowerCase() === 'kg';
+}
+
+function produtoUsaConversaoUnidadesPdv(produto) {
+    if (typeof window.produtoUsaConversaoUnidades === 'function') {
+        return window.produtoUsaConversaoUnidades(produto);
+    }
+    if (typeof window.produtoEhFracionado === 'function') {
+        return window.produtoEhFracionado(produto);
+    }
+    return Number(produto?.produto_fracionado ?? produto?.vendido_por_peso ?? 0) === 1;
+}
+
+/** @deprecated Alias legado — use produtoUsaConversaoUnidadesPdv */
+function produtoFracionado(produto) {
+    return produtoUsaConversaoUnidadesPdv(produto);
+}
+
+function permiteQuantidadeDecimal(produto) {
+    return produtoUsaConversaoUnidadesPdv(produto);
+}
+
+function quantidadeUsaDecimaisPdv(produto) {
+    return produtoUsaConversaoUnidadesPdv(produto) || unidadeEhKg(produto);
+}
+
+/** @deprecated Use quantidadeUsaDecimaisPdv */
+function quantidadeUsaTresCasas(produto) {
+    return quantidadeUsaDecimaisPdv(produto);
+}
+
+function parseQuantidadePdv(valor) {
+    const texto = String(valor ?? '').trim();
+    if (!texto) return NaN;
+    let normalizado = texto;
+    if (texto.includes(',')) {
+        normalizado = texto.replace(/\./g, '').replace(',', '.');
+    }
+    const numero = parseFloat(normalizado);
+    return Number.isFinite(numero) ? numero : NaN;
+}
+
+function normalizarQuantidadePdv(quantidade, produto) {
+    const qtd = Number(quantidade || 0);
+    if (!Number.isFinite(qtd) || qtd <= 0) return 0;
+    if (quantidadeUsaDecimaisPdv(produto)) {
+        return Number(qtd.toFixed(2));
+    }
+    return Math.round(qtd);
+}
+
+function formatarQuantidadePdv(quantidade, produto) {
+    const qtd = Number(quantidade || 0);
+    if (!quantidadeUsaDecimaisPdv(produto)) {
+        return String(Math.round(qtd));
+    }
+    const arredondado = Math.round(qtd * 100) / 100;
+    if (Number.isInteger(arredondado)) {
+        return String(arredondado);
+    }
+    return arredondado.toFixed(2).replace('.', ',').replace(/,00$/, '').replace(/(\,\d)0$/, '$1');
 }
 
 // Padrão profissional comum:
@@ -1527,7 +1713,7 @@ function encontrarProdutoPorCodigoOuNome(termo) {
 }
 
 function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra = '', promocao = null) {
-    quantidade = Number(quantidade || 0);
+    quantidade = normalizarQuantidadePdv(quantidade, produto);
     precoUnitario = Number(precoUnitario || 0);
 
     if (quantidade <= 0 || precoUnitario <= 0) {
@@ -1597,7 +1783,7 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
         const precoBase = Number(produto.preco_venda || precoFinal);
         const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
 
-        itemExistente.quantidade = Number(novaQuantidade.toFixed(3));
+        itemExistente.quantidade = Number(novaQuantidade.toFixed(2));
         itemExistente.preco_unitario = precoFinal;
         itemExistente.desconto_percentual = descontoPercentual;
         itemExistente.promocao_id = promocao?.id || null;
@@ -1617,7 +1803,7 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
             carrinho.push({
             id: produto.id,
             nome: produto.nome,
-            quantidade: Number(quantidade.toFixed(3)),
+            quantidade: Number(quantidade.toFixed(2)),
             preco_unitario: precoFinal,
             preco_base: precoBase,
             desconto_percentual: descontoPercentual,
@@ -1675,7 +1861,7 @@ function adicionarProdutoPorCodigo(codigo) {
                 produtoBalanca,
                 peso,
                 precoKg,
-                ` - Peso: ${peso.toFixed(3)} KG - Total: ${formatCurrency(dadosBalanca.valorTotal)}`,
+                ` - Peso: ${formatarQuantidadePdv(peso, { unidade: 'kg', produto_fracionado: 1 })} KG - Total: ${formatCurrency(dadosBalanca.valorTotal)}`,
                 promocao
             );
         });
@@ -1699,14 +1885,18 @@ function adicionarProdutoPorCodigo(codigo) {
 
     // Buscar promoção do produto
     buscarPromocaoAtivaProduto(produto.id).then(promocao => {
-        // 3) Produto KG digitado manualmente
-        if (unidadeEhKg(produto)) {
-            abrirModalQuantidadeProduto(produto, function (peso) {
+        // 3) Produto fracionado digitado manualmente
+        if (permiteQuantidadeDecimal(produto)) {
+            const unidade = String(produto.unidade || 'UN').toUpperCase();
+            abrirModalQuantidadeProduto(produto, function (qtd) {
+                const extra = unidadeEhKg(produto)
+                    ? ` - Peso: ${formatarQuantidadePdv(qtd, produto)} KG`
+                    : ` - Qtd: ${formatarQuantidadePdv(qtd, produto)} ${unidade}`;
                 adicionarItemNoCarrinho(
                     produto,
-                    peso,
+                    qtd,
                     Number(produto.preco_venda || 0),
-                    ` - Peso: ${peso.toFixed(3)} KG`,
+                    extra,
                     promocao
                 );
             });
@@ -1721,19 +1911,20 @@ function adicionarProdutoPorCodigo(codigo) {
 }
 
 function atualizarQuantidade(index, quantidade) {
-    const novaQuantidade = parseFloat(quantidade);
     const item = carrinho[index];
 
     if (!item) return;
 
-    if (Number.isNaN(novaQuantidade) || novaQuantidade <= 0) {
-        removerItemCarrinho(index);
-        return;
-    }
-
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
     if (!produto) {
         showNotification('Produto do carrinho não encontrado no cadastro.', 'danger');
+        return;
+    }
+
+    const novaQuantidade = normalizarQuantidadePdv(parseQuantidadePdv(quantidade), produto);
+
+    if (Number.isNaN(novaQuantidade) || novaQuantidade <= 0) {
+        removerItemCarrinho(index);
         return;
     }
 
@@ -1852,7 +2043,9 @@ function atualizarCarrinho() {
 
         tbody.off('change').on('change', '.quantidade-item', function() {
             const index = $(this).data('index');
-            let novaQtd = parseFloat($(this).val());
+            const item = carrinho[index];
+            const produto = item ? produtosDisponiveis.find(p => Number(p.id) === Number(item.id)) : null;
+            let novaQtd = parseQuantidadePdv($(this).val());
             if (isNaN(novaQtd) || novaQtd <= 0) {
                 removerItemCarrinho(index);
             } else {
@@ -2806,9 +2999,11 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 valor: total
             }
         ],
-        itens: carrinho.map(item => ({
+        itens: carrinho.map(item => {
+            const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
+            return {
             produto_id: Number(item.id),
-            quantidade: Number(item.quantidade),
+            quantidade: normalizarQuantidadePdv(item.quantidade, produto),
             preco_unitario: Number(item.preco_unitario),
             desconto_percentual: Number(item.desconto_percentual || 0),
             promocao_id: item.promocao_id || null,
@@ -2816,7 +3011,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             tipo_preco: item.tipo_preco || 'varejo',
             subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100,
             item_fiscal: Number(item.item_fiscal || 0)
-        })),
+        };
+        }),
         supervisor_token: supervisorAuthToken || null
     };
 
@@ -2831,24 +3027,18 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         dados.primeiro_vencimento = dataRecebimento;
     }
 
-    let distribuicao;
+    const distribuicao = await precalcularDistribuicaoFiscalVenda(dados.itens);
 
-    try {
-        distribuicao = await calcularDistribuicaoFinanceiraVenda(carrinho);
-    } catch (error) {
-        showNotification(error.message || 'Erro ao calcular distribuição financeira da venda.', 'danger');
+    if (!distribuicao.sucesso) {
+        showNotification(distribuicao.error || 'Erro ao calcular distribuição fiscal.', 'danger');
         return;
     }
 
-    if (!distribuicao?.sucesso) {
-        showNotification(distribuicao?.error || 'Erro ao calcular distribuição financeira da venda.', 'danger');
-        return;
-    }
+    const valoresDistribuidos = aplicarDescontoProporcionalDistribuicao(distribuicao, subtotal, desconto);
+    let totalFiscal = Number(valoresDistribuidos.valor_fiscal || 0);
+    let totalNaoFiscal = Number(valoresDistribuidos.valor_nao_fiscal || 0);
 
     vendaEmProcessamento = true;
-
-    const totalFiscal = Number(distribuicao.valor_fiscal || 0);
-    const totalNaoFiscal = Number(distribuicao.valor_nao_fiscal || 0);
 
     dados.valor_fiscal = totalFiscal;
     dados.valor_nao_fiscal = totalNaoFiscal;
@@ -2874,6 +3064,13 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
     }
 
     const formaPagamentoNormalizada = normalizarFormaPagamentoTEF(formaPagamento);
+
+    console.log('DISTRIBUICAO FISCAL PDV:', {
+        totalFiscal,
+        totalNaoFiscal,
+        total,
+        itens: distribuicao.itens
+    });
 
     console.log('VERIFICANDO TEF:', {
         formaPagamento,
@@ -2923,7 +3120,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         } else if (deveUsarTefAutomatico) {
             if (totalFiscal > 0) {
                 console.log('Processando pagamento fiscal com TEF');
-                const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, distribuicao.valor_fiscal);
+                const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, totalFiscal);
                 
                 if (!resultadoProcessamento.sucesso) {
                     vendaEmProcessamento = false;
@@ -2938,7 +3135,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 dados.pagamentos = [
                     {
                         forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaFiscal),
-                        valor: distribuicao.valor_fiscal,
+                        valor: totalFiscal,
                         tipo_recebimento: 'fiscal',
                         tef_transacao_id: tefFiscal.transacao_id,
                         nsu: tefFiscal.nsu,
@@ -3755,7 +3952,7 @@ function abrirModalQuantidadeProduto(produto, callback) {
     $('#modalQuantidadeProduto').remove();
 
     const unidade = String(produto.unidade || 'UN').toUpperCase();
-    const isKg = unidade === 'KG';
+    const fracionado = permiteQuantidadeDecimal(produto);
 
     const modalHtml = `
         <div class="modal fade" id="modalQuantidadeProduto" tabindex="-1">
@@ -3770,21 +3967,22 @@ function abrirModalQuantidadeProduto(produto, callback) {
                         <p class="mb-2 fw-bold">${produto.nome}</p>
 
                         <label class="form-label">
-                            ${isKg ? 'Peso em KG' : 'Quantidade'}
+                            ${fracionado ? `Quantidade em ${unidade}` : 'Quantidade'}
                         </label>
 
                         <input 
-                            type="number"
+                            type="${fracionado ? 'text' : 'number'}"
                             class="form-control form-control-lg"
                             id="inputQuantidadeProduto"
-                            min="0.001"
-                            step="${isKg ? '0.001' : '1'}"
-                            value="${isKg ? '' : '1'}"
-                            placeholder="${isKg ? 'Ex: 0.650' : 'Ex: 1'}"
+                            min="${fracionado ? '0.01' : '1'}"
+                            step="${fracionado ? '0.01' : '1'}"
+                            inputmode="${fracionado ? 'decimal' : 'numeric'}"
+                            value="${fracionado ? '' : '1'}"
+                            placeholder="${fracionado ? 'Ex: 7,25' : 'Ex: 1'}"
                         >
 
                         <small class="text-muted">
-                            ${isKg ? 'Digite o peso do produto' : 'Digite a quantidade vendida'}
+                            ${fracionado ? `Digite a quantidade em ${unidade}` : 'Digite a quantidade vendida'}
                         </small>
                     </div>
 
@@ -3831,7 +4029,7 @@ function abrirModalQuantidadeProduto(produto, callback) {
 
 function confirmarQuantidadeProduto(produto, callback, modal) {
     const valor = $('#inputQuantidadeProduto').val();
-    const quantidade = Number(String(valor).replace(',', '.'));
+    const quantidade = normalizarQuantidadePdv(parseQuantidadePdv(valor), produto);
 
     if (!quantidade || quantidade <= 0) {
         showNotification('Informe uma quantidade válida.', 'warning');
@@ -4752,14 +4950,17 @@ function adicionarProdutoConsultaPDV(produtoId) {
 
     // Buscar promoção do produto
     buscarPromocaoAtivaProduto(produto.id).then(promocao => {
-        // Se for KG, abrir modal de quantidade
-        if (unidadeEhKg(produto)) {
-            abrirModalQuantidadeProduto(produto, function (peso) {
+        if (permiteQuantidadeDecimal(produto)) {
+            const unidade = String(produto.unidade || 'UN').toUpperCase();
+            abrirModalQuantidadeProduto(produto, function (qtd) {
+                const extra = unidadeEhKg(produto)
+                    ? ` - Peso: ${formatarQuantidadePdv(qtd, produto)} KG`
+                    : ` - Qtd: ${formatarQuantidadePdv(qtd, produto)} ${unidade}`;
                 adicionarItemNoCarrinho(
                     produto,
-                    peso,
+                    qtd,
                     Number(produto.preco_venda || 0),
-                    ` - Peso: ${peso.toFixed(3)} KG`,
+                    extra,
                     promocao
                 );
             });

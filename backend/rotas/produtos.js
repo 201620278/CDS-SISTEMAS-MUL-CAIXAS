@@ -41,14 +41,21 @@ function exprEstoqueAlerta(modoFiscal, alias = '') {
     : `COALESCE(${prefixo}estoque_atual, 0)`;
 }
 
+const { resolverCustoUnitarioProdutoCadastro } = require('../lib/motorConversaoUnidades');
+
 function normalizarProdutoResposta(produto, modoFiscal) {
   const saldoFiscal = Number(produto.saldo_fiscal ?? 0);
   const saldoNaoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
   const estoqueAtual = saldoFiscal + saldoNaoFiscal;
-  const precoCompra = Number(produto.preco_compra || 0);
+  const flagFracionado = Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) ? 1 : 0;
+  const precoCompra = flagFracionado
+    ? resolverCustoUnitarioProdutoCadastro(produto)
+    : Number(produto.preco_compra || 0);
 
   const base = {
     ...produto,
+    produto_fracionado: flagFracionado,
+    preco_compra: precoCompra,
     saldo_fiscal: saldoFiscal,
     saldo_nao_fiscal: saldoNaoFiscal,
     estoque_atual: estoqueAtual,
@@ -74,6 +81,13 @@ function produtosTemColuna(nomeColuna, callback) {
     if (err) return callback(err, false);
     callback(null, (cols || []).some((col) => col.name === nomeColuna));
   });
+}
+
+function resolverFlagProdutoFracionado(body = {}) {
+  if (body.produto_fracionado !== undefined || body.vendido_por_peso !== undefined) {
+    return Number(body.produto_fracionado ?? body.vendido_por_peso ?? 0) ? 1 : 0;
+  }
+  return undefined;
 }
 
 const CAMPOS_PRODUTO_IGNORADOS = new Set([
@@ -414,6 +428,7 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       COALESCE(p.item_fiscal, 1) AS item_fiscal,
       p.estoque_minimo,
       p.vendido_por_peso,
+      COALESCE(p.produto_fracionado, p.vendido_por_peso, 0) AS produto_fracionado,
       CASE 
         WHEN promo.id IS NOT NULL THEN 1 
         ELSE 0 
@@ -1451,7 +1466,7 @@ router.post('/', (req, res) => {
     ncm, cfop, csosn, origem, cest, codigo_barras,
     aliquota_icms, aliquota_pis, aliquota_cofins,
     controlar_validade,
-    vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
+    produto_fracionado, vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
     venda_atacado,
     atacado_faixas,
     saldo_fiscal_inicial,
@@ -1464,6 +1479,7 @@ router.post('/', (req, res) => {
   } = req.body;
 
   const controlarValidade = controlar_validade ? 1 : 0;
+  const flagFracionado = resolverFlagProdutoFracionado({ produto_fracionado, vendido_por_peso }) ?? 0;
 
   let saldoFiscalInicial;
   let saldoNaoFiscalInicial;
@@ -1496,11 +1512,11 @@ router.post('/', (req, res) => {
       ncm, cfop, csosn, origem, cest, codigo_barras,
       aliquota_icms, aliquota_pis, aliquota_cofins,
       controlar_validade,
-      vendido_por_peso, peso_total_compra, valor_total_compra, custo_por_kg,
+      vendido_por_peso, produto_fracionado, peso_total_compra, valor_total_compra, custo_por_kg,
       venda_atacado,
       saldo_fiscal, saldo_nao_fiscal, item_fiscal
     )
-    VALUES (${Array(29).fill('?').join(', ')})
+    VALUES (${Array(30).fill('?').join(', ')})
   `, [
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
@@ -1508,7 +1524,8 @@ router.post('/', (req, res) => {
     ncm, cfop, csosn, origem, cest, codigo_barras,
     aliquota_icms, aliquota_pis, aliquota_cofins,
     controlarValidade,
-    vendido_por_peso || 0,
+    flagFracionado,
+    flagFracionado,
     peso_total_compra || 0,
     valor_total_compra || 0,
     custo_por_kg || 0,
@@ -1689,6 +1706,12 @@ router.put('/:id', (req, res) => {
 
     const fields = [];
     const values = [];
+
+    const flagFracionado = resolverFlagProdutoFracionado(bodyUpdates);
+    if (flagFracionado !== undefined) {
+      bodyUpdates.produto_fracionado = flagFracionado;
+      bodyUpdates.vendido_por_peso = flagFracionado;
+    }
 
     Object.keys(bodyUpdates).forEach(key => {
       if (!CAMPOS_PRODUTO_IGNORADOS.has(key)) {

@@ -5,6 +5,11 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const { tratarFalhaConexaoRemota, aplicarRecuperacaoModoLocal } = require('./electron-rede-recuperacao');
+const {
+  definirSessaoClienteRemoto,
+  obterSessaoClienteRemoto,
+  estaEmSessaoClienteRemoto
+} = require('./electron-sessao-rede');
 
 // Configuração do banco de dados
 process.env.DB_DIR = process.env.DB_DIR || path.join(
@@ -61,9 +66,17 @@ ipcMain.handle('selecionar-pasta-backup', async () => {
 
 ipcMain.removeHandler('rede-obter-modo-estacao');
 ipcMain.handle('rede-obter-modo-estacao', async () => {
+  const sessao = obterSessaoClienteRemoto();
+  if (sessao) {
+    return sessao;
+  }
+
   const configService = require('./backend/services/configuracaoService');
   return configService.obterModoEstacaoLocal();
 });
+
+ipcMain.removeHandler('rede-esta-em-modo-cliente');
+ipcMain.handle('rede-esta-em-modo-cliente', async () => estaEmSessaoClienteRemoto());
 
 ipcMain.removeHandler('rede-obter-hostname');
 ipcMain.handle('rede-obter-hostname', async () => os.hostname());
@@ -646,6 +659,7 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, opcoes = {}) {
 }
 
 function createWindow(serverPort) {
+  definirSessaoClienteRemoto(null);
   return abrirJanelaApp(
     `http://127.0.0.1:${serverPort}/login`,
     'Erro ao iniciar servidor',
@@ -654,6 +668,11 @@ function createWindow(serverPort) {
 }
 
 function createWindowRemote(remoteUrl, configServidor = {}) {
+  definirSessaoClienteRemoto({
+    ipServidor: configServidor.ipServidor,
+    porta: configServidor.porta
+  });
+
   return abrirJanelaApp(
     `${remoteUrl}/login`,
     'Erro ao carregar servidor remoto',

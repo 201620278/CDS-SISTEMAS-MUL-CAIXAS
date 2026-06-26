@@ -270,9 +270,12 @@ function aplicarModoFiscalGlobal() {
 
     const btnFinalizar = document.getElementById('btnFinalizarVendaPdv');
     if (btnFinalizar) {
-        btnFinalizar.textContent = ativo
-            ? 'Emitir NFC-e'
-            : 'Finalizar Venda';
+        const titulo = btnFinalizar.querySelector('.btn-finalizar-titulo');
+        if (!titulo) {
+            btnFinalizar.textContent = ativo
+                ? 'Emitir NFC-e'
+                : 'Finalizar Venda';
+        }
     }
 }
 

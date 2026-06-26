@@ -215,26 +215,252 @@ function formatNumberInput(value, decimals = 2) {
     return Number.isFinite(num) ? num.toFixed(decimals) : Number(0).toFixed(decimals);
 }
 
+/** Motor de Conversão de Unidades — embalagem de compra → unidade de estoque/venda */
+function produtoUsaConversaoUnidadesCompra(produto) {
+    if (typeof produtoUsaConversaoUnidades === 'function') return produtoUsaConversaoUnidades(produto);
+    if (typeof window.produtoUsaConversaoUnidades === 'function') return window.produtoUsaConversaoUnidades(produto);
+    if (typeof window.produtoEhFracionado === 'function') return window.produtoEhFracionado(produto);
+    return Number(produto?.produto_fracionado ?? produto?.vendido_por_peso ?? 0) === 1;
+}
+
+const produtoFracionadoCompra = produtoUsaConversaoUnidadesCompra;
+
+function itemCompraUsaConversaoUnidades(item = {}) {
+    return Number(item.produto_fracionado ?? item.vendido_por_peso ?? 0) === 1;
+}
+
+const itemCompraEhFracionado = itemCompraUsaConversaoUnidades;
+
+const TIPOS_COMPRA_EMBALAGEM = ['Rolo', 'Bobina', 'Caixa', 'Fardo', 'Galão', 'Tambor', 'Pacote'];
+
+function pluralizarTipoEmbalagem(tipo, quantidade) {
+    const qtd = Number(quantidade || 0);
+    if (qtd === 1) return tipo;
+    const irregulares = { 'Galão': 'Galões', 'Tambor': 'Tambores' };
+    return irregulares[tipo] || `${tipo}s`;
+}
+
+function opcoesCompraEmbalagemHtml(selecionado = 'Rolo') {
+    return TIPOS_COMPRA_EMBALAGEM.map((tipo) => {
+        const selected = String(selecionado) === tipo ? ' selected' : '';
+        return `<option value="${tipo}"${selected}>${tipo}</option>`;
+    }).join('');
+}
+
+function formatarCustoUnitarioVenda(value) {
+    return formatNumberInput(value, 4);
+}
+
+function obterProdutoSelecionadoCompra() {
+    const produtoId = $('#produto_id_item').val();
+    if (!produtoId) return null;
+    return produtosCompraList.find(p => String(p.id) === String(produtoId)) || null;
+}
+
+function isModoConversaoUnidadesCompraAtivo() {
+    return produtoUsaConversaoUnidadesCompra(obterProdutoSelecionadoCompra());
+}
+
+const isModoFracionadoCompraAtivo = isModoConversaoUnidadesCompraAtivo;
+
+function calcularConversaoEmbalagemCompra() {
+    if (!isModoConversaoUnidadesCompraAtivo()) return null;
+
+    const compraEm = String($('#compra_em_item').val() || 'Rolo');
+    const qtdEmbalagens = Number($('#quantidade_embalagens_item').val() || 0);
+    const qtdPorEmbalagem = Number($('#quantidade_por_embalagem_item').val() || 0);
+    const valorTotal = Number($('#valor_total_fracionado_item').val() || 0);
+    const unidade = String($('#unidade_fracionada_item').val() || 'UN').toUpperCase();
+    const qtdTotal = qtdEmbalagens * qtdPorEmbalagem;
+    const custoUnitario = qtdTotal > 0 ? valorTotal / qtdTotal : 0;
+
+    $('#resultado_qtd_total_fracionado').text(`${formatNumberInput(qtdTotal, 3)} ${unidade}`);
+    $('#resultado_custo_unitario_fracionado').text(`R$ ${formatarCustoUnitarioVenda(custoUnitario)}`);
+
+    if (qtdEmbalagens > 0 && qtdPorEmbalagem > 0) {
+        const tipoPlural = pluralizarTipoEmbalagem(compraEm, qtdEmbalagens);
+        $('#resultado_formula_conversao').text(
+            `${formatNumberInput(qtdEmbalagens, 3)} ${tipoPlural} × ${formatNumberInput(qtdPorEmbalagem, 3)} ${unidade} = ${formatNumberInput(qtdTotal, 3)} ${unidade}`
+        );
+    } else {
+        $('#resultado_formula_conversao').text('');
+    }
+
+    atualizarIndicadorDistribuicaoFiscal(qtdTotal, unidade);
+
+    if (custoUnitario > 0) {
+        $('#preco_item').val(formatarCustoUnitarioVenda(custoUnitario));
+        $('#custo_unitario_fracionado_item').val(formatarCustoUnitarioVenda(custoUnitario));
+        calcularValorVendaItem();
+    } else {
+        $('#custo_unitario_fracionado_item').val('');
+    }
+
+    return { qtdTotal, custoUnitario, valorTotal, unidade, compraEm };
+}
+
+function atualizarPainelConversaoUnidadesCompra() {
+    const ativo = isModoConversaoUnidadesCompraAtivo();
+    const produto = obterProdutoSelecionadoCompra();
+
+    $('#painelConversaoEmbalagem').toggleClass('d-none', !ativo);
+    $('#linhaPrecoCompraNormal .campo-preco-compra-item').toggleClass('d-none', ativo);
+    $('#campoCustoUnitarioFracionado').toggleClass('d-none', !ativo);
+
+    if (ativo && produto) {
+        $('#unidade_fracionada_item').val(String(produto.unidade || 'UN').toUpperCase());
+        if (!$('#quantidade_embalagens_item').val()) {
+            $('#quantidade_embalagens_item').val('1');
+        }
+        calcularConversaoEmbalagemCompra();
+    } else {
+        $('#custo_unitario_fracionado_item').val('');
+    }
+
+    atualizarCamposQuantidadeCompra();
+}
+
+const atualizarPainelFracionadoCompra = atualizarPainelConversaoUnidadesCompra;
+
 function isModoEntradaF7CompraAtivo() {
+    if (isModoConversaoUnidadesCompraAtivo()) return true;
     return !!modoEntradaF7Compra;
 }
 
 function toggleModoEntradaF7Compra() {
+    if (isModoConversaoUnidadesCompraAtivo()) {
+        showNotification('Motor de Conversão de Unidades exige distribuição absoluta: Fiscal + Não Fiscal = total convertido.', 'info');
+        return;
+    }
     modoEntradaF7Compra = !modoEntradaF7Compra;
     atualizarCamposQuantidadeCompra();
     const status = modoEntradaF7Compra ? 'ativado' : 'desativado';
     showNotification(`Modo F7 (entrada fiscal/não fiscal) ${status}.`, 'info');
 }
 
+function obterTotalConvertidoItemCompra() {
+    if (!isModoConversaoUnidadesCompraAtivo()) return null;
+
+    const qtdEmbalagens = Number($('#quantidade_embalagens_item').val() || 0);
+    const qtdPorEmbalagem = Number($('#quantidade_por_embalagem_item').val() || 0);
+    const unidade = String($('#unidade_fracionada_item').val() || 'UN').toUpperCase();
+    const qtdTotal = qtdEmbalagens * qtdPorEmbalagem;
+
+    if (qtdTotal <= 0) return null;
+    return { qtdTotal, unidade };
+}
+
+function validarDistribuicaoFiscalCompra(qtdFiscal, qtdNaoFiscal, totalConvertido, unidade = '') {
+    const fiscal = Number(qtdFiscal || 0);
+    const naoFiscal = Number(qtdNaoFiscal || 0);
+    const total = Number(totalConvertido || 0);
+    const soma = fiscal + naoFiscal;
+    const unidadeLabel = unidade ? ` ${unidade}` : '';
+
+    if (total <= 0) {
+        return { ok: false, mensagem: 'Total convertido inválido.' };
+    }
+    if (soma <= 0) {
+        return {
+            ok: false,
+            mensagem: `Informe quantidades absolutas${unidadeLabel}: Fiscal + Não Fiscal = ${formatNumberInput(total, 3)}${unidadeLabel}.`
+        };
+    }
+    if (Math.abs(soma - total) > 0.001) {
+        return {
+            ok: false,
+            mensagem: `Fiscal + Não Fiscal deve somar ${formatNumberInput(total, 3)}${unidadeLabel}. Informado: ${formatNumberInput(fiscal, 3)} + ${formatNumberInput(naoFiscal, 3)} = ${formatNumberInput(soma, 3)}.`
+        };
+    }
+
+    return { ok: true, fiscal, naoFiscal, total, soma };
+}
+
+function atualizarIndicadorDistribuicaoFiscal(totalInformado, unidadeInformada) {
+    const $painel = $('#painelIndicadorDistribuicaoFiscal');
+    const $indicador = $('#indicadorDistribuicaoFiscal');
+    if (!$indicador.length) return;
+
+    if (!isModoConversaoUnidadesCompraAtivo()) {
+        $painel.addClass('d-none');
+        $indicador.addClass('d-none').removeClass('alert-success alert-warning alert-danger alert-info').text('');
+        return;
+    }
+
+    $painel.removeClass('d-none');
+
+    const totalInfo = obterTotalConvertidoItemCompra();
+    const qtdTotal = Number(totalInformado ?? totalInfo?.qtdTotal ?? 0);
+    const unidade = String(unidadeInformada || totalInfo?.unidade || 'UN').toUpperCase();
+
+    if (qtdTotal <= 0) {
+        $indicador.removeClass('d-none alert-success alert-warning alert-danger').addClass('alert alert-info py-2 mb-0');
+        $indicador.text('Informe a conversão de embalagem para distribuir o estoque em valores absolutos.');
+        return;
+    }
+
+    const qtdFiscal = Number($('#quantidade_fiscal_item').val() || 0);
+    const qtdNaoFiscal = Number($('#quantidade_nao_fiscal_item').val() || 0);
+    const soma = qtdFiscal + qtdNaoFiscal;
+    const diff = Number((qtdTotal - soma).toFixed(3));
+    const ok = Math.abs(diff) <= 0.001;
+
+    $indicador.removeClass('d-none alert-success alert-warning alert-danger alert-info');
+
+    if (soma === 0) {
+        $indicador.addClass('alert alert-info py-2 mb-0');
+        $indicador.html(`Informe <strong>valores absolutos</strong> em ${unidade}: Fiscal + Não Fiscal = <strong>${formatNumberInput(qtdTotal, 3)} ${unidade}</strong>.`);
+        return;
+    }
+
+    if (ok) {
+        $indicador.addClass('alert alert-success py-2 mb-0');
+        $indicador.html(`✓ ${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)} = ${formatNumberInput(qtdTotal, 3)} ${unidade}`);
+        return;
+    }
+
+    if (soma < qtdTotal) {
+        $indicador.addClass('alert alert-warning py-2 mb-0');
+        $indicador.html(`${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)} = ${formatNumberInput(soma, 3)} ${unidade}. Faltam <strong>${formatNumberInput(diff, 3)} ${unidade}</strong> para completar ${formatNumberInput(qtdTotal, 3)}.`);
+        return;
+    }
+
+    $indicador.addClass('alert alert-danger py-2 mb-0');
+    $indicador.html(`${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)} = ${formatNumberInput(soma, 3)} ${unidade}. Excede o total convertido em <strong>${formatNumberInput(Math.abs(diff), 3)} ${unidade}</strong>.`);
+}
+
 function atualizarCamposQuantidadeCompra() {
-    const ativo = isModoEntradaF7CompraAtivo();
+    const fracionado = isModoConversaoUnidadesCompraAtivo();
+    const ativo = fracionado || isModoEntradaF7CompraAtivo();
+    const unidade = fracionado
+        ? String($('#unidade_fracionada_item').val() || obterProdutoSelecionadoCompra()?.unidade || 'UN').toUpperCase()
+        : '';
+
     $('#campoQuantidadeSimplesCompra').toggleClass('d-none', ativo);
     $('#campoQuantidadeFiscalCompra').toggleClass('d-none', !ativo);
     $('#campoQuantidadeNaoFiscalCompra').toggleClass('d-none', !ativo);
+
+    if (fracionado) {
+        $('#labelQtdFiscalCompra').text(`Fiscal (${unidade})`);
+        $('#labelQtdNaoFiscalCompra').text(`Não Fiscal (${unidade})`);
+    } else {
+        $('#labelQtdFiscalCompra').text('Qtd Fiscal');
+        $('#labelQtdNaoFiscalCompra').text('Qtd Não Fiscal');
+    }
+
+    let indicador = '';
+    if (fracionado) {
+        indicador = `Distribua em ${unidade} com valores absolutos (nunca %): Fiscal + Não Fiscal = total convertido.`;
+    } else if (ativo) {
+        indicador = 'F7 ativo: informe Qtd Fiscal e/ou Qtd Não Fiscal';
+    }
+
     $('#indicadorModoF7Compra')
-        .toggleClass('d-none', !ativo)
-        .text(ativo ? 'F7 ativo: informe Qtd Fiscal e/ou Qtd Não Fiscal' : '');
+        .toggleClass('d-none', !indicador)
+        .text(indicador);
+    $('#hintTeclaF7Compra').toggleClass('d-none', fracionado);
     $('#colunaQuantidadeCompraHeader').text(ativo ? 'Qtd' : 'Qtd Fiscal');
+    atualizarIndicadorDistribuicaoFiscal();
     if ($('#itensCompraBody').length) {
         renderItensCompraTabela();
     }
@@ -248,7 +474,7 @@ function onCompraModalKeyDown(event) {
 }
 
 function resolverQuantidadesItemCompra(quantidadeSimples, quantidadeFiscal, quantidadeNaoFiscal) {
-    if (isModoEntradaF7CompraAtivo()) {
+    if (isModoConversaoUnidadesCompraAtivo() || isModoEntradaF7CompraAtivo()) {
         const qtdFiscal = Number(quantidadeFiscal || 0);
         const qtdNaoFiscal = Number(quantidadeNaoFiscal || 0);
         return {
@@ -271,15 +497,28 @@ function formatarQuantidadeItemCompra(item = {}) {
     const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
     const qtdTotal = Number(item.quantidade ?? (qtdFiscal + qtdNaoFiscal));
 
-    if (isModoEntradaF7CompraAtivo()) {
+    if (itemCompraEhFracionado(item) && qtdNaoFiscal > 0) {
+        return `${formatNumberInput(qtdFiscal, 3)} + ${formatNumberInput(qtdNaoFiscal, 3)}`;
+    }
+
+    if (isModoEntradaF7CompraAtivo() && !itemCompraEhFracionado(item)) {
         return formatNumberInput(qtdTotal);
+    }
+
+    if (itemCompraEhFracionado(item)) {
+        return formatNumberInput(qtdFiscal, 3);
     }
 
     return formatNumberInput(qtdFiscal);
 }
 
+function calcularSubtotalFinanceiroItemCompra(item = {}) {
+    const quantidade = Number(item.quantidade || 0);
+    const preco = Number(item.preco_unitario || 0);
+    return Number((quantidade * preco).toFixed(2));
+}
+
 function normalizeItemCompra(item = {}) {
-    const custo = Number(item.preco_unitario || item.preco_compra || 0);
     const qtds = item.quantidade_fiscal !== undefined || item.quantidade_nao_fiscal !== undefined
         ? {
             quantidade_fiscal: Number(item.quantidade_fiscal || 0),
@@ -292,10 +531,15 @@ function normalizeItemCompra(item = {}) {
             quantidade: Number(item.quantidade || 1)
         };
     const quantidade = qtds.quantidade || Number(item.quantidade || 1);
+    const fracionado = itemCompraEhFracionado(item);
+    const casasCusto = fracionado ? 4 : 2;
+    const custo = fracionado
+        ? resolverCustoUnitarioItemCompra(item, quantidade)
+        : Number(item.preco_unitario || item.preco_compra || 0);
     const margem = Number(item.margem_lucro ?? item.lucro_percentual ?? 30);
     const ultimoPrecoCompra = Number(item.ultimo_preco_compra || custo);
     const precoVenda = Number(item.preco_venda_sugerido || item.preco_venda || (custo * (1 + margem / 100)) || 0);
-    return {
+    const normalizado = {
         produto_id: item.produto_id ? Number(item.produto_id) : '',
         produto_nome: item.produto_nome || item.nome || item.descricao_produto || '',
         codigo_barras: item.codigo_barras || item.codigo || '',
@@ -304,28 +548,49 @@ function normalizeItemCompra(item = {}) {
         quantidade,
         quantidade_fiscal: qtds.quantidade_fiscal,
         quantidade_nao_fiscal: qtds.quantidade_nao_fiscal,
-        preco_unitario: Number(custo.toFixed(2)),
-        ultimo_preco_compra: Number(ultimoPrecoCompra.toFixed(2)),
+        preco_unitario: Number(custo.toFixed(casasCusto)),
+        ultimo_preco_compra: Number(ultimoPrecoCompra.toFixed(casasCusto)),
         margem_lucro: Number(margem.toFixed(2)),
         preco_venda_sugerido: Number(precoVenda.toFixed(2)),
-        vendido_por_peso: Number(item.vendido_por_peso || 0),
+        produto_fracionado: itemCompraEhFracionado(item) ? 1 : 0,
+        vendido_por_peso: itemCompraEhFracionado(item) ? 1 : 0,
         peso_total_compra: Number(item.peso_total_compra || item.quantidade || 0),
-        custo_por_kg: Number(item.custo_por_kg || custo || 0),
+        custo_por_kg: Number((item.custo_por_kg || custo || 0).toFixed(casasCusto)),
         atualizar_preco_venda: Number(item.atualizar_preco_venda ?? 1),
         frete_rateado: Number(item.frete_rateado || 0),
         desconto_rateado: Number(item.desconto_rateado || 0),
         outras_despesas_rateado: Number(item.outras_despesas_rateado || 0),
-        custo_unitario_final: Number(item.custo_unitario_final || custo || 0),
-        subtotal: Number((quantidade * custo).toFixed(2)),
-        data_validade: item.data_validade || null
+        custo_unitario_final: Number((item.custo_unitario_final || custo || 0).toFixed(casasCusto)),
+        subtotal: calcularSubtotalFinanceiroItemCompra({
+            ...item,
+            quantidade,
+            preco_unitario: Number(custo.toFixed(casasCusto))
+        }),
+        data_validade: item.data_validade || null,
+        compra_em: item.compra_em || '',
+        quantidade_embalagens: Number(item.quantidade_embalagens || 0),
+        quantidade_por_embalagem: Number(item.quantidade_por_embalagem || 0),
+        valor_total_embalagem: Number(item.valor_total_embalagem || 0)
     };
+
+    return sincronizarQuantidadesEstoqueItemCompra(
+        sincronizarPrecosCadastroItemCompra(normalizado)
+    );
 }
 
 function recalcularLinhaCompra(index, origem = 'custo') {
     const item = itensCompraAtual[index];
     if (!item) return;
     item.quantidade = Number(item.quantidade || 0);
-    item.preco_unitario = Number(item.preco_unitario || 0);
+
+    if (itemCompraEhFracionado(item)) {
+        item.preco_unitario = resolverCustoUnitarioItemCompra(item, item.quantidade);
+        item.custo_unitario_final = item.preco_unitario;
+        item.custo_por_kg = item.preco_unitario;
+    } else {
+        item.preco_unitario = Number(item.preco_unitario || 0);
+    }
+
     item.margem_lucro = Number(item.margem_lucro || 0);
     item.preco_venda_sugerido = Number(item.preco_venda_sugerido || 0);
 
@@ -337,7 +602,9 @@ function recalcularLinhaCompra(index, origem = 'custo') {
             : 0;
     }
 
-    item.subtotal = Number((item.quantidade * item.preco_unitario).toFixed(2));
+    item.subtotal = calcularSubtotalFinanceiroItemCompra(item);
+
+    sincronizarPrecosCadastroItemCompra(item);
 }
 
 
@@ -377,6 +644,76 @@ function removerItemCompra(index) {
     calcularParcelasCompra();
 }
 
+function formatarPrecoCompraItem(item = {}) {
+    const fracionado = itemCompraEhFracionado(item);
+    const valor = Number(item.preco_unitario || 0);
+    if (fracionado) {
+        return `R$ ${formatarCustoUnitarioVenda(valor)}`;
+    }
+    return formatCurrency(valor);
+}
+
+function resolverCustoUnitarioItemCompra(item = {}, quantidadeInformada) {
+    if (!itemCompraEhFracionado(item)) {
+        return Number(item.preco_unitario || item.preco_compra || 0);
+    }
+
+    const quantidade = Number(quantidadeInformada ?? item.quantidade ?? 0);
+    const valorTotal = Number(item.valor_total_embalagem || 0);
+    let custo = Number(item.custo_unitario_final || item.custo_por_kg || item.preco_unitario || 0);
+
+    if (valorTotal > 0 && quantidade > 0) {
+        const custoCalculado = valorTotal / quantidade;
+        if (!custo || Math.abs(custo - valorTotal) < 0.01) {
+            custo = custoCalculado;
+        }
+    }
+
+    return Number(custo.toFixed(4));
+}
+
+function sincronizarPrecosCadastroItemCompra(item = {}) {
+    const fracionado = itemCompraEhFracionado(item);
+    const quantidade = Number(item.quantidade || 0);
+    const casasCusto = fracionado ? 4 : 2;
+    const custo = fracionado
+        ? resolverCustoUnitarioItemCompra(item, quantidade)
+        : Number(item.preco_unitario || 0);
+
+    item.preco_unitario = Number(custo.toFixed(casasCusto));
+    item.custo_unitario_final = item.preco_unitario;
+    item.custo_por_kg = item.preco_unitario;
+    item.margem_lucro = Number(item.margem_lucro ?? 30);
+
+    if (Number(item.atualizar_preco_venda ?? 1) === 1 && item.preco_unitario > 0) {
+        item.preco_venda_sugerido = Number((item.preco_unitario * (1 + item.margem_lucro / 100)).toFixed(2));
+    }
+
+    return item;
+}
+
+function sincronizarQuantidadesEstoqueItemCompra(item = {}) {
+    if (!itemCompraEhFracionado(item)) return item;
+
+    const qtdFiscal = Number(item.quantidade_fiscal || 0);
+    const qtdNaoFiscal = Number(item.quantidade_nao_fiscal || 0);
+    const totalConvertido = Number(item.peso_total_compra || 0)
+        || (Number(item.quantidade_embalagens || 0) * Number(item.quantidade_por_embalagem || 0));
+    const qtdEmbalagens = Number(item.quantidade_embalagens || 0);
+    const somaInformada = qtdFiscal + qtdNaoFiscal;
+
+    let quantidadeEstoque = somaInformada > 0 ? somaInformada : totalConvertido;
+    if (qtdEmbalagens > 0 && Math.abs(quantidadeEstoque - qtdEmbalagens) < 0.001 && totalConvertido > qtdEmbalagens) {
+        quantidadeEstoque = totalConvertido;
+    }
+
+    item.quantidade_fiscal = qtdFiscal;
+    item.quantidade_nao_fiscal = qtdNaoFiscal;
+    item.quantidade = quantidadeEstoque;
+    item.peso_total_compra = totalConvertido > 0 ? totalConvertido : quantidadeEstoque;
+    return item;
+}
+
 function renderItensCompraTabela() {
     const tbody = $('#itensCompraBody');
     const optionsProdutos = '<option value="">Selecione</option>' + produtosCompraList.map(p => `<option value="${p.id}">${p.nome}</option>`).join('');
@@ -392,9 +729,9 @@ function renderItensCompraTabela() {
             <td style="min-width:110px;">${item.data_validade ? escapeHtml(item.data_validade) : '<span class="text-muted">-</span>'}</td>
             <td style="min-width:90px;">${formatarQuantidadeItemCompra(item)}</td>
             <td style="min-width:110px;">
-              ${formatCurrency(item.preco_unitario)}
+              ${formatarPrecoCompraItem(item)}
               ${item.custo_unitario_final && Number(item.custo_unitario_final) !== Number(item.preco_unitario)
-                ? `<br><small class="text-muted">Custo final: ${formatCurrency(item.custo_unitario_final)}</small>` 
+                ? `<br><small class="text-muted">Custo final: ${itemCompraEhFracionado(item) ? `R$ ${formatarCustoUnitarioVenda(item.custo_unitario_final)}` : formatCurrency(item.custo_unitario_final)}</small>` 
                 : ''}
             </td>
             <td style="min-width:95px;">${formatNumberInput(item.margem_lucro)}%</td>
@@ -471,17 +808,62 @@ function alterarProdutoItemCompra(index, produtoId) {
 function adicionarItemCompra() {
     const produtoId = $('#produto_id_item').val();
     const descricaoLivre = ($('#codigo_barras_item').val() || '').trim();
-    const qtds = resolverQuantidadesItemCompra(
+    const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
+    const fracionado = produtoUsaConversaoUnidadesCompra(produto);
+
+    let qtds = resolverQuantidadesItemCompra(
         $('#quantidade_item').val(),
         $('#quantidade_fiscal_item').val(),
         $('#quantidade_nao_fiscal_item').val()
     );
-    const preco = Number($('#preco_item').val());
+    let preco = Number($('#preco_item').val());
     const margemInput = Number($('#margem_padrao_item').val());
     const precoVendaInput = Number($('#preco_venda_item').val());
     const margem = Number.isFinite(margemInput) ? margemInput : 30;
+    let valorTotalEmbalagem = 0;
+    let dadosEmbalagem = {};
 
-    if ((!produtoId && !descricaoLivre) || !qtds.quantidade || !preco) {
+    if (fracionado) {
+        const conv = calcularConversaoEmbalagemCompra();
+        if (!conv || conv.qtdTotal <= 0) {
+            showNotification('Informe quantidade comprada e quantidade por embalagem.', 'warning');
+            return;
+        }
+        if (conv.valorTotal <= 0) {
+            showNotification('Informe o valor total da compra.', 'warning');
+            $('#valor_total_fracionado_item').focus();
+            return;
+        }
+
+        const validacaoDistribuicao = validarDistribuicaoFiscalCompra(
+            qtds.quantidade_fiscal,
+            qtds.quantidade_nao_fiscal,
+            conv.qtdTotal,
+            conv.unidade
+        );
+        if (!validacaoDistribuicao.ok) {
+            showNotification(validacaoDistribuicao.mensagem, 'warning');
+            if (qtds.quantidade_fiscal <= 0) {
+                $('#quantidade_fiscal_item').focus();
+            } else {
+                $('#quantidade_nao_fiscal_item').focus();
+            }
+            return;
+        }
+
+        preco = conv.custoUnitario;
+        valorTotalEmbalagem = conv.valorTotal;
+        dadosEmbalagem = {
+            compra_em: $('#compra_em_item').val() || '',
+            quantidade_embalagens: Number($('#quantidade_embalagens_item').val() || 0),
+            quantidade_por_embalagem: Number($('#quantidade_por_embalagem_item').val() || 0),
+            valor_total_embalagem: conv.valorTotal,
+            produto_fracionado: 1,
+            vendido_por_peso: 1,
+            peso_total_compra: conv.qtdTotal,
+            custo_por_kg: conv.custoUnitario
+        };
+    } else if ((!produtoId && !descricaoLivre) || !qtds.quantidade || !preco) {
         const msgQtd = isModoEntradaF7CompraAtivo()
             ? 'Informe produto, preço e ao menos uma quantidade (fiscal ou não fiscal).'
             : 'Informe produto ou descrição, quantidade e preço.';
@@ -497,14 +879,10 @@ function adicionarItemCompra() {
         margemFinal = preco > 0 ? ((precoVenda - preco) / preco) * 100 : 0;
     }
 
-    const produto = produtosCompraList.find(p => String(p.id) === String(produtoId));
-    
     // Verificar se o produto controla validade e validar campos de lote
     if (produto && Number(produto.controlar_validade || 0) === 1) {
         const dataValidade = $('#data_validade_item').val();
-        
-        console.log('Produto controla validade:', produto.nome, 'data_validade:', dataValidade);
-        
+
         if (!dataValidade) {
             showNotification('Para produtos com controle de validade, informe a data de validade.', 'warning');
             return;
@@ -524,8 +902,11 @@ function adicionarItemCompra() {
         preco_venda_sugerido: precoVenda,
         unidade: produto ? (produto.unidade || 'UN') : 'UN',
         ncm: produto ? (produto.ncm || '') : '',
-        // Campos de lote
-        data_validade: $('#data_validade_item').val() || null
+        data_validade: $('#data_validade_item').val() || null,
+        produto_fracionado: fracionado ? 1 : (produto && produtoUsaConversaoUnidadesCompra(produto) ? 1 : 0),
+        vendido_por_peso: fracionado ? 1 : (produto && produtoUsaConversaoUnidadesCompra(produto) ? 1 : 0),
+        subtotal: fracionado ? valorTotalEmbalagem : undefined,
+        ...dadosEmbalagem
     });
 
     itensCompraAtual.push(item);
@@ -537,14 +918,22 @@ function limparFormularioItemCompra() {
     $('#codigo_barras_item').val('');
     $('#produto_id_item').val('');
     $('#quantidade_item').val('1');
-    $('#quantidade_fiscal_item').val('1');
-    $('#quantidade_nao_fiscal_item').val('0');
+    $('#quantidade_fiscal_item').val('');
+    $('#quantidade_nao_fiscal_item').val('');
     $('#preco_item').val('');
     $('#margem_padrao_item').val('30');
     $('#preco_venda_item').val('');
-    // Limpar campos de lote
+    $('#compra_em_item').html(opcoesCompraEmbalagemHtml('Rolo'));
+    $('#quantidade_embalagens_item').val('1');
+    $('#quantidade_por_embalagem_item').val('');
+    $('#valor_total_fracionado_item').val('');
+    $('#custo_unitario_fracionado_item').val('');
+    $('#resultado_formula_conversao').text('');
+    $('#resultado_qtd_total_fracionado').text('0,000 UN');
+    $('#resultado_custo_unitario_fracionado').text('R$ 0,0000');
     $('#data_validade_item').val('');
     atualizarCamposValidadeCompra();
+    atualizarPainelConversaoUnidadesCompra();
     $('#codigo_barras_item').focus();
 }
 
@@ -576,10 +965,27 @@ function editarItemCompra(index) {
     $('#quantidade_item').val(formatNumberInput(item.quantidade));
     $('#quantidade_fiscal_item').val(formatNumberInput(item.quantidade_fiscal ?? item.quantidade));
     $('#quantidade_nao_fiscal_item').val(formatNumberInput(item.quantidade_nao_fiscal || 0));
-    $('#preco_item').val(formatNumberInput(item.preco_unitario));
+    $('#preco_item').val(formatNumberInput(
+        item.preco_unitario,
+        itemCompraEhFracionado(item) ? 4 : 2
+    ));
     $('#margem_padrao_item').val(formatNumberInput(item.margem_lucro));
     $('#preco_venda_item').val(formatNumberInput(item.preco_venda_sugerido));
-    // Preencher campos de lote se existirem
+    if (itemCompraEhFracionado(item)) {
+        modoEntradaF7Compra = true;
+        const compraEmSalva = item.compra_em || 'Rolo';
+        if (TIPOS_COMPRA_EMBALAGEM.includes(compraEmSalva)) {
+            $('#compra_em_item').val(compraEmSalva);
+        } else {
+            $('#compra_em_item').html(
+                opcoesCompraEmbalagemHtml('Rolo') +
+                `<option value="${escapeHtml(compraEmSalva)}" selected>${escapeHtml(compraEmSalva)} (legado)</option>`
+            );
+        }
+        $('#quantidade_embalagens_item').val(item.quantidade_embalagens || 1);
+        $('#quantidade_por_embalagem_item').val(formatNumberInput(item.quantidade_por_embalagem || 0, 3));
+        $('#valor_total_fracionado_item').val(formatNumberInput(item.valor_total_embalagem || item.subtotal || 0, 2));
+    }
     $('#data_validade_item').val(item.data_validade || '');
     // Mostrar campos de lote se o produto controlar validade
     onProdutoSelecionado();
@@ -617,6 +1023,13 @@ function atualizarCamposValidadeCompra() {
 
 function onProdutoSelecionado() {
     atualizarCamposValidadeCompra();
+    atualizarPainelConversaoUnidadesCompra();
+    const produto = obterProdutoSelecionadoCompra();
+    if (produto && produtoUsaConversaoUnidadesCompra(produto)) {
+        $('#margem_padrao_item').val(produto.lucro_percentual || 30);
+        $('#quantidade_fiscal_item').val('');
+        $('#quantidade_nao_fiscal_item').val('');
+    }
 }
 
 function onFornecedorKeyDown(event) {
@@ -635,18 +1048,25 @@ function onProdutoInput() {
     if (!inputValue) {
         $('#produto_id_item').val('');
         atualizarCamposValidadeCompra();
+        atualizarPainelConversaoUnidadesCompra();
         return;
     }
     const produto = findProdutoByInput(inputValue);
     if (produto) {
         $('#produto_id_item').val(produto.id);
-        $('#preco_item').val(produto.preco_compra || '');
         $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-        calcularValorVendaItem();
+        if (!produtoUsaConversaoUnidadesCompra(produto)) {
+            $('#preco_item').val(produto.preco_compra || '');
+            calcularValorVendaItem();
+        } else {
+            $('#preco_item').val('');
+            $('#preco_venda_item').val('');
+        }
         onProdutoSelecionado();
     } else {
         $('#produto_id_item').val('');
         atualizarCamposValidadeCompra();
+        atualizarPainelConversaoUnidadesCompra();
     }
 }
 
@@ -662,23 +1082,30 @@ function onProdutoKeyDown(event) {
     }
 
     $('#produto_id_item').val(produto.id);
-    $('#preco_item').val(produto.preco_compra || '');
     $('#margem_padrao_item').val(produto.lucro_percentual || 30);
-    calcularValorVendaItem();
+    if (!produtoUsaConversaoUnidadesCompra(produto)) {
+        $('#preco_item').val(produto.preco_compra || '');
+        calcularValorVendaItem();
+    } else {
+        $('#preco_item').val('');
+        $('#preco_venda_item').val('');
+    }
     $('#codigo_barras_item').val(`${produto.codigo_barras || produto.codigo || ''} - ${produto.nome}`);
-    
-    // Chamar onProdutoSelecionado para mostrar campos de lote se necessário
+
     onProdutoSelecionado();
-    
-    // Se o produto controla validade, não adicionar automaticamente
-    // O usuário precisa preencher a data de validade manualmente
+
+    if (produtoUsaConversaoUnidadesCompra(produto)) {
+        $('#quantidade_embalagens_item').focus();
+        showNotification('Preencha a conversão de embalagem e a distribuição fiscal/não fiscal.', 'info');
+        return;
+    }
+
     if (Number(produto.controlar_validade || 0) === 1) {
         $('#data_validade_item').focus();
         showNotification('Preencha a data de validade e pressione ENTER novamente para adicionar.', 'info');
         return;
     }
-    
-    // Adicionar item automaticamente apenas para produtos sem controle de validade
+
     adicionarItemCompra();
 }
 
@@ -855,25 +1282,82 @@ function showCompraModal() {
                                 </div>
                             </div>
 
+                            <div id="painelConversaoEmbalagem" class="d-none mb-2">
+                                <div class="card border-info">
+                                    <div class="card-header bg-light py-2">
+                                        <strong>Motor de Conversão de Unidades</strong>
+                                        <small class="text-muted ms-2">Ex.: 10 Rolos × 50 MT = 500 MT</small>
+                                    </div>
+                                    <div class="card-body py-2">
+                                        <div class="row g-2 align-items-end">
+                                            <div class="col-md-2">
+                                                <label class="form-label">Compra em</label>
+                                                <select class="form-control" id="compra_em_item">
+                                                    ${opcoesCompraEmbalagemHtml('Rolo')}
+                                                </select>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Quantidade Comprada</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_embalagens_item" value="1" placeholder="Ex.: 10">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Quantidade por Embalagem</label>
+                                                <input type="number" step="0.001" min="0" class="form-control" id="quantidade_por_embalagem_item" value="" placeholder="Ex.: 50">
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Unidade de Venda</label>
+                                                <input type="text" class="form-control" id="unidade_fracionada_item" readonly>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Valor Total</label>
+                                                <input type="number" step="0.01" min="0" class="form-control" id="valor_total_fracionado_item" value="" placeholder="R$ total">
+                                            </div>
+                                        </div>
+                                        <hr class="my-2">
+                                        <div class="row g-2">
+                                            <div class="col-md-12 mb-1">
+                                                <span id="resultado_formula_conversao" class="text-primary small"></span>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <strong>Quantidade Total:</strong>
+                                                <span id="resultado_qtd_total_fracionado" class="ms-1">0,000 UN</span>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <strong>Custo Unitário:</strong>
+                                                <span id="resultado_custo_unitario_fracionado" class="ms-1">R$ 0,0000</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div id="painelIndicadorDistribuicaoFiscal" class="d-none mb-2">
+                                <div id="indicadorDistribuicaoFiscal" class="d-none"></div>
+                            </div>
+
                             <div class="row g-2 align-items-end mb-2" id="linhaQuantidadeCompra">
                                 <div class="col-md-2" id="campoQuantidadeSimplesCompra">
                                     <label class="form-label">Qtd</label>
                                     <input type="number" step="0.01" class="form-control" id="quantidade_item" value="1">
                                 </div>
                                 <div class="col-md-2 d-none" id="campoQuantidadeFiscalCompra">
-                                    <label class="form-label">Qtd Fiscal</label>
-                                    <input type="number" step="0.01" class="form-control" id="quantidade_fiscal_item" value="1">
+                                    <label class="form-label" id="labelQtdFiscalCompra">Fiscal</label>
+                                    <input type="number" step="0.001" min="0" class="form-control" id="quantidade_fiscal_item" value="" placeholder="Ex.: 300">
                                 </div>
                                 <div class="col-md-2 d-none" id="campoQuantidadeNaoFiscalCompra">
-                                    <label class="form-label">Qtd Não Fiscal</label>
-                                    <input type="number" step="0.01" class="form-control" id="quantidade_nao_fiscal_item" value="0">
+                                    <label class="form-label" id="labelQtdNaoFiscalCompra">Não Fiscal</label>
+                                    <input type="number" step="0.001" min="0" class="form-control" id="quantidade_nao_fiscal_item" value="" placeholder="Ex.: 200">
                                 </div>
                             </div>
 
-                            <div class="row g-2 align-items-end mb-2">
-                                <div class="col-md-2">
-                                    <label class="form-label">Preço compra</label>
-                                    <input type="number" step="0.01" class="form-control" id="preco_item" oninput="calcularValorVendaItem()">
+                            <div class="row g-2 align-items-end mb-2" id="linhaPrecoCompraNormal">
+                                <div class="col-md-2 campo-preco-compra-item">
+                                    <label class="form-label">Preço compra (unidade)</label>
+                                    <input type="number" step="0.0001" class="form-control" id="preco_item" oninput="calcularValorVendaItem()">
+                                </div>
+                                <div class="col-md-2 d-none" id="campoCustoUnitarioFracionado">
+                                    <label class="form-label">Custo unitário (calculado)</label>
+                                    <input type="text" class="form-control" id="custo_unitario_fracionado_item" readonly>
                                 </div>
                                 <div class="col-md-2">
                                     <label class="form-label">Margem %</label>
@@ -891,7 +1375,7 @@ function showCompraModal() {
                             <div class="row g-2 mb-2">
                                 <div class="col-12">
                                     <small id="indicadorModoF7Compra" class="text-primary fw-semibold d-none"></small>
-                                    <small class="text-muted">Pressione <strong>F7</strong> para alternar entre Qtd única e Qtd Fiscal / Não Fiscal.</small>
+                                    <small id="hintTeclaF7Compra" class="text-muted">Pressione <strong>F7</strong> para alternar entre Qtd única e Qtd Fiscal / Não Fiscal.</small>
                                 </div>
                             </div>
                         </div>
@@ -1016,6 +1500,16 @@ function showCompraModal() {
     });
     atualizarCamposQuantidadeCompra();
     atualizarCamposValidadeCompra();
+    atualizarPainelConversaoUnidadesCompra();
+    $('#quantidade_embalagens_item, #quantidade_por_embalagem_item, #valor_total_fracionado_item')
+        .off('input.fracionado')
+        .on('input.fracionado', calcularConversaoEmbalagemCompra);
+    $('#compra_em_item')
+        .off('change.fracionado')
+        .on('change.fracionado', calcularConversaoEmbalagemCompra);
+    $('#quantidade_fiscal_item, #quantidade_nao_fiscal_item')
+        .off('input.distribuicao')
+        .on('input.distribuicao', () => atualizarIndicadorDistribuicaoFiscal());
     renderItensCompraTabela();
     atualizarVisibilidadePagamentoCompra();
     recalcularTotaisCompraNota();
@@ -1027,6 +1521,25 @@ function saveCompra() {
     if (!isNotaAvulsa && !itensCompraAtual.length) {
         showNotification('Adicione ao menos um item.', 'warning');
         return;
+    }
+
+    if (!isNotaAvulsa) {
+        for (const item of itensCompraAtual) {
+            if (!itemCompraEhFracionado(item)) continue;
+            const totalConvertido = Number(item.peso_total_compra || 0)
+                || (Number(item.quantidade_embalagens || 0) * Number(item.quantidade_por_embalagem || 0))
+                || Number(item.quantidade || 0);
+            const validacao = validarDistribuicaoFiscalCompra(
+                item.quantidade_fiscal,
+                item.quantidade_nao_fiscal,
+                totalConvertido,
+                String(item.unidade || '').toUpperCase()
+            );
+            if (!validacao.ok) {
+                showNotification(validacao.mensagem, 'warning');
+                return;
+            }
+        }
     }
 
     const total = Number($('#valor_total_nota').val()) || (isNotaAvulsa ? 0 : itensCompraAtual.reduce((sum, item) => sum + Number(item.subtotal || 0), 0));
@@ -1073,25 +1586,36 @@ function saveCompra() {
         valor_outras_despesas: Number($('#valor_outras_despesas').val()) || 0,
         valor_total_nota: Number($('#valor_total_nota').val()) || 0,
         total,
-        itens: isNotaAvulsa ? [] : itensCompraAtual.map(item => ({
-            produto_id: item.produto_id || null,
-            produto_nome: item.produto_nome,
-            codigo_barras: item.codigo_barras,
-            unidade: item.unidade,
-            ncm: item.ncm,
-            quantidade: Number(item.quantidade || 0),
-            quantidade_fiscal: Number(item.quantidade_fiscal ?? item.quantidade ?? 0),
-            quantidade_nao_fiscal: Number(item.quantidade_nao_fiscal || 0),
-            preco_unitario: Number(item.preco_unitario || 0),
-            margem_lucro: Number(item.margem_lucro || 0),
-            preco_venda_sugerido: Number(item.preco_venda_sugerido || 0),
-            subtotal: Number(item.subtotal || 0),
-            data_validade: item.data_validade || null,
-            vendido_por_peso: Number(item.vendido_por_peso || 0),
-            peso_total_compra: Number(item.peso_total_compra || item.quantidade || 0),
-            custo_por_kg: Number(item.custo_por_kg || item.preco_unitario || 0),
-            atualizar_preco_venda: Number(item.atualizar_preco_venda ?? 1)
-        })),
+        itens: isNotaAvulsa ? [] : itensCompraAtual.map((item) => {
+            const sincronizado = sincronizarQuantidadesEstoqueItemCompra(
+                sincronizarPrecosCadastroItemCompra({ ...item })
+            );
+            return {
+            produto_id: sincronizado.produto_id || null,
+            produto_nome: sincronizado.produto_nome,
+            codigo_barras: sincronizado.codigo_barras,
+            unidade: sincronizado.unidade,
+            ncm: sincronizado.ncm,
+            quantidade: Number(sincronizado.quantidade || 0),
+            quantidade_fiscal: Number(sincronizado.quantidade_fiscal ?? sincronizado.quantidade ?? 0),
+            quantidade_nao_fiscal: Number(sincronizado.quantidade_nao_fiscal || 0),
+            preco_unitario: Number(sincronizado.preco_unitario || 0),
+            margem_lucro: Number(sincronizado.margem_lucro || 0),
+            preco_venda_sugerido: Number(sincronizado.preco_venda_sugerido || 0),
+            subtotal: Number(sincronizado.subtotal || 0),
+            data_validade: sincronizado.data_validade || null,
+            produto_fracionado: itemCompraEhFracionado(sincronizado) ? 1 : 0,
+            vendido_por_peso: itemCompraEhFracionado(sincronizado) ? 1 : 0,
+            peso_total_compra: Number(sincronizado.peso_total_compra || sincronizado.quantidade || 0),
+            custo_por_kg: Number(sincronizado.custo_por_kg || sincronizado.preco_unitario || 0),
+            custo_unitario_final: Number(sincronizado.custo_unitario_final || sincronizado.preco_unitario || 0),
+            compra_em: sincronizado.compra_em || '',
+            quantidade_embalagens: Number(sincronizado.quantidade_embalagens || 0),
+            quantidade_por_embalagem: Number(sincronizado.quantidade_por_embalagem || 0),
+            valor_total_embalagem: Number(sincronizado.valor_total_embalagem || sincronizado.subtotal || 0),
+            atualizar_preco_venda: Number(sincronizado.atualizar_preco_venda ?? 1)
+        };
+        }),
         condicao_pagamento: condicaoPagamento,
         forma_pagamento: $('#forma_pagamento').val(),
         data_vencimento: $('#data_vencimento').val(),

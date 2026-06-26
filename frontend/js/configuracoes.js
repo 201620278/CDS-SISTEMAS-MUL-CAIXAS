@@ -513,12 +513,23 @@ function aplicarEstadoConfiguracaoRede() {
     aplicarEstadoBotaoVoltarLocal();
 }
 
-function estaEmModoClienteRemotoElectron() {
-    return Boolean(
-        window.electronAPI
-        && typeof window.electronAPI.estaEmModoClienteRemoto === 'function'
-        && window.electronAPI.estaEmModoClienteRemoto()
-    );
+async function estaEmModoClienteRemotoElectron() {
+    if (!window.electronAPI || typeof window.electronAPI.estaEmModoClienteRemoto !== 'function') {
+        return false;
+    }
+
+    try {
+        return Boolean(await window.electronAPI.estaEmModoClienteRemoto());
+    } catch (error) {
+        console.error('Erro ao verificar modo cliente remoto:', error);
+        return false;
+    }
+}
+
+async function estacaoConectadaServidorRemoto() {
+    const estacao = await obterEstadoRedeEstacaoLocal();
+    const runtimeCliente = await estaEmModoClienteRemotoElectron();
+    return runtimeCliente || estacao.modo === 'cliente';
 }
 
 async function obterEstadoRedeEstacaoLocal() {
@@ -543,7 +554,7 @@ async function aplicarEstadoBotaoVoltarLocal() {
     }
 
     const estacao = await obterEstadoRedeEstacaoLocal();
-    const modoCliente = estacao.modo === 'cliente' || estaEmModoClienteRemotoElectron();
+    const modoCliente = await estacaoConectadaServidorRemoto();
     const destinoRemoto = estacao.ipServidor
         ? `${estacao.ipServidor}:${estacao.porta || 3001}`
         : (typeof window.electronAPI.obterServidorRemoto === 'function'
@@ -1955,8 +1966,9 @@ function loadConfiguracoesAvancadas() {
         headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        success: function(config) {
+        success: async function(config) {
             renderConfiguracoesAvancadas(config || {});
+            await sincronizarRedeEstacaoConfigAvancadas();
         },
         error: function(xhr) {
             const msg = xhr.responseJSON?.error || 'Erro ao carregar configurações avançadas.';
@@ -1966,6 +1978,7 @@ function loadConfiguracoesAvancadas() {
 }
 
 function renderConfiguracoesAvancadas(config) {
+    window.configuracaoAvancadaServidor = config || {};
     const tipo = String(config.tipoImplantacao || 'ERP_SEM_FISCAL').toUpperCase();
     const modo = String(config.modoOperacao || 'LOCAL').toUpperCase();
     const modoConfirmacaoFiscal = String(config.modo_confirmacao_fiscal || 'TEF').toUpperCase();
@@ -2012,6 +2025,7 @@ function renderConfiguracoesAvancadas(config) {
                     <hr>
 
                     <h6 class="fw-bold text-uppercase">Configuração de Rede</h6>
+                    <div id="bannerEstacaoClienteRemoto"></div>
                     <p class="text-muted small mb-2">Modo de Operação</p>
                     <div class="mb-3">
                         <div class="form-check">
@@ -2244,6 +2258,48 @@ function aplicarEstadoFormConfigAvancadas() {
     carregarConfigFiscalAvancadas();
 }
 
+async function sincronizarRedeEstacaoConfigAvancadas() {
+    const temElectron = Boolean(window.electronAPI?.obterModoEstacao);
+    if (!temElectron) {
+        return;
+    }
+
+    const modoCliente = await estacaoConectadaServidorRemoto();
+    if (!modoCliente) {
+        $('#bannerEstacaoClienteRemoto').empty();
+        $('input[name="modoOperacao"]').prop('disabled', false);
+        $('#cfgIpServidor, #cfgPorta').prop('readonly', false);
+        await aplicarEstadoBotaoVoltarLocal();
+        return;
+    }
+
+    const estacao = await obterEstadoRedeEstacaoLocal();
+    const destino = estacao.ipServidor
+        ? `${estacao.ipServidor}:${estacao.porta || 3001}`
+        : (typeof window.electronAPI.obterServidorRemoto === 'function'
+            ? (window.electronAPI.obterServidorRemoto() || '-')
+            : '-');
+
+    $('#bannerEstacaoClienteRemoto').html(`
+        <div class="alert alert-info mb-3">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div>
+                    <strong><i class="fas fa-plug"></i> Esta estação está conectada ao servidor remoto</strong>
+                    <div class="small mb-0 mt-1">Destino: <strong>${escapeHtml(destino)}</strong></div>
+                    <div class="small text-muted mb-0">O modo abaixo é do servidor remoto. Para desconectar este terminal, use o botão ao lado.</div>
+                </div>
+                <button type="button" class="btn btn-primary btn-sm" onclick="voltarServidorLocalEstacao()">
+                    <i class="fas fa-home"></i> Voltar ao servidor local
+                </button>
+            </div>
+        </div>
+    `);
+
+    $('input[name="modoOperacao"]').prop('disabled', true);
+    $('#cfgIpServidor, #cfgPorta').prop('readonly', true);
+    await aplicarEstadoBotaoVoltarLocal();
+}
+
 async function salvarConfiguracoesAvancadas() {
     if (!isSuperAdminUser()) {
         showNotification('Acesso negado.', 'danger');
@@ -2255,31 +2311,41 @@ async function salvarConfiguracoesAvancadas() {
     const modoConfirmacaoFiscal = String($('input[name="modoConfirmacaoFiscal"]:checked').val() || 'TEF').toUpperCase();
     const ipServidor = $('#cfgIpServidor').val().trim();
     const porta = Number($('#cfgPorta').val()) || 3001;
+    const estacaoCliente = await estacaoConectadaServidorRemoto();
 
-    if (modoOperacao === 'CLIENTE_SERVIDOR' && !ipServidor) {
-        showNotification('Informe o IP do servidor para o modo Cliente/Servidor.', 'warning');
-        return;
-    }
+    if (!estacaoCliente) {
+        if (modoOperacao === 'CLIENTE_SERVIDOR' && !ipServidor) {
+            showNotification('Informe o IP do servidor para o modo Cliente/Servidor.', 'warning');
+            return;
+        }
 
-    if (modoOperacao === 'CLIENTE_SERVIDOR' && (!Number.isInteger(porta) || porta <= 0)) {
-        showNotification('Informe uma porta válida.', 'warning');
-        return;
+        if (modoOperacao === 'CLIENTE_SERVIDOR' && (!Number.isInteger(porta) || porta <= 0)) {
+            showNotification('Informe uma porta válida.', 'warning');
+            return;
+        }
     }
 
     try {
+        const servidorAtual = window.configuracaoAvancadaServidor || {};
+        const body = {
+            tipoImplantacao,
+            modo_confirmacao_fiscal: modoConfirmacaoFiscal,
+            porta,
+            modoOperacao: estacaoCliente
+                ? String(servidorAtual.modoOperacao || 'LOCAL').toUpperCase()
+                : modoOperacao,
+            ipServidor: estacaoCliente
+                ? String(servidorAtual.ipServidor || '')
+                : (modoOperacao === 'CLIENTE_SERVIDOR' ? ipServidor : '')
+        };
+
         const response = await fetch(`${API_URL}/configuracoes-avancadas`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${localStorage.getItem('token')}`
             },
-            body: JSON.stringify({
-                tipoImplantacao,
-                modoOperacao,
-                modo_confirmacao_fiscal: modoConfirmacaoFiscal,
-                ipServidor: modoOperacao === 'CLIENTE_SERVIDOR' ? ipServidor : '',
-                porta
-            })
+            body: JSON.stringify(body)
         });
 
         const data = await response.json().catch(() => ({}));

@@ -12,11 +12,206 @@ function normalizarProduto(produto, categorias = window.categoriasSistema || [])
     const subcategoriaId = String(produto.subcategoria_id || produto.subcategoriaId || '');
     const categoriaObj = categorias.find(c => String(c.id) === categoriaId);
     const subcategoriaObj = categoriaObj && categoriaObj.subcategorias ? categoriaObj.subcategorias.find(s => String(s.id) === subcategoriaId) : null;
+    const flagFracionado = Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) ? 1 : 0;
     return {
         ...produto,
+        produto_fracionado: flagFracionado,
         categoria: produto.categoria || produto.categoria_nome || (categoriaObj ? categoriaObj.nome : ''),
         subcategoria: produto.subcategoria || produto.subcategoria_nome || (subcategoriaObj ? subcategoriaObj.nome : '')
     };
+}
+
+function produtoUsaConversaoUnidades(produto) {
+    if (!produto) return false;
+    return Number(produto.produto_fracionado ?? produto.vendido_por_peso ?? 0) === 1;
+}
+
+/** @deprecated Alias legado — use produtoUsaConversaoUnidades */
+function produtoEhFracionado(produto) {
+    return produtoUsaConversaoUnidades(produto);
+}
+
+const UNIDADES_VENDA_CONVERSAO = new Set(['kg', 'g', 'l', 'ml', 'mt', 'm2', 'm3']);
+
+function unidadeVendaSuportaConversao(unidade) {
+    return UNIDADES_VENDA_CONVERSAO.has(String(unidade || '').toLowerCase());
+}
+
+function produtoCadastroUsaConversaoUnidades() {
+    return $('#produto_fracionado').is(':checked');
+}
+
+function obterStepEstoqueProduto(unidade, usaConversao = false) {
+    const unidadeNorm = String(unidade || '').toLowerCase();
+    if (usaConversao || unidadeVendaSuportaConversao(unidadeNorm)) {
+        return '0.001';
+    }
+    return '0.01';
+}
+
+function formatarCustoUnitarioCadastro(valor, usaConversao = false) {
+    const numero = Number(valor || 0);
+    if (!Number.isFinite(numero)) return usaConversao ? '0.0000' : '0';
+    return usaConversao ? numero.toFixed(4) : String(numero);
+}
+
+function custoUnitarioVendaCadastro(valor) {
+    const numero = Number(valor || 0);
+    return Number.isFinite(numero) ? Math.round(numero * 10000) / 10000 : 0;
+}
+
+function resolverCustoUnitarioProdutoCadastro(produto = {}) {
+    if (!produtoUsaConversaoUnidades(produto)) {
+        return custoUnitarioVendaCadastro(produto.preco_compra);
+    }
+
+    const pesoTotal = Number(produto.peso_total_compra || 0);
+    const valorTotal = Number(produto.valor_total_compra || 0);
+    const custoLegado = Number(produto.custo_por_kg || 0);
+    const precoCompra = Number(produto.preco_compra || 0);
+
+    let unitarioReferencia = 0;
+    if (pesoTotal > 0 && valorTotal > 0) {
+        unitarioReferencia = custoUnitarioVendaCadastro(valorTotal / pesoTotal);
+    } else if (pesoTotal > 1 && precoCompra > 0) {
+        unitarioReferencia = custoUnitarioVendaCadastro(precoCompra / pesoTotal);
+    }
+
+    if (custoLegado > 0) {
+        const pareceEmbalagem = precoCompra <= 0
+            || (valorTotal > 0 && Math.abs(precoCompra - valorTotal) < 0.02)
+            || (unitarioReferencia > 0 && precoCompra >= unitarioReferencia * 3);
+        if (pareceEmbalagem && custoLegado < precoCompra) {
+            return custoUnitarioVendaCadastro(custoLegado);
+        }
+    }
+
+    if (unitarioReferencia > 0) {
+        const pareceEmbalagem = precoCompra <= 0
+            || (valorTotal > 0 && Math.abs(precoCompra - valorTotal) < 0.02)
+            || precoCompra >= unitarioReferencia * 3;
+        if (pareceEmbalagem) {
+            return unitarioReferencia;
+        }
+    }
+
+    return custoUnitarioVendaCadastro(precoCompra);
+}
+
+function parseNumeroCadastro(valor) {
+    if (valor === null || valor === undefined) return 0;
+    let texto = String(valor).trim();
+    if (!texto) return 0;
+    if (texto.includes(',') && texto.includes('.')) {
+        texto = texto.replace(/\./g, '').replace(',', '.');
+    } else if (texto.includes(',')) {
+        texto = texto.replace(',', '.');
+    }
+    const numero = parseFloat(texto);
+    return Number.isFinite(numero) ? numero : 0;
+}
+
+function calcularCustoUnitarioReferenciaCadastro() {
+    if (!produtoCadastroUsaConversaoUnidades()) return;
+
+    const valor = parseNumeroCadastro($('#cadastro_valor_total_referencia').val());
+    const qtd = parseNumeroCadastro($('#cadastro_quantidade_total_referencia').val());
+    const unidade = String($('#unidade').val() || 'un').toUpperCase();
+
+    if (valor > 0 && qtd > 0) {
+        const custo = custoUnitarioVendaCadastro(valor / qtd);
+        $('#preco_compra').val(formatarCustoUnitarioCadastro(custo, true));
+        const qtdFmt = Number.isInteger(qtd) ? String(qtd) : qtd.toFixed(3).replace(/\.?0+$/, '');
+        $('#formula_custo_unitario_cadastro').text(
+            `R$ ${valor.toFixed(2).replace('.', ',')} ÷ ${qtdFmt} ${unidade} = R$ ${formatarCustoUnitarioCadastro(custo, true)}/${unidade}`
+        );
+        if (typeof sincronizarFormacaoPrecoProduto === 'function') {
+            sincronizarFormacaoPrecoProduto('compra');
+        }
+    } else {
+        $('#formula_custo_unitario_cadastro').text('—');
+        $('#preco_compra').val('');
+    }
+}
+
+function sincronizarQuantidadeTotalReferenciaCadastro() {
+    if (!produtoCadastroUsaConversaoUnidades()) return;
+
+    const saldos = obterSaldosIniciaisDoFormulario();
+    const total = Number(saldos.estoque_total || 0);
+    const $qtd = $('#cadastro_quantidade_total_referencia');
+
+    if (!$qtd.length) return;
+
+    if (total > 0) {
+        const casas = total % 1 === 0 ? 0 : 3;
+        $qtd.val(casas === 0 ? total : total.toFixed(casas)).prop('readonly', true).addClass('bg-light');
+    } else {
+        $qtd.prop('readonly', false).removeClass('bg-light');
+    }
+
+    calcularCustoUnitarioReferenciaCadastro();
+}
+
+function aplicarModoConversaoUnidadesCadastro() {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) return;
+
+    const ativo = produtoCadastroUsaConversaoUnidades();
+    const unidade = ($('#unidade').val() || '').toLowerCase();
+    const stepEstoque = obterStepEstoqueProduto(unidade, ativo);
+
+    $('#painelInfoConversaoUnidadesCadastro').toggleClass('d-none', !ativo);
+    $('#painelCalcularCustoUnitarioCadastro').toggleClass('d-none', !ativo);
+    $('#label_unidade_produto').text(ativo ? 'Unidade de Venda *' : 'Unidade');
+    $('#label_preco_compra_produto').text(
+        ativo ? 'Custo por Unidade de Venda (calculado)' : 'Preço de Compra'
+    );
+    $('#hint_preco_compra_produto').toggleClass('d-none', !ativo);
+    $('#avisoUnidadeConversaoCadastro').toggleClass(
+        'd-none',
+        !ativo || unidadeVendaSuportaConversao(unidade)
+    );
+
+    $('#preco_compra')
+        .attr('step', ativo ? '0.0001' : '0.01')
+        .prop('readonly', ativo)
+        .toggleClass('bg-light', ativo);
+    $('#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial, #estoque_minimo').attr('step', stepEstoque);
+
+    if (typeof atualizarPreviewEstoqueTotalInicial === 'function') {
+        atualizarPreviewEstoqueTotalInicial();
+    }
+
+    if (ativo) {
+        sincronizarQuantidadeTotalReferenciaCadastro();
+    }
+}
+
+function inicializarMotorConversaoUnidadesCadastro() {
+    const $modal = $('#produtoModal');
+    if (!$modal.length) return;
+
+    $modal
+        .off('change.motorConversaoUnidades input.motorConversaoUnidades')
+        .on(
+            'change.motorConversaoUnidades input.motorConversaoUnidades',
+            '#produto_fracionado, #unidade, #cadastro_valor_total_referencia, #saldo_fiscal_inicial, #saldo_nao_fiscal_inicial',
+            function onMotorConversaoCadastro() {
+                if ($(this).is('#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial')) {
+                    if (typeof atualizarPreviewEstoqueTotalInicial === 'function') {
+                        atualizarPreviewEstoqueTotalInicial();
+                    }
+                    return;
+                }
+                aplicarModoConversaoUnidadesCadastro();
+                if ($(this).is('#cadastro_valor_total_referencia, #unidade')) {
+                    calcularCustoUnitarioReferenciaCadastro();
+                }
+            }
+        );
+
+    aplicarModoConversaoUnidadesCadastro();
 }
 // Função global para minimizar modais Bootstrap
 window.minimizarModal = function(modalId) {
@@ -91,10 +286,11 @@ function tituloColunaEstoqueLista() {
 
 function formatarEstoqueDetalheProduto(produto) {
     const unidade = produto.unidade || '';
+    const opcoesFormato = { produtoFracionado: produtoUsaConversaoUnidades(produto) };
 
     if (typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo()) {
         const fiscal = Number(produto.saldo_fiscal ?? 0);
-        return `<p><strong>Estoque Fiscal:</strong> ${formatarEstoqueProduto(fiscal, unidade)}</p>`;
+        return `<p><strong>Estoque Fiscal:</strong> ${formatarEstoqueProduto(fiscal, unidade, opcoesFormato)}</p>`;
     }
 
     const fiscal = Number(produto.saldo_fiscal ?? 0);
@@ -102,9 +298,9 @@ function formatarEstoqueDetalheProduto(produto) {
     const total = Number(produto.estoque_atual ?? (fiscal + naoFiscal));
 
     return `
-        <p><strong>Estoque Fiscal:</strong> ${formatarEstoqueProduto(fiscal, unidade)}</p>
-        <p><strong>Estoque Não Fiscal:</strong> ${formatarEstoqueProduto(naoFiscal, unidade)}</p>
-        <p><strong>Estoque Total:</strong> ${formatarEstoqueProduto(total, unidade)}</p>
+        <p><strong>Estoque Fiscal:</strong> ${formatarEstoqueProduto(fiscal, unidade, opcoesFormato)}</p>
+        <p><strong>Estoque Não Fiscal:</strong> ${formatarEstoqueProduto(naoFiscal, unidade, opcoesFormato)}</p>
+        <p><strong>Estoque Total:</strong> ${formatarEstoqueProduto(total, unidade, opcoesFormato)}</p>
     `;
 }
 
@@ -154,6 +350,8 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
     const saldoNaoFiscal = Number(produto?.saldo_nao_fiscal ?? 0);
     const estoqueTotal = Number(produto?.estoque_atual ?? (saldoFiscal + saldoNaoFiscal));
     const unidade = produto?.unidade || '';
+    const usaConversao = produtoEhFracionado(produto);
+    const stepEstoque = obterStepEstoqueProduto(unidade, usaConversao);
 
     if (permiteEditarSaldos) {
         if (modoFiscal) {
@@ -162,7 +360,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                     <label for="saldo_fiscal_inicial" class="form-label">Estoque Fiscal Inicial</label>
                     <input
                         type="number"
-                        step="0.01"
+                        step="${stepEstoque}"
                         min="0"
                         class="form-control"
                         id="saldo_fiscal_inicial"
@@ -178,7 +376,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                 <label for="saldo_fiscal_inicial" class="form-label">Estoque Fiscal Inicial</label>
                 <input
                     type="number"
-                    step="0.01"
+                    step="${stepEstoque}"
                     min="0"
                     class="form-control"
                     id="saldo_fiscal_inicial"
@@ -189,7 +387,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                 <label for="saldo_nao_fiscal_inicial" class="form-label">Estoque Não Fiscal Inicial</label>
                 <input
                     type="number"
-                    step="0.01"
+                    step="${stepEstoque}"
                     min="0"
                     class="form-control"
                     id="saldo_nao_fiscal_inicial"
@@ -203,7 +401,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                     class="form-control bg-light"
                     id="estoque_total_inicial_preview"
                     readonly
-                    value="${formatarEstoqueProduto(estoqueTotal, unidade)}"
+                    value="${formatarEstoqueProduto(estoqueTotal, unidade, { produtoFracionado: usaConversao })}"
                 >
             </div>
         `;
@@ -221,7 +419,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                     type="text"
                     class="form-control bg-light"
                     readonly
-                    value="${formatarEstoqueProduto(saldoFiscal, unidade)}"
+                    value="${formatarEstoqueProduto(saldoFiscal, unidade, { produtoFracionado: usaConversao })}"
                 >
                 ${avisoAjuste}
             </div>
@@ -235,7 +433,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                 type="text"
                 class="form-control bg-light"
                 readonly
-                value="${formatarEstoqueProduto(saldoFiscal, unidade)}"
+                value="${formatarEstoqueProduto(saldoFiscal, unidade, { produtoFracionado: usaConversao })}"
             >
         </div>
         <div class="col-md-4 mb-3">
@@ -244,7 +442,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                 type="text"
                 class="form-control bg-light"
                 readonly
-                value="${formatarEstoqueProduto(saldoNaoFiscal, unidade)}"
+                value="${formatarEstoqueProduto(saldoNaoFiscal, unidade, { produtoFracionado: usaConversao })}"
             >
         </div>
         <div class="col-md-4 mb-3">
@@ -253,7 +451,7 @@ function montarHtmlCamposEstoqueProduto(produto, isEdit, opcoes = {}) {
                 type="text"
                 class="form-control bg-light"
                 readonly
-                value="${formatarEstoqueProduto(estoqueTotal, unidade)}"
+                value="${formatarEstoqueProduto(estoqueTotal, unidade, { produtoFracionado: usaConversao })}"
             >
             ${avisoAjuste}
         </div>
@@ -313,7 +511,12 @@ function atualizarPreviewEstoqueTotalInicial() {
 
     const saldos = obterSaldosIniciaisDoFormulario();
     const unidade = $('#unidade').val() || 'un';
-    $preview.val(formatarEstoqueProduto(saldos.estoque_total, unidade));
+    const opcoesFormato = { produtoFracionado: produtoCadastroUsaConversaoUnidades() };
+    $preview.val(formatarEstoqueProduto(saldos.estoque_total, unidade, opcoesFormato));
+
+    if (produtoCadastroUsaConversaoUnidades()) {
+        sincronizarQuantidadeTotalReferenciaCadastro();
+    }
 }
 
 function inicializarPreviewEstoqueTotalInicial() {
@@ -325,7 +528,7 @@ function inicializarPreviewEstoqueTotalInicial() {
     $modal.off('input.previewEstoqueTotal change.previewEstoqueTotal')
         .on(
             'input.previewEstoqueTotal change.previewEstoqueTotal',
-            '#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial, #unidade',
+            '#saldo_fiscal_inicial, #saldo_nao_fiscal_inicial, #unidade, #produto_fracionado',
             atualizarPreviewEstoqueTotalInicial
         );
 
@@ -338,14 +541,15 @@ function formatarEstoqueExibicaoTela(produto) {
     const valor = typeof obterEstoqueExibicaoSimplesProduto === 'function'
         ? obterEstoqueExibicaoSimplesProduto(produto)
         : Number(produto?.estoque_atual || 0);
-    return formatarEstoqueProduto(valor, unidade);
+    return formatarEstoqueProduto(valor, unidade, { produtoFracionado: produtoUsaConversaoUnidades(produto) });
 }
 
 function formatarColunaEstoqueLista(p) {
     const unidade = p.unidade || '';
+    const opcoesFormato = { produtoFracionado: produtoUsaConversaoUnidades(p) };
 
     if (typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo()) {
-        return formatarEstoqueProduto(Number(p.saldo_fiscal ?? 0), unidade);
+        return formatarEstoqueProduto(Number(p.saldo_fiscal ?? 0), unidade, opcoesFormato);
     }
 
     const fiscal = Number(p.saldo_fiscal ?? 0);
@@ -353,9 +557,9 @@ function formatarColunaEstoqueLista(p) {
     const total = Number(p.estoque_atual ?? (fiscal + naoFiscal));
 
     return `
-        <div class="small">Fiscal: ${formatarEstoqueProduto(fiscal, unidade)}</div>
-        <div class="small">Não Fiscal: ${formatarEstoqueProduto(naoFiscal, unidade)}</div>
-        <div class="fw-semibold">Total: ${formatarEstoqueProduto(total, unidade)}</div>
+        <div class="small">Fiscal: ${formatarEstoqueProduto(fiscal, unidade, opcoesFormato)}</div>
+        <div class="small">Não Fiscal: ${formatarEstoqueProduto(naoFiscal, unidade, opcoesFormato)}</div>
+        <div class="fw-semibold">Total: ${formatarEstoqueProduto(total, unidade, opcoesFormato)}</div>
     `;
 }
 
@@ -1200,7 +1404,38 @@ function renderProdutosRows(produtos) {
 function showProdutoModal(produto = null) {
     const isEdit = produto !== null;
     const title = isEdit ? 'Editar Produto' : 'Novo Produto';
-    const lucro = isEdit && produto.lucro_percentual !== undefined ? produto.lucro_percentual : '';
+    const lucro = (() => {
+        if (!isEdit || !produto) return '';
+        if (produto.lucro_percentual !== undefined && produto.lucro_percentual !== null && produto.lucro_percentual !== '') {
+            return produto.lucro_percentual;
+        }
+        const precoCompra = isEdit && produtoEhFracionado(produto)
+            ? resolverCustoUnitarioProdutoCadastro(produto)
+            : Number(produto.preco_compra || 0);
+        const precoVenda = Number(produto.preco_venda || 0);
+        if (precoCompra > 0 && precoVenda > 0) {
+            return Number((((precoVenda - precoCompra) / precoCompra) * 100).toFixed(2));
+        }
+        return '';
+    })();
+    const usaConversaoInicial = isEdit && produtoEhFracionado(produto);
+    const custoUnitarioInicial = isEdit && usaConversaoInicial
+        ? resolverCustoUnitarioProdutoCadastro(produto)
+        : Number(isEdit ? produto.preco_compra : 0);
+    const precoCompraInicial = isEdit
+        ? formatarCustoUnitarioCadastro(custoUnitarioInicial, usaConversaoInicial)
+        : '0';
+    const refValorInicial = isEdit && usaConversaoInicial
+        ? (Number(produto.valor_total_compra || 0) > 0
+            ? Number(produto.valor_total_compra)
+            : (Math.abs(Number(produto.preco_compra || 0) - custoUnitarioInicial) > 0.01
+                ? Number(produto.preco_compra || 0)
+                : ''))
+        : '';
+    const refQtdInicial = isEdit && usaConversaoInicial
+        ? (Number(produto.saldo_fiscal || 0) + Number(produto.saldo_nao_fiscal || 0))
+            || Number(produto.peso_total_compra || 0)
+        : '';
 
     // Remove modais antigos para evitar conflitos de aria-hidden e IDs duplicados
     $('#produtoModal').remove();
@@ -1260,13 +1495,16 @@ function showProdutoModal(produto = null) {
                                 </div>
 
                                 <div class="col-md-6 mb-3">
-                                    <label for="unidade" class="form-label">Unidade</label>
+                                    <label for="unidade" class="form-label" id="label_unidade_produto">Unidade</label>
                                     <select class="form-control" id="unidade">
                                         <option value="un" ${isEdit && produto.unidade === 'un' ? 'selected' : ''}>Unidade</option>
                                         <option value="kg" ${isEdit && produto.unidade === 'kg' ? 'selected' : ''}>Quilograma</option>
                                         <option value="g" ${isEdit && produto.unidade === 'g' ? 'selected' : ''}>Grama</option>
                                         <option value="l" ${isEdit && produto.unidade === 'l' ? 'selected' : ''}>Litro</option>
                                         <option value="ml" ${isEdit && produto.unidade === 'ml' ? 'selected' : ''}>Mililitro</option>
+                                        <option value="mt" ${isEdit && produto.unidade === 'mt' ? 'selected' : ''}>Metro</option>
+                                        <option value="m2" ${isEdit && produto.unidade === 'm2' ? 'selected' : ''}>Metro Quadrado</option>
+                                        <option value="m3" ${isEdit && produto.unidade === 'm3' ? 'selected' : ''}>Metro Cúbico</option>
                                     </select>
                                 </div>
 
@@ -1275,54 +1513,65 @@ function showProdutoModal(produto = null) {
                                         <input
                                             class="form-check-input"
                                             type="checkbox"
-                                            id="vendido_por_peso"
-                                            ${isEdit && Number(produto.vendido_por_peso || 0) === 1 ? 'checked' : ''}
+                                            id="produto_fracionado"
+                                            ${isEdit && produtoEhFracionado(produto) ? 'checked' : ''}
                                         >
-                                        <label class="form-check-label" for="vendido_por_peso">
-                                            Produto vendido por peso
+                                        <label class="form-check-label" for="produto_fracionado">
+                                            Produto Fracionado
                                         </label>
                                     </div>
                                 </div>
 
-                                <div class="col-12" id="areaProdutoPeso" style="display:none;">
-                                    <div class="card border-primary mb-3">
-                                        <div class="card-header bg-light">
-                                            <strong>Configuração de venda por peso</strong>
-                                        </div>
-                                        <div class="card-body">
-                                            <div class="row">
-                                                <div class="col-md-4 mb-3">
-                                                    <label for="peso_total_compra" class="form-label">Peso Total Comprado (KG)</label>
+                                <div class="col-12 d-none" id="painelInfoConversaoUnidadesCadastro">
+                                    <div class="alert alert-info py-2 mb-2">
+                                        <strong>Motor de Conversão de Unidades</strong>
+                                        <small class="d-block mt-1">
+                                            Informe o <strong>valor total pago</strong> e a <strong>quantidade convertida</strong>.
+                                            O sistema calcula automaticamente o custo por unidade de venda.
+                                        </small>
+                                        <small class="text-warning d-none mt-1" id="avisoUnidadeConversaoCadastro">
+                                            Selecione uma unidade fracionável (KG, MT, LT, M², M³, etc.).
+                                        </small>
+                                    </div>
+                                </div>
+
+                                <div class="col-12 d-none" id="painelCalcularCustoUnitarioCadastro">
+                                    <div class="card border-primary mb-2">
+                                        <div class="card-body py-2">
+                                            <div class="row g-2 align-items-end">
+                                                <div class="col-md-4">
+                                                    <label for="cadastro_valor_total_referencia" class="form-label">Valor Total Pago (R$)</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.01"
+                                                        min="0"
+                                                        class="form-control"
+                                                        id="cadastro_valor_total_referencia"
+                                                        placeholder="Ex.: 50,67"
+                                                        value="${refValorInicial !== '' ? refValorInicial : ''}"
+                                                    >
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label for="cadastro_quantidade_total_referencia" class="form-label">
+                                                        Quantidade Total
+                                                        <small class="text-muted">(Fiscal + Não Fiscal)</small>
+                                                    </label>
                                                     <input
                                                         type="number"
                                                         step="0.001"
-                                                        class="form-control"
-                                                        id="peso_total_compra"
-                                                        value="${isEdit ? Number(produto.peso_total_compra || 0) : 0}"
-                                                    >
-                                                </div>
-
-                                                <div class="col-md-4 mb-3">
-                                                    <label for="valor_total_compra" class="form-label">Valor Total da Compra</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        class="form-control"
-                                                        id="valor_total_compra"
-                                                        value="${isEdit ? Number(produto.valor_total_compra || 0) : 0}"
-                                                    >
-                                                </div>
-
-                                                <div class="col-md-4 mb-3">
-                                                    <label for="custo_por_kg" class="form-label">Custo por KG</label>
-                                                    <input
-                                                        type="number"
-                                                        step="0.01"
-                                                        class="form-control"
-                                                        id="custo_por_kg"
+                                                        min="0"
+                                                        class="form-control bg-light"
+                                                        id="cadastro_quantidade_total_referencia"
+                                                        placeholder="Soma automática do estoque"
+                                                        value="${refQtdInicial !== '' ? refQtdInicial : ''}"
                                                         readonly
-                                                        value="${isEdit ? Number(produto.custo_por_kg || 0) : 0}"
                                                     >
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <label class="form-label">Fórmula</label>
+                                                    <div class="form-control bg-light" id="formula_custo_unitario_cadastro" style="min-height: 38px;">
+                                                        —
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -1330,14 +1579,18 @@ function showProdutoModal(produto = null) {
                                 </div>
 
                                 <div class="col-md-4 mb-3">
-                                    <label for="preco_compra" class="form-label">Preço de Compra</label>
+                                    <label for="preco_compra" class="form-label" id="label_preco_compra_produto">Preço de Compra</label>
                                     <input
                                         type="number"
-                                        step="0.01"
-                                        class="form-control"
+                                        step="${usaConversaoInicial ? '0.0001' : '0.01'}"
+                                        class="form-control${usaConversaoInicial ? ' bg-light' : ''}"
                                         id="preco_compra"
-                                        value="${isEdit ? Number(produto.preco_compra || 0) : 0}"
+                                        value="${precoCompraInicial}"
+                                        ${usaConversaoInicial ? 'readonly' : ''}
                                     >
+                                    <small class="text-muted d-none" id="hint_preco_compra_produto">
+                                        Calculado automaticamente. Ex.: R$ 50,67 ÷ 50 MT = R$ 1,1334/MT
+                                    </small>
                                 </div>
 
                                 <div class="col-md-4 mb-3">
@@ -1374,7 +1627,7 @@ function showProdutoModal(produto = null) {
                                     <label for="estoque_minimo" class="form-label">Estoque Mínimo</label>
                                     <input
                                         type="number"
-                                        step="0.01"
+                                        step="${usaConversaoInicial ? '0.001' : '0.01'}"
                                         class="form-control"
                                         id="estoque_minimo"
                                         value="${isEdit ? Number(produto.estoque_minimo || 0) : 0}"
@@ -1558,6 +1811,7 @@ function showProdutoModal(produto = null) {
     inicializarCategoriasESubcategorias(produto, isEdit);
     inicializarAutocompleteFornecedor();
     inicializarCalculoPreco(produto, isEdit);
+    inicializarMotorConversaoUnidadesCadastro();
     inicializarVendaAtacado(produto, isEdit);
 
     if (isEdit && produto) {
@@ -2242,113 +2496,56 @@ function fixarEventosFaixaRow($row) {
 
 
 // Inicializa cálculo automático do preço de venda
-function inicializarCalculoPreco(produto, isEdit) {
-    let atualizando = false;
+function sincronizarFormacaoPrecoProduto(origem = 'init') {
+    const $precoCompra = $('#preco_compra');
+    const $lucro = $('#lucro_percentual');
+    const $precoVenda = $('#preco_venda');
+    if (!$precoCompra.length || !$lucro.length || !$precoVenda.length) return;
 
-    function numero(valor) {
-        return parseFloat(String(valor || '0').replace(',', '.')) || 0;
-    }
+    const numero = (valor) => parseFloat(String(valor ?? '').replace(',', '.')) || 0;
+    const precoCompra = numero($precoCompra.val());
+    const precoVenda = numero($precoVenda.val());
+    const lucroInformado = String($lucro.val() ?? '').trim() !== '';
 
-    function produtoPorPesoAtivo() {
-        return $('#vendido_por_peso').is(':checked');
-    }
-
-    function atualizarAreaPeso() {
-        const ativo = produtoPorPesoAtivo();
-
-        $('#areaProdutoPeso').toggle(ativo);
-
-        if (ativo) {
-            $('#unidade').val('kg');
-            calcularCustoPorKg();
-        }
-    }
-
-    function calcularCustoPorKg() {
-        if (!produtoPorPesoAtivo()) return;
-
-        const pesoTotal = numero($('#peso_total_compra').val());
-        const valorTotal = numero($('#valor_total_compra').val());
-
-        if (pesoTotal > 0 && valorTotal > 0) {
-            const custoKg = valorTotal / pesoTotal;
-
-            $('#custo_por_kg').val(custoKg.toFixed(2));
-            $('#preco_compra').val(custoKg.toFixed(2));
-
-            calcularPrecoVendaPorLucro();
-        }
-    }
-
-    function calcularPrecoVendaPorLucro() {
-        if (atualizando) return;
-        atualizando = true;
-
-        const precoCompra = numero($('#preco_compra').val());
-        const lucro = numero($('#lucro_percentual').val());
-
-        if (precoCompra > 0) {
-            const precoVenda = precoCompra + (precoCompra * lucro / 100);
-            $('#preco_venda').val(precoVenda.toFixed(2));
-        }
-
-        atualizando = false;
-    }
-
-    function calcularLucroPorPrecoVenda() {
-        if (atualizando) return;
-        atualizando = true;
-
-        const precoCompra = numero($('#preco_compra').val());
-        const precoVenda = numero($('#preco_venda').val());
-
+    if (origem === 'venda') {
         if (precoCompra > 0 && precoVenda > 0) {
             const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
-            $('#lucro_percentual').val(lucro.toFixed(2));
+            $lucro.val(lucro.toFixed(2));
         }
-
-        atualizando = false;
+        return;
     }
 
-    $('#vendido_por_peso').off('change').on('change', atualizarAreaPeso);
-
-    $('#peso_total_compra, #valor_total_compra')
-        .off('input')
-        .on('input', calcularCustoPorKg);
-
-    $('#preco_compra')
-        .off('input')
-        .on('input', function () {
-            if (produtoPorPesoAtivo()) {
-                $('#custo_por_kg').val(numero($('#preco_compra').val()).toFixed(2));
-            }
-
-            if ($('#lucro_percentual').val() !== '') {
-                calcularPrecoVendaPorLucro();
-            } else {
-                calcularLucroPorPrecoVenda();
-            }
-        });
-
-    $('#lucro_percentual')
-        .off('input')
-        .on('input', calcularPrecoVendaPorLucro);
-
-    $('#preco_venda')
-        .off('input')
-        .on('input', calcularLucroPorPrecoVenda);
-
-    atualizarAreaPeso();
-
-    if (isEdit && produto) {
-        setTimeout(() => {
-            if ($('#lucro_percentual').val() !== '') {
-                calcularPrecoVendaPorLucro();
-            } else {
-                calcularLucroPorPrecoVenda();
-            }
-        }, 100);
+    if (origem === 'init' && precoCompra > 0 && precoVenda > 0 && !lucroInformado) {
+        const lucro = ((precoVenda - precoCompra) / precoCompra) * 100;
+        $lucro.val(lucro.toFixed(2));
+        return;
     }
+
+    if (precoCompra > 0) {
+        const lucro = lucroInformado ? numero($lucro.val()) : 0;
+        const novoPrecoVenda = precoCompra + (precoCompra * lucro / 100);
+        $precoVenda.val(novoPrecoVenda.toFixed(2));
+    }
+}
+
+function inicializarCalculoPreco(produto, isEdit) {
+    const $precoCompra = $('#preco_compra');
+    const $lucro = $('#lucro_percentual');
+    const $precoVenda = $('#preco_venda');
+
+    $precoCompra
+        .off('input.precoMotor change.precoMotor')
+        .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('compra'));
+
+    $lucro
+        .off('input.precoMotor change.precoMotor')
+        .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('lucro'));
+
+    $precoVenda
+        .off('input.precoMotor change.precoMotor')
+        .on('input.precoMotor change.precoMotor', () => sincronizarFormacaoPrecoProduto('venda'));
+
+    setTimeout(() => sincronizarFormacaoPrecoProduto('init'), 0);
 }
 
 
@@ -2365,6 +2562,31 @@ async function saveProduto() {
 
     const saldosIniciais = obterSaldosIniciaisDoFormulario();
 
+    sincronizarFormacaoPrecoProduto('init');
+
+    if ($('#produto_fracionado').is(':checked') && !unidadeVendaSuportaConversao($('#unidade').val())) {
+        showNotification(
+            'Produto Fracionado exige unidade de venda fracionável (KG, MT, LT, M², M³, etc.).',
+            'warning'
+        );
+        return;
+    }
+
+    if ($('#produto_fracionado').is(':checked')) {
+        calcularCustoUnitarioReferenciaCadastro();
+        const valorRef = parseNumeroCadastro($('#cadastro_valor_total_referencia').val());
+        const qtdRef = parseNumeroCadastro($('#cadastro_quantidade_total_referencia').val());
+        const precoCompra = parseFloat($('#preco_compra').val()) || 0;
+        if (valorRef <= 0 || qtdRef <= 0) {
+            showNotification('Informe valor total pago e quantidade total para calcular o custo por unidade.', 'warning');
+            return;
+        }
+        if (precoCompra <= 0) {
+            showNotification('Não foi possível calcular o custo unitário. Verifique valor e quantidade.', 'warning');
+            return;
+        }
+    }
+
     const data = {
         codigo: ($('#codigo').val() || '').trim(),
         nome: ($('#nome').val() || '').trim(),
@@ -2373,7 +2595,11 @@ async function saveProduto() {
         unidade: ($('#unidade').val() || '').trim(),
         preco_compra: parseFloat($('#preco_compra').val()) || 0,
         preco_venda: parseFloat($('#preco_venda').val()) || 0,
-        lucro_percentual: $('#lucro_percentual').val() !== '' ? parseFloat($('#lucro_percentual').val()) : null,
+        lucro_percentual: $('#lucro_percentual').val() !== '' ? parseFloat($('#lucro_percentual').val()) : (
+            (parseFloat($('#preco_compra').val()) || 0) > 0 && (parseFloat($('#preco_venda').val()) || 0) > 0
+                ? parseFloat(((((parseFloat($('#preco_venda').val()) - parseFloat($('#preco_compra').val())) / parseFloat($('#preco_compra').val())) * 100).toFixed(2)))
+                : null
+        ),
         estoque_minimo: parseFloat($('#estoque_minimo').val()) || 0,
         fornecedor: ($('#fornecedor').val() || '').trim(),
         data_validade: ($('#data_validade').val() || '').trim() || null,
@@ -2389,14 +2615,23 @@ async function saveProduto() {
         aliquota_icms: parseFloat($('#aliquota_icms').val()) || 0,
         aliquota_pis: parseFloat($('#aliquota_pis').val()) || 0,
         aliquota_cofins: parseFloat($('#aliquota_cofins').val()) || 0,
-        vendido_por_peso: $('#vendido_por_peso').is(':checked') ? 1 : 0,
-        peso_total_compra: parseFloat($('#peso_total_compra').val()) || 0,
-        valor_total_compra: parseFloat($('#valor_total_compra').val()) || 0,
-        custo_por_kg: parseFloat($('#custo_por_kg').val()) || 0,
+        produto_fracionado: $('#produto_fracionado').is(':checked') ? 1 : 0,
+        vendido_por_peso: $('#produto_fracionado').is(':checked') ? 1 : 0,
         venda_atacado: $('#venda_atacado').is(':checked') ? 1 : 0,
         // Campos para lote inicial (apenas para novos produtos)
         data_validade_inicial: ($('#data_validade_inicial').val() || '').trim() || null
     };
+
+    if ($('#produto_fracionado').is(':checked')) {
+        const valorRef = parseNumeroCadastro($('#cadastro_valor_total_referencia').val());
+        const qtdRef = parseNumeroCadastro($('#cadastro_quantidade_total_referencia').val());
+        if (valorRef > 0 && qtdRef > 0) {
+            data.valor_total_compra = valorRef;
+            data.peso_total_compra = qtdRef;
+            data.custo_por_kg = parseFloat($('#preco_compra').val()) || 0;
+            data.preco_compra = custoUnitarioVendaCadastro(valorRef / qtdRef);
+        }
+    }
 
     if ($('#saldo_fiscal_inicial').length) {
         data.saldo_fiscal_inicial = saldosIniciais.saldo_fiscal_inicial;
@@ -2432,26 +2667,6 @@ async function saveProduto() {
         showNotification('Preço de compra inválido.', 'warning');
         $('#preco_compra').focus();
         return;
-    }
-
-    if (data.vendido_por_peso === 1) {
-        if (data.peso_total_compra <= 0) {
-            showNotification('Informe o peso total comprado em KG.', 'warning');
-            $('#peso_total_compra').focus();
-            return;
-        }
-
-        if (data.valor_total_compra <= 0) {
-            showNotification('Informe o valor total da compra.', 'warning');
-            $('#valor_total_compra').focus();
-            return;
-        }
-
-        if (data.custo_por_kg <= 0) {
-            showNotification('Custo por KG inválido.', 'warning');
-            $('#custo_por_kg').focus();
-            return;
-        }
     }
 
     if (saldosIniciais.saldo_fiscal_inicial < 0 || saldosIniciais.saldo_nao_fiscal_inicial < 0) {
@@ -2745,37 +2960,39 @@ function abrirModalAjustarEstoque(produtoId) {
             const saldoNaoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
             const estoqueTotal = Number(produto.estoque_atual ?? (saldoFiscal + saldoNaoFiscal));
             const unidade = produto.unidade || '';
+            const opcoesFormato = { produtoFracionado: produtoUsaConversaoUnidades(produto) };
+            const stepAjuste = obterStepEstoqueProduto(unidade, opcoesFormato.produtoFracionado);
             const controlaValidade = Number(produto.controlar_validade || 0) === 1;
 
             const camposFiscal = modoFiscal ? `
                 <div class="col-md-6 mb-3">
                     <label class="form-label">Saldo Fiscal Atual</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade)}">
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-6 mb-3">
                     <label for="ajuste_fiscal" class="form-label">Ajuste Fiscal (+/-)</label>
-                    <input type="number" step="0.01" class="form-control" id="ajuste_fiscal" value="0">
+                    <input type="number" step="${stepAjuste}" class="form-control" id="ajuste_fiscal" value="0">
                 </div>
             ` : `
                 <div class="col-md-4 mb-3">
                     <label class="form-label">Saldo Fiscal Atual</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade)}">
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoFiscal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-4 mb-3">
                     <label class="form-label">Saldo Não Fiscal Atual</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoNaoFiscal, unidade)}">
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(saldoNaoFiscal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-4 mb-3">
                     <label class="form-label">Estoque Total</label>
-                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(estoqueTotal, unidade)}">
+                    <input type="text" class="form-control bg-light" readonly value="${formatarEstoqueProduto(estoqueTotal, unidade, opcoesFormato)}">
                 </div>
                 <div class="col-md-6 mb-3">
                     <label for="ajuste_fiscal" class="form-label">Ajuste Fiscal (+/-)</label>
-                    <input type="number" step="0.01" class="form-control" id="ajuste_fiscal" value="0">
+                    <input type="number" step="${stepAjuste}" class="form-control" id="ajuste_fiscal" value="0">
                 </div>
                 <div class="col-md-6 mb-3">
                     <label for="ajuste_nao_fiscal" class="form-label">Ajuste Não Fiscal (+/-)</label>
-                    <input type="number" step="0.01" class="form-control" id="ajuste_nao_fiscal" value="0">
+                    <input type="number" step="${stepAjuste}" class="form-control" id="ajuste_nao_fiscal" value="0">
                 </div>
             `;
 
@@ -2930,7 +3147,12 @@ function viewProduto(id) {
                                 <p><strong>Categoria:</strong> ${escapeHtml(produtoNormalizado.categoria || '-')}</p>
                                 <p><strong>Subcategoria:</strong> ${escapeHtml(produtoNormalizado.subcategoria || '-')}</p>
                                 <p><strong>Unidade:</strong> ${escapeHtml(produtoNormalizado.unidade || '-')}</p>
-                                <p><strong>Preço de Compra:</strong> ${formatCurrency(produtoNormalizado.preco_compra || 0)}</p>
+                                <p><strong>Conversão de Unidades:</strong> ${produtoUsaConversaoUnidades(produtoNormalizado) ? 'Sim (venda fracionada)' : 'Não'}</p>
+                                <p><strong>Preço de Compra:</strong> ${
+                                    produtoUsaConversaoUnidades(produtoNormalizado)
+                                        ? `R$ ${formatarCustoUnitarioCadastro(produtoNormalizado.preco_compra, true)} / ${escapeHtml(String(produtoNormalizado.unidade || 'un').toUpperCase())}`
+                                        : formatCurrency(produtoNormalizado.preco_compra || 0)
+                                }</p>
                                 <p><strong>Preço de Venda:</strong> ${formatCurrency(produtoNormalizado.preco_venda || 0)}</p>
                                 ${formatarEstoqueDetalheProduto(produto)}
                                 <p><strong>Estoque Mínimo:</strong> ${Number(produtoNormalizado.estoque_minimo || 0)}</p>
@@ -4079,15 +4301,25 @@ function escapeHtml(text) {
         .replace(/'/g, '&#039;');
 }
 
-function formatarEstoqueProduto(valor, unidade = '') {
-    const numero = Number(valor || 0);
-    const unidadeNormalizada = String(unidade || '').toUpperCase();
+function formatarNumeroEstoqueProduto(numero, maxCasas = 3) {
+    const qtd = Number(numero || 0);
+    const factor = Math.pow(10, maxCasas);
+    const arredondado = Math.round(qtd * factor) / factor;
+    return String(parseFloat(arredondado.toFixed(maxCasas))).replace('.', ',');
+}
 
-    if (unidadeNormalizada === 'KG') {
-        return `${numero.toFixed(3)} kg`;
+function formatarEstoqueProduto(valor, unidade = '', opcoes = {}) {
+    const numero = Number(valor || 0);
+    const unidadeNorm = String(unidade || 'un').toLowerCase();
+    const label = String(unidade || 'UN').toUpperCase();
+    const fracionado = Boolean(opcoes.produtoFracionado);
+    const usaDecimais = fracionado || unidadeVendaSuportaConversao(unidadeNorm);
+
+    if (usaDecimais) {
+        return `${formatarNumeroEstoqueProduto(numero, 3)} ${label}`;
     }
 
-    return `${numero.toFixed(0)} ${unidade || 'UN'}`;
+    return `${Math.round(numero)} ${label}`;
 }
 
 function montarTabelaEstoqueResumo(lista, classeLinha) {
@@ -4109,7 +4341,7 @@ function montarTabelaEstoqueResumo(lista, classeLinha) {
             <td class="fw-semibold">${escapeHtml(p.nome || '')}</td>
             <td>${escapeHtml(p.codigo || '-')}</td>
             <td class="text-end fw-bold">${formatarColunaEstoqueLista(p)}</td>
-            <td class="text-end">${formatarEstoqueProduto(p.estoque_minimo, p.unidade)}</td>
+            <td class="text-end">${formatarEstoqueProduto(p.estoque_minimo, p.unidade, { produtoFracionado: produtoUsaConversaoUnidades(p) })}</td>
           </tr>
         `).join('')}
       </tbody>

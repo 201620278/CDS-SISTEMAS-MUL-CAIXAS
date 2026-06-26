@@ -5,6 +5,11 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const { tratarFalhaConexaoRemota, aplicarRecuperacaoModoLocal } = require('./electron-rede-recuperacao');
+const {
+  definirSessaoClienteRemoto,
+  obterSessaoClienteRemoto,
+  estaEmSessaoClienteRemoto
+} = require('./electron-sessao-rede');
 
 process.env.DB_DIR = process.env.DB_DIR || path.join(
   process.env.PROGRAMDATA || 'C:\\ProgramData',
@@ -51,9 +56,17 @@ ipcMain.handle('selecionar-pasta-backup', async () => {
 
 ipcMain.removeHandler('rede-obter-modo-estacao');
 ipcMain.handle('rede-obter-modo-estacao', async () => {
+  const sessao = obterSessaoClienteRemoto();
+  if (sessao) {
+    return sessao;
+  }
+
   const configService = require('./backend/services/configuracaoService');
   return configService.obterModoEstacaoLocal();
 });
+
+ipcMain.removeHandler('rede-esta-em-modo-cliente');
+ipcMain.handle('rede-esta-em-modo-cliente', async () => estaEmSessaoClienteRemoto());
 
 ipcMain.removeHandler('rede-obter-hostname');
 ipcMain.handle('rede-obter-hostname', async () => os.hostname());
@@ -460,6 +473,7 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes = {}
 }
 
 function createWindow(serverPort, tituloJanela) {
+  definirSessaoClienteRemoto(null);
   return abrirJanelaApp(
     montarUrlLogin(`http://127.0.0.1:${serverPort}`),
     'Erro ao iniciar servidor',
@@ -469,6 +483,11 @@ function createWindow(serverPort, tituloJanela) {
 }
 
 function createWindowRemote(remoteUrl, tituloJanela, configServidor = {}) {
+  definirSessaoClienteRemoto({
+    ipServidor: configServidor.ipServidor,
+    porta: configServidor.porta
+  });
+
   return abrirJanelaApp(
     montarUrlLogin(remoteUrl),
     'Erro ao carregar servidor remoto',

@@ -1,8 +1,12 @@
 <div class="pdv-profissional pdv-fullscreen">
 
+  <div id="faixaSistemaFiscalPdv" class="faixa-sistema-fiscal" style="display:none;">
+    <span>SISTEMA FISCAL ATIVO</span>
+  </div>
+
   <header class="pdv-topo">
     <div class="pdv-header-left">
-      <button id="btnMenuPdv" class="btn-menu-pdv" title="Abrir Menu">
+      <button id="btnMenuPdv" class="btn-menu-pdv" title="Abrir Menu" type="button">
         <i class="fas fa-bars"></i>
       </button>
       <div>
@@ -16,89 +20,76 @@
     </div>
 
     <div class="pdv-status">
-      <span id="statusCaixaPdv" class="caixa-fechado">� Caixa Fechado</span>
-      <button id="btnFechamentoCaixaPdv" class="btn-fechamento-caixa" title="Fechamento de Caixa (F7)">
-        <i class="fas fa-cash-register"></i> Fechar Caixa
+      <button id="btnCalculadoraPdv" class="btn-calc-topo" type="button" title="Calculadora">
+        <i class="fas fa-calculator"></i> Calculadora
+      </button>
+      <span id="statusCaixaPdv" class="caixa-fechado">Caixa Fechado</span>
+      <button id="btnFechamentoCaixaPdv" class="btn-fechamento-caixa" type="button" title="Fechamento de Caixa (F7)">
+        <i class="fas fa-lock"></i> Fechar Caixa
       </button>
       <span id="operadorPdv">Operador: Admin</span>
-      <span id="dataHoraPdv"></span>
+      <span id="dataHoraPdv" class="d-none d-xl-inline"></span>
     </div>
   </header>
 
-  <main class="pdv-grid">
+  <main class="pdv-corpo">
 
-    <section class="pdv-card pdv-busca">
-      <h2>Buscar Produto</h2>
+    <div class="pdv-col-esquerda">
 
-      <input 
-        type="text" 
-        id="buscaProdutoPdv" 
-        placeholder="Código de barras ou nome do produto"
-        autocomplete="off"
-      >
-
-      <button id="btnBuscarProdutoPdv">Buscar</button>
-
-      <div id="listaProdutosPdv" class="lista-produtos">
-        <p class="vazio">Digite para buscar produtos...</p>
-      </div>
-
-      <!-- Calculadora -->
-      <div class="pdv-calculadora">
-        <h3><i class="fas fa-calculator"></i> Calculadora</h3>
-        <div class="calc-display" id="calcDisplay">0</div>
-        <div class="calc-botoes">
-          <button class="calc-btn" data-value="7">7</button>
-          <button class="calc-btn" data-value="8">8</button>
-          <button class="calc-btn" data-value="9">9</button>
-          <button class="calc-btn calc-op" data-value="/">÷</button>
-
-          <button class="calc-btn" data-value="4">4</button>
-          <button class="calc-btn" data-value="5">5</button>
-          <button class="calc-btn" data-value="6">6</button>
-          <button class="calc-btn calc-op" data-value="*">×</button>
-
-          <button class="calc-btn" data-value="1">1</button>
-          <button class="calc-btn" data-value="2">2</button>
-          <button class="calc-btn" data-value="3">3</button>
-          <button class="calc-btn calc-op" data-value="-">−</button>
-
-          <button class="calc-btn" data-value="0">0</button>
-          <button class="calc-btn" data-value=".">.</button>
-          <button class="calc-btn calc-clear" data-value="C">C</button>
-          <button class="calc-btn calc-op" data-value="+">+</button>
-          <button class="calc-btn calc-igual" data-value="=">=</button>
+      <section class="pdv-card pdv-busca-topo">
+        <label class="pdv-busca-label" for="buscaProdutoPdv">
+          <i class="fas fa-search"></i> Código de barras / Código interno / Nome do produto
+        </label>
+        <div class="pdv-busca-linha">
+          <input
+            type="text"
+            id="buscaProdutoPdv"
+            placeholder="Digite o código de barras, código ou nome do produto"
+            autocomplete="off"
+          >
+          <button id="btnBuscarProdutoPdv" type="button">
+            <i class="fas fa-search"></i> Buscar
+          </button>
         </div>
-      </div>
-    </section>
+        <div id="listaProdutosPdv" class="lista-produtos lista-produtos-dropdown">
+          <p class="vazio">Digite e pressione Enter para adicionar, ou busque por nome...</p>
+        </div>
+      </section>
 
-    <section class="pdv-card pdv-itens">
+      <section class="pdv-card pdv-itens">
       <div class="pdv-card-header">
         <h2>Itens da Venda</h2>
-        <button id="btnLimparVendaPdv" class="btn-secundario">Limpar</button>
+        <button id="btnLimparVendaPdv" class="btn-secundario" type="button">
+          <i class="fas fa-trash-alt"></i> Limpar
+        </button>
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Qtd</th>
-            <th>%</th>
-            <th>Produto</th>
-            <th>Valor</th>
-            <th>Total</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="tabelaItensVendaPdv">
-          <tr>
-            <td colspan="5" class="vazio">Nenhum item adicionado</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="pdv-itens-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-qtd">Qtd</th>
+              <th class="col-un">UN</th>
+              <th class="col-produto">Produto</th>
+              <th class="col-unit">Unitário</th>
+              <th class="col-desc">Desc</th>
+              <th class="col-total">Total</th>
+              <th class="col-acao"></th>
+            </tr>
+          </thead>
+          <tbody id="tabelaItensVendaPdv">
+            <tr>
+              <td colspan="7" class="vazio">Nenhum item adicionado</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
+    </div>
+
     <aside class="pdv-card pdv-resumo">
-      <h2>Resumo</h2>
+      <h2 class="pdv-resumo-titulo">Resumo</h2>
 
       <div class="linha-resumo">
         <span>Subtotal</span>
@@ -115,23 +106,23 @@
         <strong id="itensPdv">0</strong>
       </div>
 
-      <div class="linha-resumo">
+      <div class="linha-resumo linha-resumo-input">
         <span>Desconto</span>
         <input type="number" id="descontoPdv" value="0" min="0" step="0.01">
       </div>
 
-      <div class="linha-resumo">
+      <div class="linha-resumo linha-resumo-input">
         <span>Acréscimo</span>
         <input type="number" id="acrescimoPdv" value="0" min="0" step="0.01">
       </div>
 
       <div class="total-pdv">
-        <span>Total</span>
+        <span>TOTAL</span>
         <strong id="totalPdv">R$ 0,00</strong>
       </div>
 
       <div id="pdvDinheiroBox" style="display:none;">
-        <div class="linha-resumo">
+        <div class="linha-resumo linha-resumo-input">
           <span>Valor recebido</span>
           <input type="number" id="valorRecebidoPDV" value="" min="0" step="0.01" placeholder="ex: 20,00">
         </div>
@@ -142,44 +133,77 @@
       </div>
 
       <div id="pdvClienteBox" style="display:none;">
-        <div class="linha-resumo">
+        <div class="linha-resumo linha-resumo-input">
           <span>Cliente *</span>
           <input type="text" id="clienteBuscaPrazo" class="form-control form-control-sm" placeholder="Buscar cliente..." autocomplete="off">
           <input type="hidden" id="clientePrazoId">
         </div>
-        <div id="clientePrazoSugestoes" class="list-group" style="position:absolute; z-index:9999; max-height:150px; overflow-y:auto; width:calc(100% - 24px);"></div>
+        <div id="clientePrazoSugestoes" class="list-group pdv-cliente-sugestoes"></div>
         <div id="clientePrazoSelecionado" style="display:none;" class="linha-resumo">
           <span>Selecionado:</span>
-          <strong id="clientePrazoNome" style="font-size:0.8rem;"></strong>
-          <button type="button" id="btnRemoverClientePrazo" style="margin-left:auto; padding:0 4px; font-size:0.7rem; background:#dc3545; color:#fff; border:none; border-radius:3px; cursor:pointer;">✕</button>
+          <strong id="clientePrazoNome" class="cliente-prazo-nome"></strong>
+          <button type="button" id="btnRemoverClientePrazo" class="btn-remover-cliente-prazo">✕</button>
         </div>
-        <div class="linha-resumo">
+        <div class="linha-resumo linha-resumo-input">
           <span>Parcelas</span>
-          <input type="number" id="parcelasPrazo" value="1" min="1" max="24" step="1" style="width:60px;">
+          <input type="number" id="parcelasPrazo" value="1" min="1" max="24" step="1">
         </div>
-        <div class="linha-resumo">
+        <div class="linha-resumo linha-resumo-input">
           <span>1º Vencimento</span>
-          <input type="date" id="dataVencimentoPrazo" style="width:100%;">
+          <input type="date" id="dataVencimentoPrazo">
         </div>
       </div>
 
-      <button id="btnFinalizarVendaPdv" class="btn-finalizar">
-        Finalizar Venda
+      <button id="btnFinalizarVendaPdv" class="btn-finalizar" type="button">
+        <span class="btn-finalizar-icone"><i class="fas fa-coins"></i></span>
+        <span class="btn-finalizar-textos">
+          <span class="btn-finalizar-titulo">FINALIZAR VENDA</span>
+          <span class="btn-finalizar-sub">(F10)</span>
+        </span>
       </button>
 
-      <button id="btnCancelarVendaPdv" class="btn-cancelar">
-        Cancelar Venda
+      <button id="btnCancelarVendaPdv" class="btn-cancelar" type="button">
+        <i class="fas fa-times"></i> Cancelar Venda
       </button>
     </aside>
 
   </main>
 
+  <div id="pdvCalculadoraFlutuante" class="pdv-calc-flutuante d-none" aria-hidden="true">
+    <div class="pdv-calc-flutuante-header">
+      <strong><i class="fas fa-calculator"></i> Calculadora</strong>
+      <button type="button" class="pdv-calc-fechar" id="btnFecharCalculadoraPdv" aria-label="Fechar">&times;</button>
+    </div>
+    <div class="pdv-calculadora">
+      <div class="calc-display" id="calcDisplay">0</div>
+      <div class="calc-botoes">
+        <button type="button" class="calc-btn" data-value="7">7</button>
+        <button type="button" class="calc-btn" data-value="8">8</button>
+        <button type="button" class="calc-btn" data-value="9">9</button>
+        <button type="button" class="calc-btn calc-op" data-value="/">÷</button>
+        <button type="button" class="calc-btn" data-value="4">4</button>
+        <button type="button" class="calc-btn" data-value="5">5</button>
+        <button type="button" class="calc-btn" data-value="6">6</button>
+        <button type="button" class="calc-btn calc-op" data-value="*">×</button>
+        <button type="button" class="calc-btn" data-value="1">1</button>
+        <button type="button" class="calc-btn" data-value="2">2</button>
+        <button type="button" class="calc-btn" data-value="3">3</button>
+        <button type="button" class="calc-btn calc-op" data-value="-">−</button>
+        <button type="button" class="calc-btn" data-value="0">0</button>
+        <button type="button" class="calc-btn" data-value=".">.</button>
+        <button type="button" class="calc-btn calc-clear" data-value="C">C</button>
+        <button type="button" class="calc-btn calc-op" data-value="+">+</button>
+        <button type="button" class="calc-btn calc-igual" data-value="=">=</button>
+      </div>
+    </div>
+  </div>
+
   <footer class="pdv-atalhos">
-    <span>F1 Buscar</span>
-    <span>F4 Quantidade</span>
-    <span>F7 Fechar Caixa</span>
-    <span>F8 Desconto</span>
-    <span>F10 Finalizar Venda</span>
-    <span>ESC Cancelar</span>
+    <span class="pdv-atalho-chip">F1 Buscar</span>
+    <span class="pdv-atalho-chip">F4 Quantidade</span>
+    <span class="pdv-atalho-chip">F7 Fechar Caixa</span>
+    <span class="pdv-atalho-chip">F8 Desconto</span>
+    <span class="pdv-atalho-chip">F10 Finalizar</span>
+    <span class="pdv-atalho-chip">ESC Cancelar</span>
   </footer>
 </div>

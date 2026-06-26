@@ -12,6 +12,7 @@ const {
 
 const { gerarQRCodeNFCe } = require('./qrcode');
 const { extrairNomeEmpresaDoCertificado } = require('./certificateService');
+const { normalizarUnidadeComercialFiscal } = require('./unidadeFiscal');
 
 function normalizarCsosn(valor, padrao = '102') {
   const digits = String(valor ?? '').replace(/\D/g, '');
@@ -610,7 +611,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
     const tagCEST = cestLimpo.length === 7
       ? `<CEST>${cestLimpo}</CEST>`
       : '';
-    const unidade = item.unidade || 'UN';
+    const unidade = normalizarUnidadeComercialFiscal(item.unidade || item.produto_unidade || 'UN');
     const xProd = Number(config.ambiente) === 2 && idx === 0
       ? descricaoHomologacao
       : item.produto_nome || 'PRODUTO';

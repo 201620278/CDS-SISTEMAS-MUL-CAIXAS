@@ -240,7 +240,11 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE compras_itens ADD COLUMN atualizar_preco_venda INTEGER DEFAULT 1`,
     `ALTER TABLE compras_itens ADD COLUMN item_fiscal INTEGER DEFAULT 1`,
     `ALTER TABLE compras_itens ADD COLUMN quantidade_fiscal REAL DEFAULT 0`,
-    `ALTER TABLE compras_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`
+    `ALTER TABLE compras_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`,
+    `ALTER TABLE compras_itens ADD COLUMN compra_em TEXT`,
+    `ALTER TABLE compras_itens ADD COLUMN quantidade_embalagens DECIMAL(10,3) DEFAULT 0`,
+    `ALTER TABLE compras_itens ADD COLUMN quantidade_por_embalagem DECIMAL(10,3) DEFAULT 0`,
+    `ALTER TABLE compras_itens ADD COLUMN valor_total_embalagem DECIMAL(10,2) DEFAULT 0`
   ];
 
   const alteracoesVendas = [
@@ -984,15 +988,37 @@ function criarTabelas() {
 
     const colunasProdutoPeso = [
       "ALTER TABLE produtos ADD COLUMN vendido_por_peso INTEGER DEFAULT 0",
+      "ALTER TABLE produtos ADD COLUMN produto_fracionado INTEGER DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN peso_total_compra DECIMAL(10,3) DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN valor_total_compra DECIMAL(10,2) DEFAULT 0",
       "ALTER TABLE produtos ADD COLUMN custo_por_kg DECIMAL(10,2) DEFAULT 0"
     ];
 
+    let migracaoConversaoUnidadesPendente = colunasProdutoPeso.length;
+    const dispararMigracaoConversaoUnidades = () => {
+      const { executarMigracaoConversaoUnidadesCallback } = require('./services/migracaoConversaoUnidades');
+      executarMigracaoConversaoUnidadesCallback(db, (err, stats) => {
+        if (err) {
+          console.error('Erro na migração Motor de Conversão de Unidades:', err.message);
+          return;
+        }
+        if (stats.migradosParaFracionado > 0 || stats.sincronizadosLegado > 0) {
+          console.log(
+            `Migração conversão de unidades: ${stats.migradosParaFracionado} legado(s) migrado(s), ` +
+            `${stats.sincronizadosLegado} flag(s) sincronizada(s).`
+          );
+        }
+      });
+    };
+
     colunasProdutoPeso.forEach(sql => {
       db.run(sql, (err) => {
         if (err && !String(err.message).includes('duplicate column name')) {
-          console.error('Erro ao adicionar coluna de produto por peso:', err.message);
+          console.error('Erro ao adicionar coluna de produto fracionado:', err.message);
+        }
+        migracaoConversaoUnidadesPendente -= 1;
+        if (migracaoConversaoUnidadesPendente === 0) {
+          dispararMigracaoConversaoUnidades();
         }
       });
     });

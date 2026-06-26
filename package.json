@@ -10,8 +10,10 @@
     "recuperar:local": "node scripts/criar-flag-modo-local.js",
     "start:recuperar": "node scripts/criar-flag-modo-local.js && .\\node_modules\\.bin\\electron.cmd .",
     "start:pdv": ".\\node_modules\\.bin\\electron.cmd electron-pdv.js",
-    "build": "electron-builder",
+    "build": "node scripts/prebuild-electron.js && electron-builder",
     "test:integration": "node tests/integration/flow_test.js",
+    "test:conversao-unidades": "node tests/motor-conversao-unidades/motor-conversao-unidades.test.js",
+    "test:fracionado": "npm run test:conversao-unidades",
     "test:tef-fluxo": "node tests/tef/tef-fluxo-pagamento.test.js",
     "test:tef-fluxo-api": "node scripts/test-tef-fluxo-api.js",
     "test:tef": "node tests/tef/tef-fluxo-pagamento.test.js && node scripts/test-tef-fluxo-api.js"
@@ -52,12 +54,31 @@
       "output": "dist"
     },
     "files": [
-      "**/*"
+      "**/*",
+      "!dist/**",
+      "!dist-*/**",
+      "!release/**",
+      "!out/**",
+      "!tests/**",
+      "!scripts/**",
+      "!dados/**",
+      "!**/.git/**",
+      "!**/.cursor/**",
+      "!**/*.md",
+      "!**/{.DS_Store,Thumbs.db,Desktop.ini}",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/.bin/**"
+    ],
+    "asarUnpack": [
+      "**/node_modules/sqlite3/**",
+      "**/node_modules/usb/**"
     ],
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico",
-      "publisherName": "CDS Sistemas"
+      "signtoolOptions": {
+        "publisherName": "CDS Sistemas"
+      }
     },
     "nsis": {
       "oneClick": false,
