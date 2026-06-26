@@ -371,17 +371,31 @@ function renderConfiguracoes(configuracoes, usuarios, usuariosInativos) {
 
 async function carregarConfiguracaoRede() {
     try {
-        const response = await fetch(`${API_URL}/configuracao-rede`, {
-            headers: {
-                'Authorization': `Bearer ${localStorage.getItem('token')}`
-            }
-        });
+        let config;
 
-        if (!response.ok) {
-            throw new Error(`Falha ao carregar configuração de rede: ${response.status}`);
+        if (window.electronAPI && typeof window.electronAPI.obterModoEstacao === 'function') {
+            const estacao = await window.electronAPI.obterModoEstacao();
+            config = {
+                modo: estacao.modo === 'cliente' ? 'cliente' : 'local',
+                ipServidor: estacao.ipServidor || '',
+                porta: Number.isInteger(estacao.porta) && estacao.porta > 0 ? estacao.porta : 3001,
+                fonte: 'estacao'
+            };
+        } else {
+            const response = await fetch(`${API_URL}/configuracao-rede`, {
+                headers: {
+                    'Authorization': `Bearer ${localStorage.getItem('token')}`
+                }
+            });
+
+            if (!response.ok) {
+                throw new Error(`Falha ao carregar configuração de rede: ${response.status}`);
+            }
+
+            config = await response.json();
+            config.fonte = 'servidor';
         }
 
-        const config = await response.json();
         window.configuracaoRedeAtual = config;
         $('#redeConfigCardContainer').html(renderConfiguracaoRedeCard(config));
         aplicarEstadoConfiguracaoRede();
@@ -451,7 +465,11 @@ function renderConfiguracaoRedeCard(config = {}) {
                 </button>
             </div>
             <div id="redeConfigStatus" class="p-3 rounded bg-light text-muted">
-                ${modo === 'cliente' ? 'Modo cliente selecionado. Informe o servidor remoto e teste a conexão.' : 'Modo local selecionado. O sistema usará o backend local no próximo início.'}
+                ${config.fonte === 'estacao'
+                    ? 'Configuração desta estação (arquivo local do computador). Alterações aqui afetam como o sistema inicia neste PC.'
+                    : (modo === 'cliente'
+                        ? 'Modo cliente selecionado. Informe o servidor remoto e teste a conexão.'
+                        : 'Modo local selecionado. O sistema usará o backend local no próximo início.')}
             </div>
         </form>
     `;
@@ -652,6 +670,25 @@ async function salvarConfiguracaoRede() {
     };
 
     try {
+        if (window.electronAPI && typeof window.electronAPI.salvarModoEstacao === 'function') {
+            const resultado = await window.electronAPI.salvarModoEstacao(payload);
+
+            if (!resultado || !resultado.sucesso) {
+                throw new Error(resultado?.erro || 'Não foi possível salvar a configuração local da estação.');
+            }
+
+            window.configuracaoRedeAtual = payload;
+            $('#redeConfigStatus')
+                .removeClass('bg-light bg-warning bg-danger')
+                .addClass('bg-success text-white')
+                .text(resultado.reiniciado
+                    ? 'Configuração salva. O sistema está reiniciando...'
+                    : 'Configuração desta estação salva. Reinicie o sistema para aplicar, se necessário.');
+            showNotification('Configuração de rede desta estação salva com sucesso.', 'success');
+            await aplicarEstadoBotaoVoltarLocal();
+            return;
+        }
+
         const response = await fetch(`${API_URL}/configuracao-rede`, {
             method: 'POST',
             headers: {

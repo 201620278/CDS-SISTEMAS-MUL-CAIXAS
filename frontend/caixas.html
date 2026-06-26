@@ -34,8 +34,9 @@
       <div class="card-dashboard">
         <div class="card-icon">🖥️</div>
         <div class="card-info">
-          <h3>Terminais</h3>
-          <p><strong id="totalTerminais">0</strong> vinculados</p>
+          <h3>PDVs ativos</h3>
+          <p><strong id="totalTerminaisOnline">0</strong> agora</p>
+          <small class="text-muted"><span id="totalTerminaisVinculados">0</span> vinculados a caixas</small>
         </div>
       </div>
     </div>
@@ -94,6 +95,42 @@
       </table>
     </div>
   </div>
+
+  <!-- Dispositivos (PDVs conectados) -->
+  <div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="mb-0"><i class="fas fa-desktop"></i> Dispositivos conectados</h5>
+      <button type="button" class="btn btn-sm btn-outline-primary" onclick="buscarTerminais()">
+        <i class="fas fa-sync-alt"></i> Atualizar
+      </button>
+    </div>
+    <div class="card-body p-0">
+      <p class="text-muted small px-3 pt-3 mb-2">
+        Lista apenas dispositivos com o <strong>app PDV</strong> aberto (heartbeat a cada 2 min).
+        Status <em>PDV ativo</em> = sinal nos últimos 3 minutos. Ao fechar o PDV, o dispositivo fica offline.
+      </p>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Nome</th>
+              <th>Hostname</th>
+              <th>Usuário terminal</th>
+              <th>Caixa vinculado</th>
+              <th>Status</th>
+              <th>Última conexão</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="tabelaTerminais">
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">Carregando dispositivos...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Modal Novo/Editar Caixa -->
@@ -116,10 +153,12 @@
           <small class="text-danger" id="erroCaixaDescricao"></small>
         </div>
         <div class="mb-3">
-          <label for="caixaTerminal" class="form-label">Terminal <span class="text-danger">*</span></label>
-          <input type="text" class="form-control" id="caixaTerminal" placeholder="Ex: PDV-01">
+          <label for="caixaTerminal" class="form-label">Dispositivo (hostname) <span class="text-danger">*</span></label>
+          <select class="form-select" id="caixaTerminal">
+            <option value="">Selecione um dispositivo...</option>
+          </select>
           <small class="text-danger" id="erroCaixaTerminal"></small>
-          <small class="text-muted d-block mt-1">Identificador do terminal a vincular</small>
+          <small class="text-muted d-block mt-1">Lista atualizada ao abrir o PDV no computador desejado</small>
         </div>
         <div class="mb-3">
           <label for="caixaStatus" class="form-label">Status</label>
@@ -132,6 +171,41 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
         <button type="button" class="btn btn-primary" id="btnSalvarCaixa" onclick="salvarCaixa()">Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Editar Terminal -->
+<div class="modal fade" id="modalEditarTerminal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Configurar dispositivo</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="terminalEditId">
+        <div class="mb-3">
+          <label class="form-label text-muted">Hostname (identificador do PC)</label>
+          <input type="text" class="form-control" id="terminalEditHostname" readonly>
+        </div>
+        <div class="mb-3">
+          <label for="terminalEditNome" class="form-label">Nome do terminal <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="terminalEditNome" placeholder="Ex: PDV Frente, Caixa 01">
+          <small class="text-danger" id="erroTerminalNome"></small>
+        </div>
+        <div class="mb-3">
+          <label for="terminalEditCaixa" class="form-label">Vincular ao caixa</label>
+          <select class="form-select" id="terminalEditCaixa">
+            <option value="">Nenhum (desvincular)</option>
+          </select>
+          <small class="text-muted d-block mt-1">Associa este dispositivo a um caixa do sistema</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-primary" onclick="salvarTerminal()">Salvar</button>
       </div>
     </div>
   </div>

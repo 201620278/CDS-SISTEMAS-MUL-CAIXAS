@@ -116,6 +116,8 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('caixa_fechamentos', `ALTER TABLE caixa_fechamentos ADD COLUMN sessao_id INTEGER REFERENCES caixa_sessoes(id)`);
   aplicarAlteracaoSegura('auditoria_caixa', `ALTER TABLE auditoria_caixa ADD COLUMN sessao_id INTEGER REFERENCES caixa_sessoes(id)`);
   aplicarAlteracaoSegura('auditoria_caixa', `ALTER TABLE auditoria_caixa ADD COLUMN terminal_id INTEGER REFERENCES terminais(id)`);
+  aplicarAlteracaoSegura('terminais', `ALTER TABLE terminais ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id)`);
+  aplicarAlteracaoSegura('terminais', `ALTER TABLE terminais ADD COLUMN usuario_nome TEXT`);
 
   // Adicionar colunas faltantes na tabela vendas_itens (para suportar promoções e desconto atacado)
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_percentual DECIMAL(5,2) DEFAULT 0`);

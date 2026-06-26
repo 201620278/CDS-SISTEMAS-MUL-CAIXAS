@@ -6,6 +6,10 @@
   "main": "electron.js",
   "scripts": {
     "start": ".\\node_modules\\.bin\\electron.cmd .",
+    "start:local": ".\\node_modules\\.bin\\electron.cmd . --cds-forcar-local",
+    "recuperar:local": "node scripts/criar-flag-modo-local.js",
+    "start:recuperar": "node scripts/criar-flag-modo-local.js && .\\node_modules\\.bin\\electron.cmd .",
+    "start:pdv": ".\\node_modules\\.bin\\electron.cmd electron-pdv.js",
     "build": "electron-builder",
     "test:integration": "node tests/integration/flow_test.js",
     "test:tef-fluxo": "node tests/tef/tef-fluxo-pagamento.test.js",

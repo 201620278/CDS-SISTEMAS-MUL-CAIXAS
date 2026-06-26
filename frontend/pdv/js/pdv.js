@@ -95,35 +95,102 @@ function loadPDV() {
     });
 }
 
-// Auto-registrar terminal no backend
-function autoRegistrarTerminal() {
+// Auto-registrar terminal no backend (somente app PDV dedicado)
+const HEARTBEAT_TERMINAL_MS = 2 * 60 * 1000;
+let intervaloHeartbeatTerminal = null;
+let tentativasRegistroTerminal = 0;
+
+function deveRegistrarTerminalPdv() {
+    if (window.CDS_MODULE === 'pdv') return true;
+    const path = String(window.location.pathname || '');
+    return path === '/pdv' || path.startsWith('/pdv/');
+}
+
+function registrarTerminalOfflineSync() {
+    if (!terminalHostname || !deveRegistrarTerminalPdv()) return;
+    const url = `${API_URL}/terminais/auto/offline?hostname=${encodeURIComponent(terminalHostname)}&origem=pdv`;
+    if (typeof navigator.sendBeacon === 'function') {
+        navigator.sendBeacon(url);
+        return;
+    }
+    fetch(url, { method: 'GET', keepalive: true }).catch(() => {});
+}
+
+if (!window.__cdsTerminalOfflineRegistrado) {
+    window.__cdsTerminalOfflineRegistrado = true;
+    window.addEventListener('pagehide', registrarTerminalOfflineSync);
+    window.addEventListener('beforeunload', registrarTerminalOfflineSync);
+}
+
+function obterUsuarioLogadoPdv() {
     try {
-        // Obter hostname do sistema
-        if (typeof window.electronAPI !== 'undefined' && typeof window.electronAPI.getTerminalInfo === 'function') {
-            const terminalInfo = window.electronAPI.getTerminalInfo();
-            terminalHostname = terminalInfo.hostname;
-            console.log('Terminal detectado:', terminalHostname);
-        } else {
-            terminalHostname = 'web-browser';
-            console.log('Terminal não detectado (browser web), usando hostname padrão');
+        const user = JSON.parse(localStorage.getItem('user') || '{}');
+        return {
+            usuario_id: user.id || null,
+            usuario_nome: String(user.nome || user.username || '').trim()
+        };
+    } catch (e) {
+        return { usuario_id: null, usuario_nome: '' };
+    }
+}
+
+async function autoRegistrarTerminal() {
+    if (!deveRegistrarTerminalPdv()) {
+        return;
+    }
+
+    try {
+        if (typeof resolverHostnameEstacao === 'function') {
+            terminalHostname = await resolverHostnameEstacao();
+        } else if (typeof window.electronAPI !== 'undefined' && typeof window.electronAPI.getTerminalInfo === 'function') {
+            terminalHostname = window.electronAPI.getTerminalInfo().hostname;
         }
 
-        // Chamar API de auto-registro
+        if (!terminalHostname) {
+            const emElectron = typeof estaEmElectron === 'function' ? estaEmElectron() : Boolean(window.electronAPI);
+            if (emElectron && tentativasRegistroTerminal < 8) {
+                tentativasRegistroTerminal += 1;
+                setTimeout(autoRegistrarTerminal, 500);
+                return;
+            }
+            console.warn('PDV aberto, mas hostname da estação não foi detectado.');
+            return;
+        }
+
+        tentativasRegistroTerminal = 0;
+        console.log('Terminal PDV detectado:', terminalHostname);
+
+        const headers = {};
+        const token = localStorage.getItem('token');
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+
+        const usuario = obterUsuarioLogadoPdv();
+
         $.ajax({
             url: `${API_URL}/terminais/auto`,
             method: 'GET',
-            data: { hostname: terminalHostname },
+            data: {
+                hostname: terminalHostname,
+                origem: 'pdv',
+                usuario_id: usuario.usuario_id || undefined,
+                usuario_nome: usuario.usuario_nome || undefined
+            },
+            headers: headers,
             success: function(terminal) {
                 terminalId = terminal.id;
-                console.log('Terminal registrado com sucesso:', terminal);
+                console.log('Terminal PDV registrado:', terminal);
             },
             error: function(xhr) {
-                console.warn('Erro ao registrar terminal:', xhr);
+                console.warn('Erro ao registrar terminal PDV:', xhr.status, xhr.responseText);
                 terminalId = null;
             }
         });
+
+        if (!intervaloHeartbeatTerminal) {
+            intervaloHeartbeatTerminal = setInterval(autoRegistrarTerminal, HEARTBEAT_TERMINAL_MS);
+        }
     } catch (err) {
-        console.error('Erro ao detectar terminal:', err);
+        console.error('Erro ao detectar terminal PDV:', err);
         terminalId = null;
     }
 }

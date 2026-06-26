@@ -47,6 +47,34 @@ function montarSqlAtualizarCaixa(cols) {
   return `UPDATE caixas SET ${setPart.join(', ')} WHERE id = ?`;
 }
 
+function vincularTerminalAoCaixa(caixaId, hostname, callback) {
+  const h = String(hostname || '').trim();
+  if (!h) return callback(null);
+
+  db.get(`SELECT id, caixa_id FROM terminais WHERE hostname = ?`, [h], (err, row) => {
+    if (err) return callback(err);
+
+    const agora = new Date().toISOString();
+
+    if (row) {
+      if (row.caixa_id && Number(row.caixa_id) !== Number(caixaId)) {
+        return callback(null, { error: 'Terminal já vinculado a outro caixa' });
+      }
+      return db.run(
+        `UPDATE terminais SET caixa_id = ?, updated_at = ? WHERE id = ?`,
+        [caixaId, agora, row.id],
+        (updateErr) => callback(updateErr)
+      );
+    }
+
+    db.run(
+      `INSERT INTO terminais (nome, hostname, caixa_id, ativo, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)`,
+      [h, h, caixaId, agora, agora],
+      (insertErr) => callback(insertErr)
+    );
+  });
+}
+
 // GET /api/caixas — Listar caixas com filtros e busca
 router.get('/', verificarPermissaoEspecifica('caixa'), (req, res) => {
   const { busca, status } = req.query;
@@ -166,17 +194,17 @@ router.post('/', (req, res) => {
         };
 
         if (terminal_identificador && terminal_identificador.trim()) {
-          db.run(
-            `UPDATE terminais SET caixa_id = ? WHERE hostname = ?`,
-            [caixaId, terminal_identificador.trim()],
-            (errUpdate) => {
-              if (errUpdate) {
-                console.error('Erro ao vincular terminal:', errUpdate);
-              }
-              registrarAuditoriaCriar();
-              res.status(201).json({ id: caixaId, message: 'Caixa criado com sucesso' });
+          vincularTerminalAoCaixa(caixaId, terminal_identificador.trim(), (errUpdate, linkErr) => {
+            if (linkErr) {
+              return res.status(400).json(linkErr);
             }
-          );
+            if (errUpdate) {
+              console.error('Erro ao vincular terminal:', errUpdate);
+              return res.status(500).json({ error: errUpdate.message });
+            }
+            registrarAuditoriaCriar();
+            res.status(201).json({ id: caixaId, message: 'Caixa criado com sucesso' });
+          });
         } else {
           registrarAuditoriaCriar();
           res.status(201).json({ id: caixaId, message: 'Caixa criado com sucesso' });
@@ -313,20 +341,15 @@ router.put('/:id', (req, res) => {
                       return res.status(500).json({ error: errDetach.message });
                     }
 
-                    if (!novoTerminalRow) {
-                      return finalizaAtualizacao();
-                    }
-
-                    db.run(
-                      `UPDATE terminais SET caixa_id = ? WHERE id = ?`,
-                      [id, novoTerminalRow.id],
-                      (errAttach) => {
-                        if (errAttach) {
-                          return res.status(500).json({ error: errAttach.message });
-                        }
-                        finalizaAtualizacao();
+                    vincularTerminalAoCaixa(id, novoTerminal, (errAttach, linkErr) => {
+                      if (linkErr) {
+                        return res.status(400).json(linkErr);
                       }
-                    );
+                      if (errAttach) {
+                        return res.status(500).json({ error: errAttach.message });
+                      }
+                      finalizaAtualizacao();
+                    });
                   });
                 }
               );

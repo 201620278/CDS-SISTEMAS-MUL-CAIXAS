@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
+const os = require('os');
+const { tratarFalhaConexaoRemota, aplicarRecuperacaoModoLocal } = require('./electron-rede-recuperacao');
 
 process.env.DB_DIR = process.env.DB_DIR || path.join(
   process.env.PROGRAMDATA || 'C:\\ProgramData',
@@ -53,6 +55,9 @@ ipcMain.handle('rede-obter-modo-estacao', async () => {
   return configService.obterModoEstacaoLocal();
 });
 
+ipcMain.removeHandler('rede-obter-hostname');
+ipcMain.handle('rede-obter-hostname', async () => os.hostname());
+
 ipcMain.removeHandler('rede-voltar-modo-local');
 ipcMain.handle('rede-voltar-modo-local', async () => {
   const confirmacao = await dialog.showMessageBox({
@@ -77,6 +82,49 @@ ipcMain.handle('rede-voltar-modo-local', async () => {
     return { sucesso: true };
   } catch (error) {
     console.error('Erro ao voltar ao modo local:', error);
+    return { sucesso: false, erro: error.message };
+  }
+});
+
+ipcMain.removeHandler('rede-salvar-modo-estacao');
+ipcMain.handle('rede-salvar-modo-estacao', async (_event, body = {}) => {
+  try {
+    const configService = require('./backend/services/configuracaoService');
+    const modoAnterior = configService.getModoRedeElectron().modo;
+    const modoNovo = String(body.modo || 'local').trim().toLowerCase() === 'cliente' ? 'cliente' : 'local';
+
+    configService.salvarModoEstacaoLocal({
+      modo: modoNovo,
+      ipServidor: body.ipServidor,
+      porta: body.porta
+    });
+
+    if (modoAnterior !== modoNovo) {
+      const titulo = modoNovo === 'local' ? 'Usar servidor local' : 'Conectar como cliente';
+      const mensagem = modoNovo === 'local'
+        ? 'O sistema será reiniciado neste computador com o backend local.'
+        : 'O sistema será reiniciado e conectará ao servidor remoto informado.';
+
+      const confirmacao = await dialog.showMessageBox({
+        type: 'question',
+        buttons: ['Depois', 'Reiniciar agora'],
+        defaultId: 1,
+        cancelId: 0,
+        title: titulo,
+        message: 'Reiniciar para aplicar o modo de rede?',
+        detail: mensagem
+      });
+
+      if (confirmacao.response === 1) {
+        app.relaunch();
+        app.exit(0);
+        return { sucesso: true, reiniciado: true };
+      }
+    }
+
+    return { sucesso: true, reiniciado: false };
+  } catch (error) {
+    console.error('Erro ao salvar modo da estação:', error);
     return { sucesso: false, erro: error.message };
   }
 });
@@ -178,14 +226,38 @@ function aguardarListening(server, timeout = 15000) {
 }
 
 function carregarConfiguracaoServidor() {
+  if (process.argv.includes('--cds-forcar-local')) {
+    console.log('Modo local forçado via argumento --cds-forcar-local');
+    return { modo: 'local', ipServidor: '127.0.0.1', porta: obterPortaServidor() };
+  }
+
   try {
     const configService = require('./backend/services/configuracaoService');
+    configService.consumirFlagForcarModoLocal();
     configService.ensureConfigFile();
-    return configService.getModoRedeElectron();
+    const cfg = configService.readConfig();
+    configService.syncElectronConfig(cfg);
+    return configService.getModoRedeElectron(cfg);
   } catch (err) {
     console.warn('Não foi possível ler configuracoes.json, usando configuração padrão.', err.message);
     return { modo: 'local', ipServidor: '127.0.0.1', porta: 3001 };
   }
+}
+
+function iniciarBackendLocal(tituloJanela) {
+  aplicarRecuperacaoModoLocal();
+  const portaPreferida = obterPortaServidor();
+  return encontrarPortaDisponivel(portaPreferida)
+    .then((portaLivre) => {
+      process.env.PORT = String(portaLivre);
+      const server = require('./backend/server');
+      return aguardarListening(server).then(() => server);
+    })
+    .then((server) => {
+      const address = server.address();
+      const portaReal = address && typeof address === 'object' ? address.port : obterPortaServidor();
+      return createWindow(portaReal, tituloJanela);
+    });
 }
 
 function registrarHandlersIpc() {
@@ -276,6 +348,13 @@ function registrarHandlersIpc() {
   });
 }
 
+function injetarHostnameEstacao(webContents) {
+  if (!webContents || webContents.isDestroyed()) return;
+  const hostname = os.hostname();
+  const script = `(function(){try{var h=${JSON.stringify(hostname)};sessionStorage.setItem('cds_estacao_hostname',h);window.__CDS_ESTACAO_HOSTNAME__=h;}catch(e){}})();`;
+  webContents.executeJavaScript(script, true).catch(() => {});
+}
+
 function criarMainWindow(tituloJanela, opcoes = {}) {
   const argumentosExtras = [];
   if (opcoes.modoClienteRemoto) {
@@ -303,6 +382,10 @@ function criarMainWindow(tituloJanela, opcoes = {}) {
   global.mainWindow = mainWindow;
   registrarHandlersIpc();
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    injetarHostnameEstacao(mainWindow.webContents);
+  });
+
   mainWindow.webContents.setWindowOpenHandler(() => ({
     action: 'allow',
     overrideBrowserWindowOptions: {
@@ -327,7 +410,8 @@ function criarMainWindow(tituloJanela, opcoes = {}) {
 
 function montarUrlLogin(baseUrl) {
   const modulo = appModuloAtual === 'pdv' ? 'pdv' : 'erp';
-  return `${baseUrl}/login?modulo=${modulo}`;
+  const hostname = encodeURIComponent(os.hostname());
+  return `${baseUrl}/login?modulo=${modulo}&estacao_hostname=${hostname}`;
 }
 
 function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes = {}) {
@@ -337,7 +421,39 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes = {}
       mainWindow.maximize();
       mainWindow.show();
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      if (opcoes.modoClienteRemoto) {
+        const acao = await tratarFalhaConexaoRemota({
+          error,
+          configServidor: opcoes.modoClienteRemoto,
+          remoteUrl: url
+        });
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy();
+          mainWindow = null;
+        }
+
+        if (acao === 'retry') {
+          return abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes);
+        }
+
+        if (acao === 'local') {
+          try {
+            await iniciarBackendLocal(tituloJanela);
+            return;
+          } catch (localErr) {
+            dialog.showErrorBox(
+              'Erro ao iniciar servidor local',
+              `${localErr.message}\n\nDB_DIR: ${process.env.DB_DIR}`
+            );
+          }
+        }
+
+        app.quit();
+        return;
+      }
+
       dialog.showErrorBox(tituloErro, mensagemErro(error));
       app.quit();
     });

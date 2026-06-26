@@ -43,6 +43,30 @@ function getElectronConfigPath() {
   return path.join(getPersistentConfigDir(), 'config-servidor.json');
 }
 
+function getRecoveryFlagPath() {
+  return path.join(getPersistentConfigDir(), 'forcar-modo-local.flag');
+}
+
+function criarFlagForcarModoLocal() {
+  ensureConfigFile();
+  const flagPath = getRecoveryFlagPath();
+  fs.writeFileSync(flagPath, new Date().toISOString(), 'utf8');
+  return flagPath;
+}
+
+function consumirFlagForcarModoLocal() {
+  const flagPath = getRecoveryFlagPath();
+  if (!fs.existsSync(flagPath)) return false;
+  try {
+    fs.unlinkSync(flagPath);
+  } catch (e) {
+    console.warn('Não foi possível remover flag de recuperação:', e.message);
+  }
+  voltarModoLocalEstacao();
+  console.log('Recuperação: modo local aplicado via flag de emergência.');
+  return true;
+}
+
 function readJsonFile(filePath) {
   if (!fs.existsSync(filePath)) return null;
   try {
@@ -338,6 +362,19 @@ function voltarModoLocalEstacao() {
   });
 }
 
+function salvarModoEstacaoLocal({ modo, ipServidor, porta }) {
+  const current = readConfig();
+  const modoNormalizado = String(modo || 'local').trim().toLowerCase() === 'cliente' ? 'cliente' : 'local';
+
+  return saveConfig({
+    tipoImplantacao: current.tipoImplantacao,
+    modoOperacao: modoNormalizado === 'cliente' ? 'CLIENTE_SERVIDOR' : 'LOCAL',
+    ipServidor: modoNormalizado === 'cliente' ? String(ipServidor || '').trim() : '',
+    porta: Number.isInteger(Number(porta)) && Number(porta) > 0 ? Number(porta) : (current.porta || DEFAULT.porta),
+    modo_confirmacao_fiscal: current.modo_confirmacao_fiscal
+  });
+}
+
 module.exports = {
   get CONFIG_PATH() { return getConfigPath(); },
   get ELECTRON_CONFIG_PATH() { return getElectronConfigPath(); },
@@ -363,5 +400,9 @@ module.exports = {
   reloadGlobalConfig,
   recursoHabilitado,
   obterModoEstacaoLocal,
-  voltarModoLocalEstacao
+  voltarModoLocalEstacao,
+  salvarModoEstacaoLocal,
+  getRecoveryFlagPath,
+  criarFlagForcarModoLocal,
+  consumirFlagForcarModoLocal
 };
