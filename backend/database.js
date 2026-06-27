@@ -137,6 +137,8 @@ function aplicarAlteracoesPosCriacao() {
 
   // Adicionar colunas faltantes na tabela caixa
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN total_sangrias DECIMAL(10,2) DEFAULT 0`);
+  aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN total_suprimentos DECIMAL(10,2) DEFAULT 0`);
+  aplicarAlteracaoSegura('caixa_fechamentos', `ALTER TABLE caixa_fechamentos ADD COLUMN total_suprimentos DECIMAL(10,2) DEFAULT 0`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN saldo_esperado DECIMAL(10,2) DEFAULT 0`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN valor_fechamento DECIMAL(10,2) DEFAULT 0`);
   aplicarAlteracaoSegura('caixa', `ALTER TABLE caixa ADD COLUMN diferenca DECIMAL(10,2) DEFAULT 0`);
@@ -1599,6 +1601,7 @@ function inicializarBanco() {
     seedPinpadCatalogoTEF();
     criarUsuarioAdminPadrao();
     garantirCategoriasPadraoDespesa();
+    garantirColunasCaixa();
     garantirColunasFinanceiro();
     recuperarItemFiscalComprasItens();
     recuperarQuantidadesFiscaisComprasItens();
@@ -1677,6 +1680,54 @@ function garantirColunasCompras() {
       });
     });
   });
+}
+
+function garantirColunasCaixa() {
+  const colunasCaixa = [
+    ['total_sangrias', `ALTER TABLE caixa ADD COLUMN total_sangrias DECIMAL(10,2) DEFAULT 0`],
+    ['total_suprimentos', `ALTER TABLE caixa ADD COLUMN total_suprimentos DECIMAL(10,2) DEFAULT 0`],
+    ['saldo_esperado', `ALTER TABLE caixa ADD COLUMN saldo_esperado DECIMAL(10,2) DEFAULT 0`],
+    ['valor_fechamento', `ALTER TABLE caixa ADD COLUMN valor_fechamento DECIMAL(10,2) DEFAULT 0`],
+    ['diferenca', `ALTER TABLE caixa ADD COLUMN diferenca DECIMAL(10,2) DEFAULT 0`],
+    ['observacao', `ALTER TABLE caixa ADD COLUMN observacao TEXT`],
+    ['aberto_em', `ALTER TABLE caixa ADD COLUMN aberto_em DATETIME`],
+    ['fechado_em', `ALTER TABLE caixa ADD COLUMN fechado_em DATETIME`],
+    ['fechado_por', `ALTER TABLE caixa ADD COLUMN fechado_por INTEGER REFERENCES usuarios(id)`],
+    ['ja_reimpresso', `ALTER TABLE caixa ADD COLUMN ja_reimpresso INTEGER DEFAULT 0`],
+    ['reoperturas_count', `ALTER TABLE caixa ADD COLUMN reoperturas_count INTEGER DEFAULT 0`],
+    ['status', `ALTER TABLE caixa ADD COLUMN status TEXT DEFAULT 'aberto'`],
+    ['terminal_id', `ALTER TABLE caixa ADD COLUMN terminal_id INTEGER REFERENCES terminais(id)`]
+  ];
+
+  const colunasFechamentos = [
+    ['sessao_id', `ALTER TABLE caixa_fechamentos ADD COLUMN sessao_id INTEGER REFERENCES caixa_sessoes(id)`],
+    ['total_sangrias', `ALTER TABLE caixa_fechamentos ADD COLUMN total_sangrias DECIMAL(10,2) DEFAULT 0`],
+    ['total_suprimentos', `ALTER TABLE caixa_fechamentos ADD COLUMN total_suprimentos DECIMAL(10,2) DEFAULT 0`]
+  ];
+
+  function aplicarFaltantes(tabela, definicoes) {
+    db.all(`PRAGMA table_info(${tabela})`, [], (err, rows) => {
+      if (err) {
+        console.error(`Erro ao verificar colunas da tabela ${tabela}:`, err.message);
+        return;
+      }
+      const existentes = (rows || []).map((r) => r.name);
+      definicoes
+        .filter(([nome]) => !existentes.includes(nome))
+        .forEach(([, sql]) => {
+          db.run(sql, (alterErr) => {
+            if (alterErr) {
+              console.error(`Erro ao executar alteração em ${tabela}: ${sql}`, alterErr.message);
+            } else {
+              console.log(`Alteração aplicada em ${tabela}: ${sql}`);
+            }
+          });
+        });
+    });
+  }
+
+  aplicarFaltantes('caixa', colunasCaixa);
+  aplicarFaltantes('caixa_fechamentos', colunasFechamentos);
 }
 
 function garantirColunasFinanceiro() {
@@ -1928,6 +1979,7 @@ db.serialize(() => {
       data DATE NOT NULL,
       valor_inicial DECIMAL(10,2) DEFAULT 0,
       total_sangrias DECIMAL(10,2) DEFAULT 0,
+      total_suprimentos DECIMAL(10,2) DEFAULT 0,
       saldo_esperado DECIMAL(10,2) DEFAULT 0,
       valor_fechamento DECIMAL(10,2) DEFAULT 0,
       diferenca DECIMAL(10,2) DEFAULT 0,

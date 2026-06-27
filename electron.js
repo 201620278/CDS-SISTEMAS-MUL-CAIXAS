@@ -53,15 +53,15 @@ ipcMain.handle('listar-impressoras', async (event) => {
 });
 
 ipcMain.removeHandler('selecionar-pasta-backup');
-ipcMain.handle('selecionar-pasta-backup', async () => {
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory'],
-    title: 'Selecione a pasta de backup'
-  });
-
-  if (result.canceled) return null;
-
-  return result.filePaths[0];
+ipcMain.handle('selecionar-pasta-backup', async (event) => {
+  const { selecionarPastaBackup: abrirSeletorPasta } = require('./backend/services/electronDialogoService');
+  console.log('[IPC] selecionar-pasta-backup invocado');
+  const resultado = abrirSeletorPasta(event);
+  console.log('[IPC] selecionar-pasta-backup resultado:', resultado?.cancelado ? 'cancelado' : resultado?.caminho || resultado?.erro);
+  if (resultado.sucesso) {
+    return resultado.caminho;
+  }
+  return null;
 });
 
 ipcMain.removeHandler('rede-obter-modo-estacao');
@@ -365,12 +365,17 @@ function criarMainWindow(opcoes = {}) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: false,
       preload: path.join(__dirname, 'preload.js'),
       additionalArguments: argumentosExtras
     }
   });
 
   global.mainWindow = mainWindow;
+
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error('[ELECTRON] Erro no preload:', preloadPath, error?.message || error);
+  });
 
   console.log('[ELECTRON] mainWindow criada e definida como global.mainWindow');
 

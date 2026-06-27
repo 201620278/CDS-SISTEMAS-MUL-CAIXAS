@@ -2,8 +2,45 @@ const express = require("express");
 const path = require("path");
 const db = require("../database");
 const { fazerBackupManual, listarHistoricoBackups, aplicarRetencaoBackups } = require("../services/backupManual");
+const {
+  isElectronRuntime,
+  selecionarPastaBackup
+} = require("../services/electronDialogoService");
 
 const router = express.Router();
+
+router.post("/selecionar-pasta", (req, res) => {
+  if (!isElectronRuntime()) {
+    return res.status(501).json({
+      sucesso: false,
+      erro: "NOT_ELECTRON",
+      mensagem: "Seletor de pasta disponível apenas no aplicativo desktop."
+    });
+  }
+
+  try {
+    const resultado = selecionarPastaBackup();
+
+    if (resultado.cancelado) {
+      return res.json({ sucesso: false, cancelado: true });
+    }
+
+    if (!resultado.sucesso) {
+      return res.status(500).json({
+        sucesso: false,
+        mensagem: "Não foi possível abrir o seletor de pasta."
+      });
+    }
+
+    res.json({ sucesso: true, caminho: resultado.caminho });
+  } catch (error) {
+    console.error("[BACKUP] Erro ao selecionar pasta:", error);
+    res.status(500).json({
+      sucesso: false,
+      mensagem: error.message || "Erro ao selecionar pasta."
+    });
+  }
+});
 
 router.post("/manual", (req, res) => {
   const dbPath =

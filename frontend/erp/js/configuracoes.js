@@ -333,10 +333,10 @@ function renderConfiguracoes(configuracoes, usuarios, usuariosInativos) {
                 <i class="fas fa-database"></i> Backup e Manutenção
             </div>
             <div class="card-body">
-                <button id="btnBackupManual" class="btn btn-success">
+                <button type="button" id="btnBackupManual" class="btn btn-success">
                     <i class="fas fa-database"></i> Backup Manual DB
                 </button>
-                <button id="btnEscolherPasta" class="btn btn-info ms-2">
+                <button type="button" id="btnEscolherPasta" class="btn btn-info ms-2" onclick="escolherPastaBackup()">
                     <i class="fas fa-folder-open"></i> Escolher Pasta
                 </button>
                 <button class="btn btn-warning ms-2" onclick="limparCache()">
@@ -365,7 +365,6 @@ function renderConfiguracoes(configuracoes, usuarios, usuariosInativos) {
     // Configurar event listeners
     setupBackupManualListener();
     carregarPastaBackup();
-    setupEscolherPastaListener();
     carregarImpressoraCupom();
 }
 
@@ -1654,54 +1653,95 @@ async function carregarPastaBackup() {
     }
 }
 
-// Configurar listener do botão para escolher pasta
-function setupEscolherPastaListener() {
-    document.getElementById("btnEscolherPasta")?.addEventListener("click", async () => {
-        let pastaSelecionada = null;
+function detectarAmbienteElectron() {
+    return Boolean(window.electronAPI) || /Electron/i.test(navigator.userAgent || '');
+}
 
-        // Verificar se está rodando em Electron
-        if (window.electronAPI && window.electronAPI.selecionarPastaBackup) {
-            pastaSelecionada = await window.electronAPI.selecionarPastaBackup();
-        } else {
-            // Fallback para prompt em navegador web
-            pastaSelecionada = prompt("Digite o caminho da pasta de backup (ex: C:\\CDS-Sistemas\\Backups):");
-
-            if (pastaSelecionada) {
-                pastaSelecionada = pastaSelecionada.trim();
-                if (!pastaSelecionada) {
-                    showNotification('Caminho inválido', 'danger');
-                    return;
-                }
-            }
-        }
-
-        if (!pastaSelecionada) {
-            return; // Usuário cancelou
-        }
-
+async function solicitarPastaBackup() {
+    if (typeof window.electronAPI?.selecionarPastaBackup === 'function') {
         try {
-            const resp = await fetch(`${API_URL}/configuracoes/backup-path`, {
+            return await window.electronAPI.selecionarPastaBackup();
+        } catch (error) {
+            console.warn('[BACKUP] Falha no IPC do Electron, tentando API local:', error);
+        }
+    }
+
+    if (detectarAmbienteElectron()) {
+        try {
+            const resp = await fetch(`${API_URL}/backup/selecionar-pasta`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${localStorage.getItem('token')}`,
                     'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ caminho: pastaSelecionada })
+                }
             });
+            const data = await resp.json().catch(() => ({}));
 
-            const data = await resp.json();
-
-            if (data.sucesso) {
-                showNotification('Pasta de backup salva com sucesso!', 'success');
-                carregarPastaBackup();
-            } else {
-                showNotification(data.mensagem || 'Erro ao salvar pasta', 'danger');
+            if (data.cancelado) {
+                return null;
             }
+
+            if (resp.ok && data.sucesso && data.caminho) {
+                return data.caminho;
+            }
+
+            if (resp.status === 501 || data.erro === 'NOT_ELECTRON') {
+                showNotification('Seletor de pasta indisponível. Reinicie o aplicativo desktop.', 'danger');
+                return null;
+            }
+
+            showNotification(data.mensagem || 'Erro ao abrir seletor de pasta', 'danger');
+            return null;
         } catch (error) {
-            showNotification('Erro ao salvar pasta de backup', 'danger');
+            console.error('[BACKUP] Erro na API de seleção de pasta:', error);
+            showNotification('Erro ao abrir seletor de pasta no aplicativo', 'danger');
+            return null;
         }
-    });
+    }
+
+    const caminho = prompt("Digite o caminho da pasta de backup (ex: C:\\CDS-Sistemas\\Backups):");
+    if (!caminho) return null;
+
+    const pasta = caminho.trim();
+    if (!pasta) {
+        showNotification('Caminho inválido', 'danger');
+        return null;
+    }
+
+    return pasta;
 }
+
+async function escolherPastaBackup() {
+    const pastaSelecionada = await solicitarPastaBackup();
+
+    if (!pastaSelecionada) {
+        return;
+    }
+
+    try {
+        const resp = await fetch(`${API_URL}/configuracoes/backup-path`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ caminho: pastaSelecionada })
+        });
+
+        const data = await resp.json();
+
+        if (data.sucesso) {
+            showNotification('Pasta de backup salva com sucesso!', 'success');
+            carregarPastaBackup();
+        } else {
+            showNotification(data.mensagem || 'Erro ao salvar pasta', 'danger');
+        }
+    } catch (error) {
+        showNotification('Erro ao salvar pasta de backup', 'danger');
+    }
+}
+
+window.escolherPastaBackup = escolherPastaBackup;
 
 // Função para carregar impressora configurada
 async function carregarImpressoraCupom() {

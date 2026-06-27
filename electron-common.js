@@ -45,13 +45,14 @@ ipcMain.handle('listar-impressoras', async (event) => {
 });
 
 ipcMain.removeHandler('selecionar-pasta-backup');
-ipcMain.handle('selecionar-pasta-backup', async () => {
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory'],
-    title: 'Selecione a pasta de backup'
-  });
-
-  return result.canceled ? null : result.filePaths[0];
+ipcMain.handle('selecionar-pasta-backup', async (event) => {
+  const { selecionarPastaBackup: abrirSeletorPasta } = require('./backend/services/electronDialogoService');
+  console.log('[IPC] selecionar-pasta-backup invocado');
+  const resultado = abrirSeletorPasta(event);
+  if (resultado.sucesso) {
+    return resultado.caminho;
+  }
+  return null;
 });
 
 ipcMain.removeHandler('rede-obter-modo-estacao');
@@ -352,12 +353,13 @@ function registrarHandlersIpc() {
   });
 
   ipcMain.removeHandler('selecionar-pasta-backup');
-  ipcMain.handle('selecionar-pasta-backup', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: 'Selecione a pasta de backup'
-    });
-    return result.canceled ? null : result.filePaths[0];
+  ipcMain.handle('selecionar-pasta-backup', async (event) => {
+    const { selecionarPastaBackup: abrirSeletorPasta } = require('./backend/services/electronDialogoService');
+    const resultado = abrirSeletorPasta(event);
+    if (resultado.sucesso) {
+      return resultado.caminho;
+    }
+    return null;
   });
 }
 
@@ -387,6 +389,7 @@ function criarMainWindow(tituloJanela, opcoes = {}) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: false,
       preload: path.join(__dirname, 'preload.js'),
       additionalArguments: argumentosExtras
     }
@@ -394,6 +397,10 @@ function criarMainWindow(tituloJanela, opcoes = {}) {
 
   global.mainWindow = mainWindow;
   registrarHandlersIpc();
+
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error('[ELECTRON] Erro no preload:', preloadPath, error?.message || error);
+  });
 
   mainWindow.webContents.on('did-finish-load', () => {
     injetarHostnameEstacao(mainWindow.webContents);
