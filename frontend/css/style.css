@@ -226,11 +226,21 @@ html, body {
 
 #sidebar-brand {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 0.4rem;
     min-height: 120px;
     padding: 1rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+#sidebar-brand-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
 }
 
 #sidebar-brand img {
@@ -238,6 +248,63 @@ html, body {
     max-width: 100%;
     object-fit: contain;
     filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.sidebar-modo-fiscal-bar {
+    width: 72%;
+    max-width: 150px;
+    height: 4px;
+    border-radius: 999px;
+    transition: background-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.sidebar-modo-fiscal-bar--on {
+    background-color: #28a745;
+    box-shadow: 0 0 8px rgba(40, 167, 69, 0.65);
+}
+
+.sidebar-modo-fiscal-bar--off {
+    background-color: #dc3545;
+    box-shadow: 0 0 8px rgba(220, 53, 69, 0.45);
+}
+
+.historico-venda-acoes-col {
+    width: 96px;
+    white-space: nowrap;
+}
+
+.historico-venda-acoes {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.historico-venda-acoes-menu {
+    width: 2rem;
+    padding-left: 0;
+    padding-right: 0;
+}
+
+.historico-venda-acoes-dropdown {
+    min-width: 15rem;
+    font-size: 0.875rem;
+}
+
+.historico-venda-acoes-dropdown .dropdown-item {
+    display: flex;
+    align-items: center;
+}
+
+.historico-venda-acoes-dropdown .dropdown-item:active,
+.historico-venda-acoes-dropdown .dropdown-item:focus {
+    background-color: #f8f9fa;
+    color: inherit;
+}
+
+.historico-venda-acoes-dropdown .dropdown-item.text-danger:active,
+.historico-venda-acoes-dropdown .dropdown-item.text-danger:focus {
+    background-color: #fff5f5;
+    color: #dc3545;
 }
 
 /* Main content */
@@ -641,6 +708,7 @@ main {
 }
 
 .implantacao-sem-fiscal #faixaSistemaFiscalPdv,
+.implantacao-sem-fiscal #sidebar-modo-fiscal-bar,
 .implantacao-sem-fiscal .btn-fiscal-bloqueado,
 .implantacao-sem-fiscal [data-fiscal-only="true"] {
     display: none !important;

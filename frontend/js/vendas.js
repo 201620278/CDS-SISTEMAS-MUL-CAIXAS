@@ -98,7 +98,7 @@ function renderVendas(vendas) {
                                 <th>Total</th>
                                 <th>Forma</th>
                                 <th>Status</th>
-                                <th>Ações</th>
+                                <th class="historico-venda-acoes-col">Ações</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -111,13 +111,7 @@ function renderVendas(vendas) {
                                     <td>${formatCurrency(v.total)}</td>
                                     <td>${rotuloFormaPagamento(v.forma_pagamento)}</td>
                                     <td>${rotuloStatusVenda(v.status)}</td>
-                                    <td>
-                                        <button class="btn btn-sm btn-info" onclick="viewVenda(${v.id})"><i class="fas fa-eye"></i></button>
-                                        <button class="btn btn-sm btn-secondary" title="Resumo Venda/NFC-e/TEF" onclick="verResumoVendaFiscalTEF(${v.id})">📄</button>
-                                        ${v.status !== 'cancelada' ? `
-                                        <button class="btn btn-sm btn-warning" onclick="abrirDevolucaoVenda(${v.id})" title="Devolução parcial"><i class="fas fa-undo"></i></button>
-                                        <button class="btn btn-sm btn-danger" onclick="cancelarVendaNaoFiscal(${v.id})"><i class="fas fa-times"></i></button>` : ''}
-                                    </td>
+                                    <td class="historico-venda-acoes-col">${montarHtmlAcoesHistoricoVenda(v)}</td>
                                 </tr>
                             `).join('') || '<tr><td colspan="8" class="text-center">Nenhuma venda encontrada.</td></tr>'}
                         </tbody>
@@ -140,21 +134,45 @@ function viewVenda(id) {
         });
 }
 
+function rotuloModoVendaItem(item) {
+    const tipo = String(item?.tipo_venda || '').toUpperCase();
+    if (tipo === 'UNIDADE' || item?.modo_venda === 'unidade') return 'Unidade';
+    return 'Peso';
+}
+
+function formatarQuantidadeVendaItem(item) {
+    const tipo = String(item?.tipo_venda || '').toUpperCase();
+    if (tipo === 'UNIDADE' || item?.modo_venda === 'unidade') {
+        return `${Math.round(Number(item.quantidade || 0))} UN`;
+    }
+    const unidade = String(item?.unidade || '').toUpperCase();
+    const quantidade = Number(item?.quantidade || 0);
+    return unidade ? `${quantidade} ${unidade}` : String(quantidade);
+}
+
+function formatarQuantidadeEstoqueKg(item) {
+    const kg = Number(item?.quantidade_fiscal || 0) + Number(item?.quantidade_nao_fiscal || 0);
+    if (kg <= 0) return '—';
+    return `${kg.toFixed(3).replace('.', ',')} KG`;
+}
+
 function showVendaModal(venda) {
     const itens = venda.itens || [];
     const itensHtml = itens.map(item => `
         <tr>
             <td>${item.produto_id || '-'}</td>
             <td>${escapeHtml(item.produto_nome || '-')}</td>
+            <td>${rotuloModoVendaItem(item)}</td>
             <td>${formatCurrency(item.preco_unitario)}</td>
-            <td>${Number(item.quantidade_fiscal ?? 0)}</td>
-            <td>${Number(item.quantidade_nao_fiscal ?? 0)}</td>
-            <td>${Number(item.quantidade || 0)}</td>
+            <td>${formatarQuantidadeVendaItem(item)}</td>
+            <td>${Number(item.quantidade_fiscal ?? 0).toFixed(3).replace('.', ',')}</td>
+            <td>${Number(item.quantidade_nao_fiscal ?? 0).toFixed(3).replace('.', ',')}</td>
+            <td>${formatarQuantidadeEstoqueKg(item)}</td>
             <td>${formatCurrency(item.valor_fiscal ?? 0)}</td>
             <td>${formatCurrency(item.valor_nao_fiscal ?? 0)}</td>
             <td>${formatCurrency(item.subtotal)}</td>
         </tr>
-    `).join('') || '<tr><td colspan="9" class="text-center">Nenhum item encontrado.</td></tr>';
+    `).join('') || '<tr><td colspan="11" class="text-center">Nenhum item encontrado.</td></tr>';
 
     const modalHtml = `
         <div class="modal fade" id="vendaModal" tabindex="-1" aria-labelledby="vendaModalLabel" aria-hidden="true">
@@ -180,16 +198,28 @@ function showVendaModal(venda) {
                             <div class="col-sm-4"><strong>Documento:</strong> ${escapeHtml(venda.documento || '-')}</div>
                             <div class="col-sm-4"><strong>Número de itens:</strong> ${itens.length}</div>
                         </div>
+                        ${vendaPossuiNfceAutorizada(venda) ? `
+                        <div class="alert alert-success py-2 mb-3">
+                            <i class="fas fa-receipt"></i>
+                            NFC-e autorizada${venda.nfce_numero ? ` — nota <strong>#${escapeHtml(String(venda.nfce_numero))}</strong>` : ''}
+                        </div>` : ''}
+                        ${vendaPossuiCupomNaoFiscal(venda) ? `
+                        <div class="alert alert-warning py-2 mb-3">
+                            <i class="fas fa-file-invoice"></i>
+                            Comprovante não fiscal disponível${Number(venda.valor_nao_fiscal || 0) > 0 ? ` — R$ ${Number(venda.valor_nao_fiscal).toFixed(2).replace('.', ',')}` : ''}
+                        </div>` : ''}
                         <div class="table-responsive">
                             <table class="table table-sm table-bordered">
                                 <thead>
                                     <tr>
                                         <th>ID Produto</th>
                                         <th>Produto</th>
+                                        <th>Modo</th>
                                         <th>Preço</th>
-                                        <th>Qtd Fiscal</th>
-                                        <th>Qtd Não Fiscal</th>
-                                        <th>Qtd Total</th>
+                                        <th>Qtd Venda</th>
+                                        <th>Qtd Fiscal (KG)</th>
+                                        <th>Qtd Não Fiscal (KG)</th>
+                                        <th>Estoque (KG)</th>
                                         <th>Valor Fiscal</th>
                                         <th>Valor Não Fiscal</th>
                                         <th>Subtotal</th>
@@ -202,6 +232,14 @@ function showVendaModal(venda) {
                         </div>
                     </div>
                     <div class="modal-footer">
+                        ${vendaPossuiCupomNaoFiscal(venda) ? `
+                        <button type="button" class="btn btn-warning" onclick="reimprimirCupomNaoFiscalHistorico(${venda.id})">
+                            <i class="fas fa-receipt"></i> Reimprimir cupom não fiscal
+                        </button>` : ''}
+                        ${vendaPossuiNfceAutorizada(venda) ? `
+                        <button type="button" class="btn btn-success" onclick="reimprimirCupomFiscalHistorico(${venda.id})">
+                            <i class="fas fa-print"></i> Reimprimir cupom fiscal
+                        </button>` : ''}
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
                     </div>
                 </div>
@@ -353,15 +391,17 @@ function abrirDevolucaoVenda(vendaId) {
             const itens = (venda.itens || []).map((item) => `
                 <tr>
                     <td>${escapeHtml(item.produto_nome || '-')}</td>
-                    <td class="text-center">${Number(item.quantidade_fiscal ?? 0)}</td>
-                    <td class="text-center">${Number(item.quantidade_nao_fiscal ?? 0)}</td>
-                    <td class="text-center">${Number(item.quantidade || 0)}</td>
+                    <td class="text-center">${rotuloModoVendaItem(item)}</td>
+                    <td class="text-center">${formatarQuantidadeVendaItem(item)}</td>
+                    <td class="text-center">${Number(item.quantidade_fiscal ?? 0).toFixed(3).replace('.', ',')}</td>
+                    <td class="text-center">${Number(item.quantidade_nao_fiscal ?? 0).toFixed(3).replace('.', ',')}</td>
+                    <td class="text-center">${formatarQuantidadeEstoqueKg(item)}</td>
                     <td>
                         <input type="number" min="0" step="0.001" class="form-control form-control-sm devolucao-qtd"
                             data-item-id="${item.id}" placeholder="0">
                     </td>
                 </tr>
-            `).join('') || '<tr><td colspan="5" class="text-center">Sem itens</td></tr>';
+            `).join('') || '<tr><td colspan="7" class="text-center">Sem itens</td></tr>';
 
             const modalHtml = `
                 <div class="modal fade" id="modalDevolucaoVenda" tabindex="-1">
@@ -372,7 +412,7 @@ function abrirDevolucaoVenda(vendaId) {
                                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                             </div>
                             <div class="modal-body">
-                                <p class="text-muted small">Restaura estoque fiscal primeiro, depois não fiscal.</p>
+                                <p class="text-muted small">Informe a quantidade em KG a devolver. Restaura estoque fiscal primeiro, depois não fiscal.</p>
                                 <div class="mb-3">
                                     <label class="form-label fw-bold">Motivo (mín. 10 caracteres)</label>
                                     <textarea id="motivoDevolucaoVenda" class="form-control" rows="2"></textarea>
@@ -381,10 +421,12 @@ function abrirDevolucaoVenda(vendaId) {
                                     <thead>
                                         <tr>
                                             <th>Produto</th>
-                                            <th>Fiscal</th>
-                                            <th>Não Fiscal</th>
-                                            <th>Total</th>
-                                            <th>Qtd devolver</th>
+                                            <th>Modo</th>
+                                            <th>Qtd Venda</th>
+                                            <th>Fiscal (KG)</th>
+                                            <th>Não Fiscal (KG)</th>
+                                            <th>Estoque (KG)</th>
+                                            <th>Qtd devolver (KG)</th>
                                         </tr>
                                     </thead>
                                     <tbody>${itens}</tbody>

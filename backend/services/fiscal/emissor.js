@@ -231,6 +231,7 @@ async function emitirPorVendaId(vendaId) {
 
   if (notaAutorizada) {
     return {
+      success: true,
       reused: true,
       status: notaAutorizada.status,
       notaId: notaAutorizada.id,
@@ -503,14 +504,24 @@ async function emitirPorVendaId(vendaId) {
     danfe_html: danfeHtml
   });
 
+  const autorizada = status === 'autorizada';
+  let message = null;
+
+  if (assinaturaErro) {
+    message = assinaturaErro.message;
+  } else if (!autorizada) {
+    message = soapResponse?.message || `NFC-e não autorizada (status: ${status}).`;
+  }
+
   return {
-    success: !assinaturaErro,
+    success: autorizada,
     notaId,
     status,
     numero,
     chaveAcesso: chaveAutorizada,
     qrCodeUrl,
     danfeHtml,
+    message,
     soap: soapResponse
   };
 }

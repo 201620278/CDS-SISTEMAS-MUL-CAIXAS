@@ -402,7 +402,7 @@ async function carregarProdutosMaisVendidosInterno(dataInicio, dataFim, limite =
                     <th>Código</th>
                     <th>Produto</th>
                     <th>Unidade</th>
-                    <th>Qtd fiscal</th>
+                    <th>Qtd fiscal (KG)</th>
                     <th>Valor fiscal</th>
                     <th>Preço médio</th>
                 `
@@ -410,9 +410,9 @@ async function carregarProdutosMaisVendidosInterno(dataInicio, dataFim, limite =
                     <th>Código</th>
                     <th>Produto</th>
                     <th>Unidade</th>
-                    <th>Qtd fiscal</th>
-                    <th>Qtd não fiscal</th>
-                    <th>Qtd total</th>
+                    <th>Qtd fiscal (KG)</th>
+                    <th>Qtd não fiscal (KG)</th>
+                    <th>Qtd total (KG)</th>
                     <th>Valor fiscal</th>
                     <th>Valor não fiscal</th>
                     <th>Total</th>
@@ -856,7 +856,7 @@ async function carregarProdutosMaisVendidosInterno(dataInicio, dataFim, limite =
                     <th>Código</th>
                     <th>Produto</th>
                     <th>Unidade</th>
-                    <th>Qtd fiscal</th>
+                    <th>Qtd fiscal (KG)</th>
                     <th>Valor fiscal</th>
                     <th>Preço médio</th>
                 `
@@ -864,9 +864,9 @@ async function carregarProdutosMaisVendidosInterno(dataInicio, dataFim, limite =
                     <th>Código</th>
                     <th>Produto</th>
                     <th>Unidade</th>
-                    <th>Qtd fiscal</th>
-                    <th>Qtd não fiscal</th>
-                    <th>Qtd total</th>
+                    <th>Qtd fiscal (KG)</th>
+                    <th>Qtd não fiscal (KG)</th>
+                    <th>Qtd total (KG)</th>
                     <th>Valor fiscal</th>
                     <th>Valor não fiscal</th>
                     <th>Total</th>

@@ -9,6 +9,32 @@ function isModoFiscalVisualizacaoAtivo() {
     return modoFiscalQueryParam() === '1';
 }
 
+function atualizarBarraModoFiscalSidebar() {
+    const barra = document.getElementById('sidebar-modo-fiscal-bar');
+    if (!barra) return;
+
+    const fiscalPermitido = typeof implantacaoPermiteFiscal === 'function'
+        ? implantacaoPermiteFiscal()
+        : true;
+
+    if (!fiscalPermitido) {
+        barra.style.display = 'none';
+        return;
+    }
+
+    barra.style.display = '';
+
+    const ativo = typeof modoFiscalAtivoSistema === 'function'
+        ? modoFiscalAtivoSistema()
+        : localStorage.getItem('pdv_modo_fiscal_ativo') === '1';
+
+    barra.classList.toggle('sidebar-modo-fiscal-bar--on', ativo);
+    barra.classList.toggle('sidebar-modo-fiscal-bar--off', !ativo);
+    barra.title = ativo
+        ? 'Modo fiscal ativo (F12 para modo completo)'
+        : 'Modo completo (F12 para ativar fiscal)';
+}
+
 function enriquecerProdutoComCacheEstoque(produto) {
     if (!produto) return produto;
 
@@ -82,6 +108,7 @@ function recarregarModulosModoFiscal() {
 
 window.modoFiscalQueryParam = modoFiscalQueryParam;
 window.isModoFiscalVisualizacaoAtivo = isModoFiscalVisualizacaoAtivo;
+window.atualizarBarraModoFiscalSidebar = atualizarBarraModoFiscalSidebar;
 window.enriquecerProdutoComCacheEstoque = enriquecerProdutoComCacheEstoque;
 window.obterEstoqueExibicaoSimplesProduto = obterEstoqueExibicaoSimplesProduto;
 window.obterEstoqueDisponivelProduto = obterEstoqueDisponivelProduto;

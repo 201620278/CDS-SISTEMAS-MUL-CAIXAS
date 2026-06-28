@@ -1,4 +1,5 @@
 const escpos = require('escpos');
+const { formatarLinhasItemCupomEscpos } = require('./vendaUnidadeHelpers');
 
 escpos.USB = require('escpos-usb');
 
@@ -31,11 +32,7 @@ function montarLinhasCupom(payload) {
   ];
 
   itens.forEach((item) => {
-    const nome = String(item.produto_nome || 'Produto').slice(0, 24);
-    const qtd = Number(item.quantidade || 0);
-    const subtotalItem = Number(item.subtotal || 0);
-    linhas.push(nome);
-    linhas.push(`${qtd} x ${formatarMoeda(item.preco_unitario)} = ${formatarMoeda(subtotalItem)}`);
+    formatarLinhasItemCupomEscpos(item).forEach((linha) => linhas.push(linha));
   });
 
   linhas.push('-----------------------------');

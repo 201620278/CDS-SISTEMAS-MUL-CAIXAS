@@ -5,6 +5,26 @@ const https = require('https');
 const { carregarCertificadoPfx } = require('./certificateService');
 const { getFiscalSubDir } = require('./paths');
 
+const SEFAZ_TIMEOUT_MS = Number(process.env.FISCAL_SOAP_TIMEOUT_MS) || 90000;
+const SEFAZ_MAX_TENTATIVAS = 2;
+
+function mensagemErroSefaz(error) {
+  if (error.code === 'ECONNABORTED' || /timeout/i.test(error.message || '')) {
+    return `A SEFAZ não respondeu em ${Math.round(SEFAZ_TIMEOUT_MS / 1000)}s. Tente emitir novamente.`;
+  }
+
+  const resposta = error.response?.data;
+  if (typeof resposta === 'string' && resposta.length > 500) {
+    return `Erro na comunicação com a SEFAZ (HTTP ${error.response?.status || 'sem status'}).`;
+  }
+
+  return resposta || error.message || String(error);
+}
+
+function aguardar(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function salvarDebug(nome, conteudo) {
   const pasta = getFiscalSubDir('debug');
   fs.writeFileSync(path.join(pasta, nome), conteudo, 'utf8');
@@ -107,53 +127,72 @@ async function enviarLote({
   salvarDebug('03-xml-lote-enviNFe.xml', loteXml);
   salvarDebug('04-soap-enviado.xml', envelope);
 
-  try {
-    const httpsAgent = criarHttpsAgentSefaz({
-      certificadoPath,
-      certificadoSenha,
-      url
-    });
+  const httpsAgent = criarHttpsAgentSefaz({
+    certificadoPath,
+    certificadoSenha,
+    url
+  });
 
-    console.log('Enviando para SEFAZ URL:', url);
-    console.log('SOAP 1.2 sem wrapper + action explícita');
+  console.log('Enviando para SEFAZ URL:', url);
+  console.log(`SOAP 1.2 sem wrapper + action explícita (timeout ${SEFAZ_TIMEOUT_MS}ms)`);
 
-    const response = await axios.post(url, envelope, {
-      httpsAgent,
-      proxy: false,
-      timeout: 30000,
-      responseType: 'text',
-      maxBodyLength: Infinity,
-      maxContentLength: Infinity,
-      transitional: {
-        forcedJSONParsing: false
-      },
-      headers: {
-        'Content-Type': 'application/soap+xml; charset=utf-8; action="http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4/nfeAutorizacaoLote"',
-        'Accept': 'application/soap+xml, text/xml, */*',
-        'User-Agent': 'CDGESTAO-NFCE/1.0'
+  let ultimoErro = null;
+
+  for (let tentativa = 1; tentativa <= SEFAZ_MAX_TENTATIVAS; tentativa++) {
+    try {
+      const response = await axios.post(url, envelope, {
+        httpsAgent,
+        proxy: false,
+        timeout: SEFAZ_TIMEOUT_MS,
+        responseType: 'text',
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+        transitional: {
+          forcedJSONParsing: false
+        },
+        headers: {
+          'Content-Type': 'application/soap+xml; charset=utf-8; action="http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4/nfeAutorizacaoLote"',
+          'Accept': 'application/soap+xml, text/xml, */*',
+          'User-Agent': 'CDGESTAO-NFCE/1.0'
+        }
+      });
+
+      return {
+        success: true,
+        status: 'soap_enviado',
+        raw: response.data
+      };
+    } catch (error) {
+      ultimoErro = error;
+      const podeRetentar =
+        tentativa < SEFAZ_MAX_TENTATIVAS &&
+        (error.code === 'ECONNABORTED' || /timeout/i.test(error.message || ''));
+
+      console.error(`ERRO REAL SEFAZ (tentativa ${tentativa}/${SEFAZ_MAX_TENTATIVAS}):`, error.message);
+      console.error('ERRO CODE:', error.code || null);
+      console.error('ERRO STATUS HTTP:', error.response?.status || null);
+      console.error('ERRO HEADERS:', error.response?.headers || null);
+      console.error('ERRO RESPONSE:', error.response?.data || null);
+
+      if (podeRetentar) {
+        console.warn('Timeout SEFAZ — nova tentativa em 3s...');
+        await aguardar(3000);
+        continue;
       }
-    });
 
-    return {
-      success: true,
-      status: 'soap_enviado',
-      raw: response.data
-    };
-  } catch (error) {
-    console.error('ERRO REAL SEFAZ:', error.message);
-    console.error('ERRO CODE:', error.code || null);
-    console.error('ERRO STATUS HTTP:', error.response?.status || null);
-    console.error('ERRO HEADERS:', error.response?.headers || null);
-    console.error('ERRO RESPONSE:', error.response?.data || null);
-    console.error('SOAP ENVELOPE ENVIADO:\n', envelope);
-
-    return {
-      success: false,
-      status: 'erro_transmissao',
-      message: error.response?.data || error.message || String(error),
-      code: error.code || null
-    };
+      console.error('SOAP ENVELOPE ENVIADO:\n', envelope);
+      break;
+    }
   }
+
+  const error = ultimoErro;
+
+  return {
+    success: false,
+    status: 'erro_transmissao',
+    message: mensagemErroSefaz(error),
+    code: error?.code || null
+  };
 }
 
 module.exports = {
@@ -211,7 +250,7 @@ async function enviarSoapDFe(envelope, certificadoPath, certificadoSenha, url) {
     const response = await axios.post(url, envelope, {
       httpsAgent,
       proxy: false,
-      timeout: 30000,
+      timeout: SEFAZ_TIMEOUT_MS,
       responseType: 'text',
       maxBodyLength: Infinity,
       maxContentLength: Infinity,

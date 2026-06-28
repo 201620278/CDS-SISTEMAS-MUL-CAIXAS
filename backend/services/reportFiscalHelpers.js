@@ -38,7 +38,7 @@ function getExprQuantidadeItem(modoFiscal, alias = 'vi') {
   if (isModoFiscalRelatorio(modoFiscal)) {
     return `COALESCE(${alias}.quantidade_fiscal, 0)`;
   }
-  return `COALESCE(NULLIF(${alias}.quantidade, 0), COALESCE(${alias}.quantidade_fiscal, 0) + COALESCE(${alias}.quantidade_nao_fiscal, 0), 0)`;
+  return `COALESCE(NULLIF(COALESCE(${alias}.quantidade_fiscal, 0) + COALESCE(${alias}.quantidade_nao_fiscal, 0), 0), ${alias}.quantidade, 0)`;
 }
 
 function getExprQuantidadeItemFiscal(alias = 'vi') {

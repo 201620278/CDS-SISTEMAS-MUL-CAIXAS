@@ -54,6 +54,7 @@ function normalizarProdutoResposta(produto, modoFiscal) {
 
   const base = {
     ...produto,
+    ...aplicarCamposVendaUnidadeResposta(produto),
     produto_fracionado: flagFracionado,
     preco_compra: precoCompra,
     saldo_fiscal: saldoFiscal,
@@ -90,6 +91,32 @@ function resolverFlagProdutoFracionado(body = {}) {
   return undefined;
 }
 
+function normalizarCamposVendaUnidade(valores = {}) {
+  const result = {};
+
+  if (valores.permite_venda_unidade !== undefined && valores.permite_venda_unidade !== null) {
+    result.permite_venda_unidade = Number(valores.permite_venda_unidade) === 1 ? 1 : 0;
+  }
+
+  if (valores.peso_medio_unidade !== undefined && valores.peso_medio_unidade !== null && valores.peso_medio_unidade !== '') {
+    result.peso_medio_unidade = Number(valores.peso_medio_unidade) || 0;
+  }
+
+  if (valores.preco_unidade !== undefined && valores.preco_unidade !== null && valores.preco_unidade !== '') {
+    result.preco_unidade = Number(valores.preco_unidade) || 0;
+  }
+
+  return result;
+}
+
+function aplicarCamposVendaUnidadeResposta(produto = {}) {
+  return {
+    permite_venda_unidade: Number(produto.permite_venda_unidade ?? 0) === 1 ? 1 : 0,
+    peso_medio_unidade: Number(produto.peso_medio_unidade ?? 0),
+    preco_unidade: Number(produto.preco_unidade ?? 0)
+  };
+}
+
 const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'id',
   'created_at',
@@ -117,6 +144,99 @@ const CAMPOS_PRODUTO_IGNORADOS = new Set([
   'saldo_fiscal_inicial',
   'saldo_nao_fiscal_inicial'
 ]);
+
+function obterEstoqueTotalProduto(produto = {}) {
+  const fiscal = Number(produto.saldo_fiscal ?? 0);
+  const naoFiscal = Number(produto.saldo_nao_fiscal ?? 0);
+  const estoqueAtual = Number(produto.estoque_atual ?? 0);
+  if (estoqueAtual > 0) return estoqueAtual;
+  return fiscal + naoFiscal;
+}
+
+function sincronizarValidadeELoteProduto(produtoId, opcoes, callback) {
+  const controlarValidade = Number(opcoes.controlarValidade) === 1;
+  const dataValidade = opcoes.dataValidade ? String(opcoes.dataValidade).trim() : null;
+  const diasAlerta = opcoes.diasAlerta !== undefined && opcoes.diasAlerta !== null
+    ? Number(opcoes.diasAlerta) || 30
+    : 30;
+  const estoqueTotal = Number(opcoes.estoqueTotal) || 0;
+
+  if (!controlarValidade) {
+    return db.run(
+      `UPDATE produtos SET data_validade = NULL WHERE id = ?`,
+      [produtoId],
+      callback
+    );
+  }
+
+  const atualizarProduto = (cb) => {
+    if (!dataValidade) {
+      if (opcoes.diasAlerta !== undefined && opcoes.diasAlerta !== null) {
+        return db.run(
+          `UPDATE produtos SET dias_alerta_validade = ? WHERE id = ?`,
+          [diasAlerta, produtoId],
+          cb
+        );
+      }
+      return cb(null);
+    }
+
+    db.run(
+      `UPDATE produtos SET data_validade = ?, dias_alerta_validade = ? WHERE id = ?`,
+      [dataValidade, diasAlerta, produtoId],
+      cb
+    );
+  };
+
+  atualizarProduto((err) => {
+    if (err) return callback(err);
+    if (!dataValidade) return callback(null);
+
+    lotesService.buscarLotesProduto(produtoId, (loteErr, lotes) => {
+      if (loteErr) return callback(loteErr);
+
+      if (lotes && lotes.length > 0) {
+        return db.run(
+          `UPDATE produtos_lotes SET data_validade = ? WHERE id = ?`,
+          [dataValidade, lotes[0].id],
+          callback
+        );
+      }
+
+      if (estoqueTotal <= 0) {
+        return callback(null);
+      }
+
+      lotesService.criarLote({
+        produto_id: produtoId,
+        quantidade_inicial: estoqueTotal,
+        data_validade: dataValidade,
+        data_entrada: new Date().toISOString().split('T')[0],
+        origem: 'ESTOQUE_INICIAL',
+        compra_id: null
+      }, callback);
+    });
+  });
+}
+
+function enriquecerProdutoComValidade(produtoId, produto, callback) {
+  if (Number(produto.controlar_validade) !== 1) {
+    return callback(null, produto);
+  }
+
+  lotesService.buscarLotesProduto(produtoId, (err, lotes) => {
+    if (err) return callback(err);
+
+    const dataValidadeLote = lotes && lotes[0] ? lotes[0].data_validade : null;
+    const dataValidade = produto.data_validade || dataValidadeLote || null;
+
+    callback(null, {
+      ...produto,
+      data_validade: dataValidade,
+      data_validade_inicial: dataValidade
+    });
+  });
+}
 
 function inserirFaixasAtacadoProduto(produtoId, faixas, callback) {
   const lista = Array.isArray(faixas) ? faixas : [];
@@ -189,12 +309,12 @@ function buscarProdutoCompleto(produtoId, callback) {
           return callback(faixaErr);
         }
 
-        callback(null, {
+        callback(null, normalizarProdutoResposta({
           ...row,
           categoria: row.categoria_nome || '',
           subcategoria: row.subcategoria_nome || '',
           atacado_faixas: faixas || []
-        });
+        }, false));
       }
     );
   });
@@ -429,6 +549,9 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       p.estoque_minimo,
       p.vendido_por_peso,
       COALESCE(p.produto_fracionado, p.vendido_por_peso, 0) AS produto_fracionado,
+      COALESCE(p.permite_venda_unidade, 0) AS permite_venda_unidade,
+      COALESCE(p.peso_medio_unidade, 0) AS peso_medio_unidade,
+      COALESCE(p.preco_unidade, 0) AS preco_unidade,
       CASE 
         WHEN promo.id IS NOT NULL THEN 1 
         ELSE 0 
@@ -1443,7 +1566,7 @@ router.get('/:id', (req, res) => {
             return res.status(500).json({ error: movErr.message });
           }
 
-          const produto = normalizarProdutoResposta({
+          const produtoBase = normalizarProdutoResposta({
             ...row,
             categoria: row.categoria_nome || '',
             subcategoria: row.subcategoria_nome || '',
@@ -1451,7 +1574,12 @@ router.get('/:id', (req, res) => {
             tem_movimentacoes: temMovimentacoes
           }, modoFiscal);
 
-          res.json(produto);
+          enriquecerProdutoComValidade(req.params.id, produtoBase, (validadeErr, produto) => {
+            if (validadeErr) {
+              return res.status(500).json({ error: validadeErr.message });
+            }
+            res.json(produto);
+          });
         });
       }
     );
@@ -1472,10 +1600,14 @@ router.post('/', (req, res) => {
     saldo_fiscal_inicial,
     saldo_nao_fiscal_inicial,
     item_fiscal,
+    permite_venda_unidade,
+    peso_medio_unidade,
+    preco_unidade,
     // Campos adicionais para lote inicial
     lote_inicial,
     data_fabricacao_inicial,
-    data_validade_inicial
+    data_validade_inicial,
+    dias_alerta_validade
   } = req.body;
 
   const controlarValidade = controlar_validade ? 1 : 0;
@@ -1501,6 +1633,14 @@ router.post('/', (req, res) => {
   }
 
   const itemFiscalGravar = resolverItemFiscalCadastro(req.body, saldoFiscalInicial, saldoNaoFiscalInicial);
+  const camposVendaUnidade = normalizarCamposVendaUnidade({
+    permite_venda_unidade,
+    peso_medio_unidade,
+    preco_unidade
+  });
+  const permiteVendaUnidade = camposVendaUnidade.permite_venda_unidade ?? 0;
+  const pesoMedioUnidade = camposVendaUnidade.peso_medio_unidade ?? 0;
+  const precoUnidade = camposVendaUnidade.preco_unidade ?? 0;
   console.log('[AUDIT PRODUTO POST] req.body.item_fiscal:', req.body.item_fiscal);
   console.log('[AUDIT PRODUTO POST] item_fiscal gravar INSERT:', itemFiscalGravar);
 
@@ -1514,9 +1654,10 @@ router.post('/', (req, res) => {
       controlar_validade,
       vendido_por_peso, produto_fracionado, peso_total_compra, valor_total_compra, custo_por_kg,
       venda_atacado,
-      saldo_fiscal, saldo_nao_fiscal, item_fiscal
+      saldo_fiscal, saldo_nao_fiscal, item_fiscal,
+      permite_venda_unidade, peso_medio_unidade, preco_unidade
     )
-    VALUES (${Array(30).fill('?').join(', ')})
+    VALUES (${Array(33).fill('?').join(', ')})
   `, [
     codigo, nome, categoria_id, subcategoria_id, unidade,
     preco_compra, lucro_percentual, preco_venda,
@@ -1532,7 +1673,10 @@ router.post('/', (req, res) => {
     venda_atacado ? 1 : 0,
     saldoFiscalInicial,
     saldoNaoFiscalInicial,
-    itemFiscalGravar
+    itemFiscalGravar,
+    permiteVendaUnidade,
+    pesoMedioUnidade,
+    precoUnidade
   ],
     function(err) {
       if (err) {
@@ -1552,30 +1696,26 @@ router.post('/', (req, res) => {
         }
       );
 
-      // Se controlar validade e tiver estoque inicial, criar lote inicial
-      if (controlarValidade && estoqueInicial > 0) {
-        if (!data_validade_inicial) {
+      // Se controlar validade, persistir validade e criar lote inicial quando houver estoque
+      if (controlarValidade) {
+        if (estoqueInicial > 0 && !data_validade_inicial) {
           return res.status(400).json({
             error: 'Data de validade é obrigatória para o estoque inicial.'
           });
         }
 
-        const hoje = new Date().toISOString().split('T')[0];
-
-        // Lote gerado automaticamente pelo serviço
-        lotesService.criarLote({
-          produto_id: produtoId,
-          quantidade_inicial: estoqueInicial,
-          data_validade: data_validade_inicial,
-          data_entrada: hoje,
-          origem: 'ESTOQUE_INICIAL',
-          compra_id: null
-        }, (loteErr) => {
-          if (loteErr) {
-            console.error('Erro ao criar lote inicial:', loteErr.message);
-            // Não falhar a criação do produto se o lote falhar, mas logar o erro
+        sincronizarValidadeELoteProduto(produtoId, {
+          controlarValidade: true,
+          dataValidade: data_validade_inicial,
+          diasAlerta: dias_alerta_validade,
+          estoqueTotal: estoqueInicial
+        }, (syncErr) => {
+          if (syncErr) {
+            console.error('Erro ao sincronizar validade/lote inicial:', syncErr.message);
+            return res.status(500).json({
+              error: `Produto criado, mas falhou ao registrar validade/lote: ${syncErr.message}`
+            });
           }
-
           continuarCriacaoProduto();
         });
       } else {
@@ -1660,7 +1800,24 @@ router.put('/:id/ajustar-estoque', exigirPerfilAjusteEstoque(), executarAjusteEs
 // Atualizar produto
 router.put('/:id', (req, res) => {
   const { id } = req.params;
-  const { atacado_faixas, saldo_fiscal_inicial, saldo_nao_fiscal_inicial, ...bodyUpdates } = req.body;
+  const {
+    atacado_faixas,
+    saldo_fiscal_inicial,
+    saldo_nao_fiscal_inicial,
+    data_validade_inicial,
+    data_validade,
+    dias_alerta_validade,
+    controlar_validade,
+    ...bodyUpdates
+  } = req.body;
+
+  const dataValidadeInformada = data_validade_inicial || data_validade || null;
+  const diasAlertaInformado = dias_alerta_validade;
+  const controlarValidadeInformado = controlar_validade;
+
+  if (controlar_validade !== undefined) {
+    bodyUpdates.controlar_validade = controlar_validade ? 1 : 0;
+  }
 
   console.log('[AUDIT PRODUTO PUT] id:', id, 'req.body.item_fiscal:', req.body.item_fiscal);
 
@@ -1712,6 +1869,8 @@ router.put('/:id', (req, res) => {
       bodyUpdates.produto_fracionado = flagFracionado;
       bodyUpdates.vendido_por_peso = flagFracionado;
     }
+
+    Object.assign(bodyUpdates, normalizarCamposVendaUnidade(bodyUpdates));
 
     Object.keys(bodyUpdates).forEach(key => {
       if (!CAMPOS_PRODUTO_IGNORADOS.has(key)) {
@@ -1791,7 +1950,31 @@ router.put('/:id', (req, res) => {
         if (faixaErr) return callback(faixaErr);
         aplicarSaldosIniciaisSePermitido((saldosErr) => {
           if (saldosErr) return callback(saldosErr);
-          finalizarAtualizacao();
+
+          const deveSincronizarValidade =
+            controlarValidadeInformado !== undefined ||
+            dataValidadeInformada ||
+            diasAlertaInformado !== undefined;
+
+          if (!deveSincronizarValidade) {
+            return callback(null);
+          }
+
+          db.get('SELECT * FROM produtos WHERE id = ?', [id], (getErr, atual) => {
+            if (getErr) return callback(getErr);
+            if (!atual) return callback(new Error('Produto não encontrado após atualização.'));
+
+            sincronizarValidadeELoteProduto(id, {
+              controlarValidade: controlarValidadeInformado !== undefined
+                ? (controlarValidadeInformado ? 1 : 0)
+                : atual.controlar_validade,
+              dataValidade: dataValidadeInformada,
+              diasAlerta: diasAlertaInformado !== undefined
+                ? diasAlertaInformado
+                : atual.dias_alerta_validade,
+              estoqueTotal: obterEstoqueTotalProduto(atual)
+            }, callback);
+          });
         });
       });
     };
@@ -1801,6 +1984,7 @@ router.put('/:id', (req, res) => {
         if (errFinal) {
           return res.status(400).json({ error: errFinal.message });
         }
+        finalizarAtualizacao();
       });
     }
 
@@ -1828,6 +2012,7 @@ router.put('/:id', (req, res) => {
         if (errFinal) {
           return res.status(400).json({ error: errFinal.message });
         }
+        finalizarAtualizacao();
       });
     });
   });

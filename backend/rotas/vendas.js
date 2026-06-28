@@ -10,14 +10,17 @@
   const tefFluxoPagamento = require('../services/tef/tefFluxoPagamento');
   const tefConfigService = require('../services/tef/tefConfigService');
   const lotesService = require('../services/lotesService');
+  const { normalizarTipoVendaItem } = require('../services/vendaUnidadeHelpers');
   const {
     normalizarItemFiscal,
     separarItensFiscalNaoFiscal,
     separarItensDistribuidos
   } = require('../services/fiscalNaoFiscalService');
   const { distribuirPagamentos } = require('../services/DistribuidorPagamento');
+  const OrquestradorPagamento = require('../services/OrquestradorPagamento');
   const {
-    distribuirQuantidadeVenda
+    distribuirQuantidadeVenda,
+    distribuirItemVenda
   } = require('../services/distribuidorEstoqueVenda');
   const { cancelarFiscal } = require('../services/tef/ReversaoFiscal');
   const { resolverQuantidadesVendaItem, calcularDevolucaoVendaFiscalPrimeiro } = require('../services/estoqueFiscalService');
@@ -481,109 +484,6 @@ justificativa: ${justificativa.trim()}
     return { sucesso: true, transacoes: transacoesAutorizadas };
   }
 
-  function montarDistribuicaoPagamento(pagamentosEntrada, totalFiscal, totalNaoFiscal, pagamentosJaProcessados) {
-    if (
-      pagamentosJaProcessados &&
-      Array.isArray(pagamentosEntrada) &&
-      pagamentosEntrada.some((p) => p.tipo_recebimento)
-    ) {
-      return {
-        recebimentosFiscal: pagamentosEntrada.filter((p) => p.tipo_recebimento === 'fiscal'),
-        recebimentosNaoFiscal: pagamentosEntrada.filter((p) => p.tipo_recebimento === 'nao_fiscal'),
-        saldoFiscal: 0,
-        saldoNaoFiscal: 0
-      };
-    }
-
-    return distribuirPagamentos(pagamentosEntrada, totalFiscal, totalNaoFiscal);
-  }
-
-  function isConfirmacaoFiscalManual(confirmacaoManualFlag) {
-    return tefFluxoPagamento.isConfirmacaoFiscalManualFlag(
-      confirmacaoManualFlag,
-      configService.getModoConfirmacaoFiscal()
-    );
-  }
-
-  async function processarTefRecebimentosFiscais(recebimentos, pagamentosJaProcessados, confirmacaoManualFlag) {
-    let tefHabilitado = false;
-    try {
-      const tefConfig = await tefConfigService.obterConfiguracao();
-      tefHabilitado = tefFluxoPagamento.parseTefHabilitado(tefConfig.tefHabilitado);
-    } catch (error) {
-      console.error('Erro ao verificar configuração TEF:', error);
-    }
-
-    if (tefFluxoPagamento.devePularAutorizacaoTefBackend({
-      pagamentosJaProcessados,
-      confirmacaoManualFlag,
-      tefHabilitado,
-      modoGlobalConfirmacaoFiscal: configService.getModoConfirmacaoFiscal()
-    })) {
-      const transacoes = (recebimentos || [])
-        .map((p) => p.tef_transacao_id)
-        .filter(Boolean);
-      return { sucesso: true, transacoes };
-    }
-
-    return processarPagamentosTef(recebimentos);
-  }
-
-  function resolverStatusPagamentoVenda({
-    totalFiscal,
-    totalNaoFiscal,
-    resultadoTefFiscal,
-    recebimentosNaoFiscal
-  }) {
-    const temNaoFiscal = Number(totalNaoFiscal) > 0;
-    const temFiscal = Number(totalFiscal) > 0;
-    const fiscalOk = resultadoTefFiscal?.sucesso === true;
-    const tefFiscalId = resultadoTefFiscal?.transacoes?.[0] || null;
-    const recebimentosNf = Array.isArray(recebimentosNaoFiscal) ? recebimentosNaoFiscal : [];
-    const totalRecebidoNaoFiscal = recebimentosNf.reduce(
-      (acc, p) => acc + Number(p.valor || 0),
-      0
-    );
-    const naoFiscalQuitado = !temNaoFiscal || (
-      recebimentosNf.length > 0
-      && Math.abs(totalRecebidoNaoFiscal - Number(totalNaoFiscal)) <= 0.01
-    );
-
-    if (temFiscal && !fiscalOk) {
-      return { status: 'pendente', tefId: null };
-    }
-
-    if (temFiscal && temNaoFiscal && fiscalOk && !naoFiscalQuitado) {
-      return { status: 'aguardando_nao_fiscal', tefId: tefFiscalId };
-    }
-
-    if (!temFiscal && temNaoFiscal && naoFiscalQuitado) {
-      return { status: 'quitada', tefId: null };
-    }
-
-    if (fiscalOk && naoFiscalQuitado) {
-      return { status: 'quitada', tefId: tefFiscalId };
-    }
-
-    return { status: 'pendente', tefId: null };
-  }
-
-  function montarRecebimentosParaGravar(distribuicaoPagamento, statusPagamento) {
-    const recebimentosFiscal = distribuicaoPagamento.recebimentosFiscal || [];
-    const recebimentosNaoFiscal = distribuicaoPagamento.recebimentosNaoFiscal || [];
-
-    if (statusPagamento === 'aguardando_nao_fiscal') {
-      return [...recebimentosFiscal];
-    }
-
-    return [...recebimentosFiscal, ...recebimentosNaoFiscal];
-  }
-
-  function aplicarStatusPagamentoVenda(vendaId, params) {
-    const statusPagamento = resolverStatusPagamentoVenda(params);
-    atualizarStatusPagamentoVenda(vendaId, statusPagamento.status, statusPagamento.tefId);
-    return statusPagamento;
-  }
 
   const FORMAS_NAO_FISCAL_PERMITIDAS = new Set([
     'pix',
@@ -611,6 +511,75 @@ justificativa: ${justificativa.trim()}
       valorNaoFiscal,
       valorRecebido,
       saldoPendente: Math.max(0, saldoPendente)
+    };
+  }
+
+  function filtrarRecebimentosNaoFiscal(recebimentos) {
+    return (Array.isArray(recebimentos) ? recebimentos : []).filter(
+      (recebimento) => String(recebimento.tipo_recebimento || '').toLowerCase() === 'nao_fiscal'
+    );
+  }
+
+  function resolverStatusPagamentoVenda(
+    valorNaoFiscal,
+    recebimentosNaoFiscal,
+    statusAtual = 'quitada',
+    opcoes = {}
+  ) {
+    const valor = Number(valorNaoFiscal || 0);
+    const valorFiscal = Number(opcoes.valorFiscal || 0);
+    const recebimentos = Array.isArray(recebimentosNaoFiscal) ? recebimentosNaoFiscal : [];
+
+    if (valor <= 0) {
+      return statusAtual;
+    }
+
+    const totalConfirmado = recebimentos.reduce(
+      (acc, recebimento) => acc + Number(recebimento.valor || 0),
+      0
+    );
+    const naoFiscalConfirmado =
+      recebimentos.length > 0
+      && Math.abs(totalConfirmado - valor) <= 0.01;
+
+    // Venda mista: nunca quitada na criação sem recebimento não fiscal confirmado
+    if (valorFiscal > 0) {
+      return naoFiscalConfirmado ? statusAtual : 'aguardando_nao_fiscal';
+    }
+
+    // Somente não fiscal
+    if (!naoFiscalConfirmado) {
+      return recebimentos.length === 0 ? 'aguardando_nao_fiscal' : statusAtual;
+    }
+
+    return statusAtual;
+  }
+
+  function aplicarRegraStatusPagamentoVenda({
+    valorFiscal,
+    valorNaoFiscal,
+    statusPagamento,
+    recebimentos
+  }) {
+    const recebimentosNaoFiscal = filtrarRecebimentosNaoFiscal(recebimentos);
+    const statusFinal = resolverStatusPagamentoVenda(
+      valorNaoFiscal,
+      recebimentosNaoFiscal,
+      statusPagamento,
+      { valorFiscal }
+    );
+
+    let recebimentosFinal = Array.isArray(recebimentos) ? [...recebimentos] : [];
+
+    if (statusFinal === 'aguardando_nao_fiscal') {
+      recebimentosFinal = recebimentosFinal.filter(
+        (recebimento) => String(recebimento.tipo_recebimento || '').toLowerCase() !== 'nao_fiscal'
+      );
+    }
+
+    return {
+      statusPagamento: statusFinal,
+      recebimentos: recebimentosFinal
     };
   }
 
@@ -725,11 +694,23 @@ justificativa: ${justificativa.trim()}
 
   // Responder venda com emissão fiscal opcional
   async function responderVendaComFiscal(res, payload) {
+    const valorFiscal = Number(payload.valorFiscal || 0);
+    const valorNaoFiscal = Number(payload.valorNaoFiscal || 0);
+    const statusPagamento = resolverStatusPagamentoVenda(
+      valorNaoFiscal,
+      [],
+      payload.statusPagamento || 'quitada',
+      { valorFiscal }
+    );
+
     const respostaBase = {
       id: payload.vendaId,
+      venda_id: payload.vendaId,
       codigo: payload.codigo,
       message: payload.message,
-      status_pagamento: payload.statusPagamento || 'quitada'
+      status_pagamento: statusPagamento,
+      valor_fiscal: valorFiscal,
+      valor_nao_fiscal: valorNaoFiscal
     };
 
     if (!payload.emitirFiscal) {
@@ -746,7 +727,7 @@ justificativa: ${justificativa.trim()}
       });
     }
 
-    if (payload.statusPagamento !== 'quitada') {
+    if (statusPagamento !== 'quitada') {
       return res.json({
         ...respostaBase,
         fiscal: {
@@ -908,9 +889,23 @@ justificativa: ${justificativa.trim()}
     const { id } = req.params;
     
     db.get(`
-      SELECT v.*, c.nome as cliente_nome, c.cpf_cnpj as cliente_cpf
+      SELECT
+        v.*,
+        c.nome AS cliente_nome,
+        c.cpf_cnpj AS cliente_cpf,
+        n.id AS nfce_id,
+        n.numero AS nfce_numero,
+        n.status AS nfce_status,
+        n.chave_acesso AS nfce_chave
       FROM vendas v
       LEFT JOIN clientes c ON v.cliente_id = c.id
+      LEFT JOIN nfce_notas n ON n.id = (
+        SELECT n2.id
+        FROM nfce_notas n2
+        WHERE n2.venda_id = v.id
+        ORDER BY n2.id DESC
+        LIMIT 1
+      )
       WHERE v.id = ?
     `, [id], (err, venda) => {
       if (err) {
@@ -1020,8 +1015,8 @@ justificativa: ${justificativa.trim()}
           });
         }
 
-        const resultado = distribuirQuantidadeVenda(
-          Number(item.quantidade || 0),
+        const resultado = distribuirItemVenda(
+          item,
           Number(produto.saldo_fiscal || 0),
           Number(produto.saldo_nao_fiscal || 0)
         );
@@ -1035,14 +1030,12 @@ justificativa: ${justificativa.trim()}
           });
         }
 
-        const precoUnitario = Number(item.preco_unitario || 0);
-
         itensDistribuidos.push({
           produto_id: item.produto_id,
           quantidade_fiscal: resultado.quantidadeFiscal,
           quantidade_nao_fiscal: resultado.quantidadeNaoFiscal,
-          valor_fiscal: Number((resultado.quantidadeFiscal * precoUnitario).toFixed(2)),
-          valor_nao_fiscal: Number((resultado.quantidadeNaoFiscal * precoUnitario).toFixed(2))
+          valor_fiscal: resultado.valorFiscal,
+          valor_nao_fiscal: resultado.valorNaoFiscal
         });
       }
 
@@ -1114,17 +1107,8 @@ justificativa: ${justificativa.trim()}
       pagamentos,
       tef,
       valor_fiscal,
-      valor_nao_fiscal,
-      pagamentos_processados_pdv,
-      confirmacao_fiscal_manual
+      valor_nao_fiscal
     } = req.body;
-
-    const pagamentosProcessadosPdv = pagamentos_processados_pdv === true
-      || pagamentos_processados_pdv === 'true'
-      || pagamentos_processados_pdv === 1
-      || pagamentos_processados_pdv === '1';
-
-    const confirmacaoFiscalManual = isConfirmacaoFiscalManual(confirmacao_fiscal_manual);
 
     const cpfCnpjNotaLimpo = String(cpf_cnpj_nota || '').replace(/\D/g, '');
 
@@ -1239,8 +1223,8 @@ justificativa: ${justificativa.trim()}
           produtoMap[item.produto_id];
 
         const resultado =
-          distribuirQuantidadeVenda(
-            Number(item.quantidade || 0),
+          distribuirItemVenda(
+            item,
             Number(produto.saldo_fiscal || 0),
             Number(produto.saldo_nao_fiscal || 0)
           );
@@ -1265,20 +1249,10 @@ justificativa: ${justificativa.trim()}
             resultado.quantidadeNaoFiscal,
 
           valor_fiscal:
-            Number(
-              (
-                resultado.quantidadeFiscal *
-                Number(item.preco_unitario || 0)
-              ).toFixed(2)
-            ),
+            resultado.valorFiscal,
 
           valor_nao_fiscal:
-            Number(
-              (
-                resultado.quantidadeNaoFiscal *
-                Number(item.preco_unitario || 0)
-              ).toFixed(2)
-            )
+            resultado.valorNaoFiscal
         });
       }
 
@@ -1327,47 +1301,51 @@ justificativa: ${justificativa.trim()}
         // Calcular valores fiscal e não fiscal
         const { totalFiscal, totalNaoFiscal } = separarItensDistribuidos(distribuicaoItens);
 
-        // Distribuir pagamentos entre fiscal e não fiscal
-        const distribuicaoPagamento = montarDistribuicaoPagamento(
-          req.body.pagamentos || [],
+        // Obter configurações TEF e confirmação fiscal
+        let tefHabilitado = false;
+        let modoConfirmacaoFiscal = 'TEF';
+        
+        try {
+          const tefConfig = await tefConfigService.obterConfiguracao();
+          tefHabilitado = tefFluxoPagamento.parseTefHabilitado(tefConfig.tefHabilitado);
+        } catch (error) {
+          console.error('Erro ao verificar configuração TEF:', error);
+        }
+        
+        modoConfirmacaoFiscal = configService.getModoConfirmacaoFiscal() || 'TEF';
+
+        // Processar fluxo de pagamento usando o Orquestrador
+        const resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
           totalFiscal,
           totalNaoFiscal,
-          pagamentosProcessadosPdv
-        );
-
-        // Validar se o pagamento fiscal é suficiente
-        if (distribuicaoPagamento.saldoFiscal > 0) {
-          return res.status(400).json({
-            error: 'Pagamento fiscal insuficiente.'
-          });
-        }
-
-        const resultadoTefFiscal = await processarTefRecebimentosFiscais(
-          distribuicaoPagamento.recebimentosFiscal,
-          pagamentosProcessadosPdv,
-          confirmacaoFiscalManual
-        );
-
-        if (!resultadoTefFiscal.sucesso) {
-          return res.status(400).json({
-            error: 'Pagamento fiscal não autorizado',
-            tef: resultadoTefFiscal.erro
-          });
-        }
-
-        const statusPagamentoResolvido = resolverStatusPagamentoVenda({
-          totalFiscal,
-          totalNaoFiscal,
-          resultadoTefFiscal,
-          recebimentosNaoFiscal: distribuicaoPagamento.recebimentosNaoFiscal
+          formaPagamento: formaPagamentoFinal,
+          pagamentos: req.body.pagamentos || [],
+          tefHabilitado,
+          modoConfirmacaoFiscal
         });
+
+        if (!resultadoPagamento.sucesso) {
+          return res.status(400).json({
+            error: resultadoPagamento.erro,
+            tef: resultadoPagamento.tef
+          });
+        }
+
+        const { resultadoFiscal } = resultadoPagamento;
+        const resultadoStatus = aplicarRegraStatusPagamentoVenda({
+          valorFiscal: totalFiscal,
+          valorNaoFiscal: totalNaoFiscal,
+          statusPagamento: resultadoPagamento.statusPagamento,
+          recebimentos: resultadoPagamento.recebimentos
+        });
+        const { statusPagamento, recebimentos } = resultadoStatus;
 
         db.serialize(() => {
           db.run('BEGIN IMMEDIATE');
           db.run(`
             INSERT INTO vendas (codigo, data_venda, cliente_id, total, desconto, forma_pagamento, status, caixa_sessao_id, caixa_id, terminal_id, operador_id, valor_fiscal, valor_nao_fiscal, status_pagamento, tef_transacao_id)
               VALUES (?, ?, ?, ?, ?, ?, 'concluida', ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscal, totalNaoFiscal, statusPagamentoResolvido.status, statusPagamentoResolvido.tefId], function(err) {
+            `, [codigo, data_venda, cliente_id, totalNum, desconto || 0, formaPagamentoFinal, req.caixaSessaoId || null, req.caixaId, req.terminalId || null, req.operadorId, totalFiscal, totalNaoFiscal, statusPagamento, resultadoFiscal?.transacoes?.[0] || null], function(err) {
             if (err) {
               db.run('ROLLBACK');
               res.status(500).json({ error: err.message });
@@ -1377,7 +1355,7 @@ justificativa: ${justificativa.trim()}
 
             gravarRecebimentos(
               vendaId,
-              montarRecebimentosParaGravar(distribuicaoPagamento, statusPagamentoResolvido.status),
+              recebimentos,
               (err) => {
                 if (err) {
                   db.run('ROLLBACK');
@@ -1387,7 +1365,7 @@ justificativa: ${justificativa.trim()}
               }
             );
 
-            const transacoesTefParaVincular = [];
+            const transacoesTefParaVincular = resultadoFiscal?.transacoes || [];
 
             if (tef && tef.transacao_id) {
               transacoesTefParaVincular.push(tef.transacao_id);
@@ -1439,24 +1417,20 @@ justificativa: ${justificativa.trim()}
 
               const valorFiscal =
                 Number(
-                  (
-                    quantidadeFiscal *
-                    precoUnitario
-                  ).toFixed(2)
+                  (item.valor_fiscal || 0).toFixed(2)
                 );
 
               const valorNaoFiscal =
                 Number(
-                  (
-                    quantidadeNaoFiscal *
-                    precoUnitario
-                  ).toFixed(2)
+                  (item.valor_nao_fiscal || 0).toFixed(2)
                 );
 
+              const tipoVenda = normalizarTipoVendaItem(item);
+
               db.run(`
-                INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal], (itemErr) => {
+                INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda], (itemErr) => {
                 if (itemErr) {
                   db.run('ROLLBACK');
                   res.status(500).json({ error: itemErr.message });
@@ -1551,7 +1525,8 @@ justificativa: ${justificativa.trim()}
                             message: 'Venda a prazo registrada com sucesso',
                             emitirFiscal: !!emitir_fiscal,
                             valorFiscal: totalFiscal,
-                            statusPagamento: statusPagamentoResolvido.status,
+                            valorNaoFiscal: totalNaoFiscal,
+                            statusPagamento: statusPagamento,
                             pagamentosTef: pagamentosVenda
                           });
                           return;
@@ -1606,40 +1581,44 @@ justificativa: ${justificativa.trim()}
       // Calcular valores fiscal e não fiscal
       const { totalFiscal, totalNaoFiscal } = separarItensDistribuidos(distribuicaoItens);
 
-      // Distribuir pagamentos entre fiscal e não fiscal
-      const distribuicaoPagamento = montarDistribuicaoPagamento(
-        req.body.pagamentos || [],
+      // Obter configurações TEF e confirmação fiscal
+      let tefHabilitado = false;
+      let modoConfirmacaoFiscal = 'TEF';
+      
+      try {
+        const tefConfig = await tefConfigService.obterConfiguracao();
+        tefHabilitado = tefFluxoPagamento.parseTefHabilitado(tefConfig.tefHabilitado);
+      } catch (error) {
+        console.error('Erro ao verificar configuração TEF:', error);
+      }
+      
+      modoConfirmacaoFiscal = configService.getModoConfirmacaoFiscal() || 'TEF';
+
+      // Processar fluxo de pagamento usando o Orquestrador
+      const resultadoPagamento = await OrquestradorPagamento.processarFluxoPagamentoVenda({
         totalFiscal,
         totalNaoFiscal,
-        pagamentosProcessadosPdv
-      );
-
-      // Validar se o pagamento fiscal é suficiente
-      if (distribuicaoPagamento.saldoFiscal > 0) {
-        return res.status(400).json({
-          error: 'Pagamento fiscal insuficiente.'
-        });
-      }
-
-      const resultadoTefFiscal = await processarTefRecebimentosFiscais(
-        distribuicaoPagamento.recebimentosFiscal,
-        pagamentosProcessadosPdv,
-        confirmacaoFiscalManual
-      );
-
-      if (!resultadoTefFiscal.sucesso) {
-        return res.status(400).json({
-          error: 'Pagamento fiscal não autorizado',
-          tef: resultadoTefFiscal.erro
-        });
-      }
-
-      const statusPagamentoResolvido = resolverStatusPagamentoVenda({
-        totalFiscal,
-        totalNaoFiscal,
-        resultadoTefFiscal,
-        recebimentosNaoFiscal: distribuicaoPagamento.recebimentosNaoFiscal
+        formaPagamento: formaPagamentoFinal,
+        pagamentos: req.body.pagamentos || [],
+        tefHabilitado,
+        modoConfirmacaoFiscal
       });
+
+      if (!resultadoPagamento.sucesso) {
+        return res.status(400).json({
+          error: resultadoPagamento.erro,
+          tef: resultadoPagamento.tef
+        });
+      }
+
+      const { distribuicao, resultadoFiscal } = resultadoPagamento;
+      const resultadoStatus = aplicarRegraStatusPagamentoVenda({
+        valorFiscal: totalFiscal,
+        valorNaoFiscal: totalNaoFiscal,
+        statusPagamento: resultadoPagamento.statusPagamento,
+        recebimentos: resultadoPagamento.recebimentos
+      });
+      const { statusPagamento, recebimentos } = resultadoStatus;
 
       db.serialize(() => {
         db.run('BEGIN IMMEDIATE');
@@ -1679,8 +1658,8 @@ justificativa: ${justificativa.trim()}
           req.operadorId,
           totalFiscal,
           totalNaoFiscal,
-          statusPagamentoResolvido.status,
-          statusPagamentoResolvido.tefId
+          statusPagamento,
+          resultadoFiscal?.transacoes?.[0] || null
         ], function(err) {
           if (err) {
             db.run('ROLLBACK');
@@ -1691,7 +1670,7 @@ justificativa: ${justificativa.trim()}
 
           gravarRecebimentos(
             vendaId,
-            montarRecebimentosParaGravar(distribuicaoPagamento, statusPagamentoResolvido.status),
+            recebimentos,
             (err) => {
               if (err) {
                 db.run('ROLLBACK');
@@ -1701,7 +1680,7 @@ justificativa: ${justificativa.trim()}
             }
           );
 
-          const transacoesTefParaVincular = [];
+          const transacoesTefParaVincular = resultadoFiscal?.transacoes || [];
 
           if (tef && tef.transacao_id) {
             transacoesTefParaVincular.push(tef.transacao_id);
@@ -1753,24 +1732,20 @@ justificativa: ${justificativa.trim()}
 
             const valorFiscal =
               Number(
-                (
-                  quantidadeFiscal *
-                  precoUnitario
-                ).toFixed(2)
+                (item.valor_fiscal || 0).toFixed(2)
               );
 
             const valorNaoFiscal =
               Number(
-                (
-                  quantidadeNaoFiscal *
-                  precoUnitario
-                ).toFixed(2)
+                (item.valor_nao_fiscal || 0).toFixed(2)
               );
 
+            const tipoVenda = normalizarTipoVendaItem(item);
+
             db.run(`
-              INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal], (itemErr) => {
+              INSERT INTO vendas_itens (venda_id, produto_id, quantidade, preco_unitario, desconto_percentual, promocao_id, desconto_atacado, tipo_preco, subtotal, item_fiscal, quantidade_fiscal, quantidade_nao_fiscal, valor_fiscal, valor_nao_fiscal, tipo_venda)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [vendaId, item.produto_id, item.quantidade, item.preco_unitario, item.desconto_percentual || 0, item.promocao_id || null, item.desconto_atacado || 0, item.tipo_preco || 'varejo', item.subtotal, itemFiscal, quantidadeFiscal, quantidadeNaoFiscal, valorFiscal, valorNaoFiscal, tipoVenda], (itemErr) => {
               if (itemErr) {
                 db.run('ROLLBACK');
                 res.status(500).json({ error: itemErr.message });
@@ -1848,7 +1823,8 @@ justificativa: ${justificativa.trim()}
                       message: 'Venda registrada com sucesso',
                       emitirFiscal: !!emitir_fiscal,
                       valorFiscal: totalFiscal,
-                      statusPagamento: statusPagamentoResolvido.status,
+                      valorNaoFiscal: totalNaoFiscal,
+                      statusPagamento: statusPagamento,
                       pagamentosTef: pagamentosVenda
                     });
                   };
@@ -2130,9 +2106,19 @@ justificativa: ${justificativa.trim()}
               return;
             }
 
+            const recebimentosNaoFiscalRegistrados = [
+              ...(Array.isArray(recebimentosAtuais) ? recebimentosAtuais : []),
+              ...recebimentos
+            ];
+            const statusFinal = resolverStatusPagamentoVenda(
+              venda.valor_nao_fiscal,
+              recebimentosNaoFiscalRegistrados,
+              'quitada'
+            );
+
             db.run(
               `UPDATE vendas SET status_pagamento = ? WHERE id = ?`,
-              ['quitada', id],
+              [statusFinal, id],
               (updateErr) => {
                 if (updateErr) {
                   db.run('ROLLBACK');
@@ -2151,7 +2137,7 @@ justificativa: ${justificativa.trim()}
                   res.json({
                     id: Number(id),
                     codigo: venda.codigo,
-                    status_pagamento: 'quitada',
+                    status_pagamento: statusFinal,
                     message: 'Pagamento não fiscal registrado com sucesso.',
                     saldo_pendente: 0,
                     fiscal

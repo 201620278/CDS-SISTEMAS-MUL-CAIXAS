@@ -15,8 +15,11 @@
             <nav id="sidebar" class="col-md-2 col-lg-2 d-md-block bg-dark sidebar">
                 <div class="position-sticky pt-3">
                     <div class="text-center mb-2" id="sidebar-brand">
-                        <h5 class="text-white">CDS</h5>
-                        <small class="text-muted">ERP</small>
+                        <div id="sidebar-brand-content">
+                            <h5 class="text-white">CDS</h5>
+                            <small class="text-muted">ERP</small>
+                        </div>
+                        <div id="sidebar-modo-fiscal-bar" class="sidebar-modo-fiscal-bar sidebar-modo-fiscal-bar--off" title="Modo completo (F12 para ativar fiscal)"></div>
                     </div>
                     <ul class="nav flex-column">
                         <li class="nav-item">
@@ -138,6 +141,8 @@
     <script src="/shared/js/access-control.js"></script>
     <script src="/shared/js/core.js"></script>
     <script src="/js/modoFiscalHelpers.js"></script>
+    <script src="/js/fiscalImpressao.js"></script>
+    <script src="/js/vendasHistoricoUi.js"></script>
     <script src="/erp/js/dashboard.js"></script>
     <script src="/erp/js/produtos.js"></script>
     <script src="/erp/js/subcategorias.js"></script>

@@ -129,6 +129,8 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN quantidade_nao_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_fiscal REAL DEFAULT 0`);
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN valor_nao_fiscal REAL DEFAULT 0`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN modo_venda TEXT DEFAULT 'peso'`);
+  aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN tipo_venda TEXT DEFAULT 'PESO'`);
 
   // Adicionar colunas faltantes na tabela configuracoes
   aplicarAlteracaoSegura('configuracoes', `ALTER TABLE configuracoes ADD COLUMN fiscal_emitente_logradouro TEXT DEFAULT ''`);
@@ -181,7 +183,10 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE produtos ADD COLUMN ativo INTEGER DEFAULT 1`,
     `ALTER TABLE produtos ADD COLUMN item_fiscal INTEGER DEFAULT 0`,
     `ALTER TABLE produtos ADD COLUMN saldo_fiscal REAL DEFAULT 0`,
-    `ALTER TABLE produtos ADD COLUMN saldo_nao_fiscal REAL DEFAULT 0`
+    `ALTER TABLE produtos ADD COLUMN saldo_nao_fiscal REAL DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN permite_venda_unidade INTEGER DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN peso_medio_unidade REAL DEFAULT 0`,
+    `ALTER TABLE produtos ADD COLUMN preco_unidade REAL DEFAULT 0`
   ];
 
   const alteracoesCompras = [
@@ -962,6 +967,9 @@ function criarTabelas() {
         lote TEXT,
         dias_alerta_validade INTEGER DEFAULT 30,
         controlar_validade INTEGER DEFAULT 0,
+        permite_venda_unidade INTEGER DEFAULT 0,
+        peso_medio_unidade REAL DEFAULT 0,
+        preco_unidade REAL DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (categoria_id) REFERENCES categorias(id),

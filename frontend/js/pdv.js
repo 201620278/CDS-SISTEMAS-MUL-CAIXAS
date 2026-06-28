@@ -62,8 +62,109 @@ function normalizarProdutoPdvLista(produtos) {
         saldo_fiscal: Number(p.saldo_fiscal ?? 0),
         saldo_nao_fiscal: Number(p.saldo_nao_fiscal ?? 0),
         estoque_atual: Number(p.estoque_atual || 0),
-        preco_venda: Number(p.preco_venda || 0)
+        preco_venda: Number(p.preco_venda || 0),
+        permite_venda_unidade: Number(p.permite_venda_unidade ?? 0) === 1 ? 1 : 0,
+        peso_medio_unidade: Number(p.peso_medio_unidade ?? 0),
+        preco_unidade: Number(p.preco_unidade ?? 0)
     })) : [];
+}
+
+function produtoPermiteEscolhaVendaUnidade(produto) {
+    return produtoUsaConversaoUnidadesPdv(produto)
+        && Number(produto?.permite_venda_unidade ?? 0) === 1;
+}
+
+const TIPO_VENDA_PESO = 'PESO';
+const TIPO_VENDA_UNIDADE = 'UNIDADE';
+
+function normalizarTipoVendaItem(item) {
+    const tipo = String(item?.tipo_venda || '').toUpperCase();
+    if (tipo === TIPO_VENDA_UNIDADE) return TIPO_VENDA_UNIDADE;
+    if (tipo === TIPO_VENDA_PESO) return TIPO_VENDA_PESO;
+    if (item?.modo_venda === 'unidade') return TIPO_VENDA_UNIDADE;
+    return TIPO_VENDA_PESO;
+}
+
+function tipoVendaEhUnidade(tipoVenda) {
+    const tipo = String(tipoVenda || '').toUpperCase();
+    return tipo === TIPO_VENDA_UNIDADE || tipoVenda === 'unidade';
+}
+
+function itemVendaPorUnidade(item) {
+    return normalizarTipoVendaItem(item) === TIPO_VENDA_UNIDADE;
+}
+
+function obterQuantidadeEstoqueParaVenda(produto, quantidadeVenda, tipoVenda = TIPO_VENDA_PESO) {
+    if (tipoVendaEhUnidade(tipoVenda)) {
+        const pesoMedio = Number(produto?.peso_medio_unidade ?? 0);
+        return Number(quantidadeVenda || 0) * pesoMedio;
+    }
+    return Number(quantidadeVenda || 0);
+}
+
+function formatarVendaUnidadeConsulta(produto) {
+    if (!produtoUsaConversaoUnidadesPdv(produto)) {
+        return '—';
+    }
+    return Number(produto?.permite_venda_unidade ?? 0) === 1 ? 'SIM' : 'NÃO';
+}
+
+function formatarPrecoUnidadeConsulta(produto) {
+    if (Number(produto?.permite_venda_unidade ?? 0) !== 1) {
+        return '—';
+    }
+    const preco = Number(produto?.preco_unidade ?? 0);
+    return preco > 0 ? formatCurrency(preco) : '—';
+}
+
+function formatarPesoKgPdv(valor) {
+    const n = Math.round(Number(valor || 0) * 1000) / 1000;
+    return n.toFixed(3).replace('.', ',');
+}
+
+function montarPreviewCalculoVendaUnidade(produto, quantidadeUnidades) {
+    const qtd = Math.max(0, Math.round(Number(quantidadeUnidades || 0)));
+    const pesoMedio = Number(produto?.peso_medio_unidade ?? 0);
+    const precoUnidade = Number(produto?.preco_unidade ?? 0);
+    return {
+        qtd,
+        pesoMedio,
+        pesoTotalKg: qtd * pesoMedio,
+        precoUnidade,
+        valorTotal: qtd * precoUnidade
+    };
+}
+
+function renderTextoPreviewEstoqueKg(produto, quantidadeUnidades) {
+    const calc = montarPreviewCalculoVendaUnidade(produto, quantidadeUnidades);
+    if (calc.qtd <= 0 || calc.pesoMedio <= 0) {
+        return '—';
+    }
+    return `${calc.qtd} × ${formatarPesoKgPdv(calc.pesoMedio)} = ${formatarPesoKgPdv(calc.pesoTotalKg)} kg`;
+}
+
+function renderTextoPreviewValorUnidade(produto, quantidadeUnidades) {
+    const calc = montarPreviewCalculoVendaUnidade(produto, quantidadeUnidades);
+    if (calc.qtd <= 0 || calc.precoUnidade <= 0) {
+        return '—';
+    }
+    return `${calc.qtd} × ${formatCurrency(calc.precoUnidade)} = ${formatCurrency(calc.valorTotal)}`;
+}
+
+function atualizarPreviewVendaUnidadeModal(produto) {
+    const input = document.getElementById('inputQuantidadeProduto');
+    if (!input) return;
+
+    const qtd = Math.max(0, Math.round(Number(parseQuantidadePdv(input.value) || 0)));
+    const elKg = document.getElementById('previewVendaUnidadeKg');
+    const elValor = document.getElementById('previewVendaUnidadeValor');
+
+    if (elKg) {
+        elKg.textContent = renderTextoPreviewEstoqueKg(produto, qtd);
+    }
+    if (elValor) {
+        elValor.textContent = renderTextoPreviewValorUnidade(produto, qtd);
+    }
 }
 
 function urlProdutosPdv() {
@@ -640,8 +741,12 @@ function calcularDistribuicaoFiscalLocal(itens) {
             (p) => Number(p.id) === Number(item.produto_id || item.id)
         );
         const saldos = pdvResolverSaldosProduto(produto || {});
+        const qtdVenda = Number(item.quantidade || 0);
+        const qtdEstoque = item.quantidade_estoque != null && item.quantidade_estoque !== ''
+            ? Number(item.quantidade_estoque)
+            : qtdVenda;
         const resultado = distribuirQuantidadeVendaLocal(
-            Number(item.quantidade || 0),
+            qtdEstoque,
             saldos.saldo_fiscal,
             saldos.saldo_nao_fiscal
         );
@@ -654,8 +759,18 @@ function calcularDistribuicaoFiscalLocal(itens) {
         }
 
         const precoUnitario = Number(item.preco_unitario || 0);
-        const valorFiscal = Number((resultado.quantidadeFiscal * precoUnitario).toFixed(2));
-        const valorNaoFiscal = Number((resultado.quantidadeNaoFiscal * precoUnitario).toFixed(2));
+        const subtotalVenda = Number((qtdVenda * precoUnitario).toFixed(2));
+        let valorFiscal;
+        let valorNaoFiscal;
+
+        if (qtdEstoque > 0 && qtdEstoque !== qtdVenda) {
+            const ratioFiscal = resultado.quantidadeFiscal / qtdEstoque;
+            valorFiscal = Number((subtotalVenda * ratioFiscal).toFixed(2));
+            valorNaoFiscal = Number((subtotalVenda - valorFiscal).toFixed(2));
+        } else {
+            valorFiscal = Number((resultado.quantidadeFiscal * precoUnitario).toFixed(2));
+            valorNaoFiscal = Number((resultado.quantidadeNaoFiscal * precoUnitario).toFixed(2));
+        }
 
         totalFiscal += valorFiscal;
         totalNaoFiscal += valorNaoFiscal;
@@ -781,6 +896,118 @@ async function concluirPagamentoNaoFiscalVenda(vendaId, pagamento, emitirFiscal 
     return data;
 }
 
+async function obterSaldoPagamentoNaoFiscalVenda(vendaId) {
+    const response = await fetch(`${API_URL}/vendas/${vendaId}/pagamento-nao-fiscal`, {
+        headers: {
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+        throw new Error(data.error || 'Erro ao consultar pagamento não fiscal da venda.');
+    }
+
+    return data;
+}
+
+function fiscalAutorizadaParaImpressao(fiscal) {
+    if (!fiscal || typeof fiscal !== 'object') {
+        return false;
+    }
+
+    if (fiscal.status === 'sem_itens_fiscais') {
+        return false;
+    }
+
+    if (fiscal.success === false) {
+        return false;
+    }
+
+    return fiscal.status === 'autorizada' || fiscal.reused === true;
+}
+
+function processarFiscalPosPagamentoPosVenda(vendaId, resultado) {
+    pagamentoFiscalAtual = null;
+    const fiscal = resultado?.fiscal;
+
+    if (fiscal?.status === 'sem_itens_fiscais') {
+        showNotification(
+            fiscal.message || 'Venda sem itens fiscais. NFC-e não necessária.',
+            'info'
+        );
+        return;
+    }
+
+    if (fiscal?.success === false) {
+        showNotification(fiscal.message || 'Erro ao emitir NFC-e.', 'danger');
+        mostrarModalErroNFCe(vendaId, fiscal.message || 'NFC-e não autorizada.');
+        return;
+    }
+
+    if (fiscalAutorizadaParaImpressao(fiscal)) {
+        showNotification('NFC-e autorizada pela SEFAZ!', 'success');
+        imprimirDANFEFiscal(vendaId);
+        return;
+    }
+
+    showNotification('Venda finalizada. Emitindo NFC-e...', 'info');
+    mostrarModalProcessandoNFCe(vendaId);
+    setTimeout(() => emitirNFCeVenda(vendaId), 300);
+}
+
+function iniciarFluxoPosVendaComNaoFiscal(vendaId, opcoes = {}) {
+    const processarFiscalPosPagamento =
+        opcoes.processarFiscalPosPagamento || processarFiscalPosPagamentoPosVenda;
+
+    showNotification('Pagamento fiscal confirmado. Cobre o valor não fiscal.', 'info');
+
+    obterSaldoPagamentoNaoFiscalVenda(vendaId)
+        .then(function(info) {
+            const valorPendente = Number(
+                info.saldo_pendente ??
+                info.valor_nao_fiscal ??
+                0
+            );
+            const emitirFiscal = Number(info.valor_fiscal || 0) > 0;
+
+            abrirModalPagamentoNaoFiscal(
+                valorPendente,
+                async function(pagamento) {
+                    try {
+                        const resultado = await concluirPagamentoNaoFiscalVenda(
+                            vendaId,
+                            pagamento,
+                            emitirFiscal
+                        );
+
+                        processarFiscalPosPagamento(vendaId, resultado);
+
+                        finalizarPosVenda();
+                        vendaEmProcessamento = false;
+                        showNotification('Venda finalizada com sucesso.', 'success');
+                    } catch (error) {
+                        vendaEmProcessamento = false;
+                        showNotification(error.message || 'Erro ao registrar pagamento não fiscal.', 'danger');
+                    }
+                },
+                function() {
+                    vendaEmProcessamento = false;
+                    finalizarPosVenda();
+                    showNotification(
+                        `Venda #${vendaId} aguardando pagamento não fiscal.`,
+                        'warning'
+                    );
+                }
+            );
+        })
+        .catch(function(error) {
+            vendaEmProcessamento = false;
+            showNotification(error.message || 'Erro ao consultar pagamento não fiscal.', 'danger');
+        });
+}
+
 async function processarVendaFiscalNaoFiscal(dadosVenda, totalFiscal) {
     try {
         const formaFiscal = obterFormaPagamentoFiscal();
@@ -821,6 +1048,10 @@ function formaPagamentoUsaTEF(forma) {
 
 function formaPagamentoGravacaoFiscalPDV(forma) {
     return TefFluxoPagamento.formaPagamentoGravacaoFiscal(forma);
+}
+
+function deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal) {
+    return Number(totalFiscal || 0) > 0 && Number(totalNaoFiscal || 0) <= 0;
 }
 
 async function mostrarModalPixTefPDV(data, valor) {
@@ -1148,6 +1379,10 @@ function aplicarModoFiscalPdv() {
         if (!titulo) {
             btnFinalizar.textContent = ativo ? 'Emitir NFC-e' : 'Finalizar Venda';
         }
+    }
+
+    if (typeof atualizarBarraModoFiscalSidebar === 'function') {
+        atualizarBarraModoFiscalSidebar();
     }
 }
 
@@ -1540,21 +1775,28 @@ function renderCarrinhoItens() {
 
     return carrinho.map((item, index) => {
         const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
-        const decimal = produtoUsaConversaoUnidadesPdv(produto);
-        const unidade = String(produto?.unidade || item.unidade || 'UN').toUpperCase();
+        const vendaUnidade = itemVendaPorUnidade(item);
+        const decimal = vendaUnidade ? false : produtoUsaConversaoUnidadesPdv(produto);
+        const unidade = vendaUnidade ? 'UN' : String(produto?.unidade || item.unidade || 'UN').toUpperCase();
         const temDesconto = Number(item.desconto_percentual || 0) > 0;
         const classe = temDesconto ? 'table-warning' : '';
         const badgeDesconto = temDesconto ? `<small class="badge bg-danger">-${Number(item.desconto_percentual).toFixed(2)}%</small>` : '';
         const descontoAtacadoValor = Number(item.desconto_atacado || 0);
         const badgeDescontoAtacado = descontoAtacadoValor > 0 ? `<div><small class="text-success">Atacado: -${formatCurrency(descontoAtacadoValor)}</small></div>` : '';
         const modoAtacadoBadge = item.tipo_preco === 'atacado' ? `<div><small class="badge bg-secondary">ATACADO</small></div>` : '';
+        const infoVendaUnidade = vendaUnidade && produto
+            ? `<div class="text-muted small mt-1">
+                    ${renderTextoPreviewEstoqueKg(produto, item.quantidade)}<br>
+                    ${renderTextoPreviewValorUnidade(produto, item.quantidade)}
+               </div>`
+            : '';
 
         return `
             <tr ${classe ? `class="${classe}"` : ''}>
                 <td class="col-qtd">
                     <input type="${decimal ? 'text' : 'number'}"
                            class="form-control form-control-sm quantidade-item"
-                           value="${formatarQuantidadePdv(item.quantidade, produto)}"
+                           value="${vendaUnidade ? Math.round(Number(item.quantidade || 0)) : formatarQuantidadePdv(item.quantidade, produto)}"
                            min="${decimal ? '0.01' : '1'}"
                            step="${decimal ? '0.01' : '1'}"
                            inputmode="${decimal ? 'decimal' : 'numeric'}"
@@ -1566,6 +1808,7 @@ function renderCarrinhoItens() {
                     ${badgeDesconto}
                     ${badgeDescontoAtacado}
                     ${modoAtacadoBadge}
+                    ${infoVendaUnidade}
                 </td>
                 <td class="col-unit">
                     <input type="number"
@@ -1712,21 +1955,38 @@ function encontrarProdutoPorCodigoOuNome(termo) {
     });
 }
 
-function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra = '', promocao = null) {
-    quantidade = normalizarQuantidadePdv(quantidade, produto);
-    precoUnitario = Number(precoUnitario || 0);
+function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExtra = '', promocao = null, opcoes = {}) {
+    const tipoVenda = normalizarTipoVendaItem(opcoes);
+
+    if (tipoVendaEhUnidade(tipoVenda)) {
+        quantidade = Math.max(0, Math.round(Number(quantidade || 0)));
+        precoUnitario = Number(produto.preco_unidade ?? precoUnitario ?? 0);
+    } else {
+        quantidade = normalizarQuantidadePdv(quantidade, produto);
+        precoUnitario = Number(precoUnitario || 0);
+    }
 
     if (quantidade <= 0 || precoUnitario <= 0) {
         showNotification('Quantidade ou preço inválido.', 'warning');
         return;
     }
 
-    if (!pdvNotificarEstoqueInsuficiente(produto, quantidade)) {
+    const quantidadeEstoque = obterQuantidadeEstoqueParaVenda(produto, quantidade, tipoVenda);
+    if (tipoVendaEhUnidade(tipoVenda) && quantidadeEstoque <= 0) {
+        showNotification('Peso médio da unidade não configurado para este produto.', 'warning');
         return;
     }
 
-    const precoPromocional = promocao ? Number(promocao.preco_promocional || precoUnitario) : precoUnitario;
-    const percentualPromocao = promocao ? Number(promocao.desconto_percentual || 0) : 0;
+    if (!pdvNotificarEstoqueInsuficiente(produto, quantidadeEstoque)) {
+        return;
+    }
+
+    const precoPromocional = promocao && !tipoVendaEhUnidade(tipoVenda)
+        ? Number(promocao.preco_promocional || precoUnitario)
+        : precoUnitario;
+    const percentualPromocao = promocao && !tipoVendaEhUnidade(tipoVenda)
+        ? Number(promocao.desconto_percentual || 0)
+        : 0;
 
     // Aplica preço atacado se ativo: obtém faixas e escolhe maior faixa atendida
     function obterPrecoAtacado(produtoId, quantidadeTotal, precoBase) {
@@ -1763,47 +2023,57 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
     let precoFinal = precoPromocional;
     let descontoAtacadoItem = 0;
     
-    const itemExistente = carrinho.find(item => Number(item.id) === Number(produto.id));
+    const itemExistente = carrinho.find(item =>
+        Number(item.id) === Number(produto.id) && normalizarTipoVendaItem(item) === tipoVenda
+    );
 
     if (itemExistente) {
         const novaQuantidade = Number(itemExistente.quantidade) + quantidade;
+        const novaQuantidadeEstoque = obterQuantidadeEstoqueParaVenda(produto, novaQuantidade, tipoVenda);
 
-        if (!pdvNotificarEstoqueInsuficiente(produto, novaQuantidade)) {
+        if (!pdvNotificarEstoqueInsuficiente(produto, novaQuantidadeEstoque)) {
             return;
         }
 
         // reavaliar preço atacado com a nova quantidade total
-            if (Number(produto.venda_atacado || 0) === 1) {
+            if (!tipoVendaEhUnidade(tipoVenda) && Number(produto.venda_atacado || 0) === 1) {
                 const atac = obterPrecoAtacado(produto.id, novaQuantidade, precoFinal);
                 precoFinal = atac.preco;
                 descontoAtacadoItem = atac.descontoAtacado;
                 itemExistente.tipo_preco = atac.isAtacado ? 'atacado' : 'varejo';
             }
 
-        const precoBase = Number(produto.preco_venda || precoFinal);
+        const precoBase = tipoVendaEhUnidade(tipoVenda)
+            ? Number(produto.preco_unidade || precoFinal)
+            : Number(produto.preco_venda || precoFinal);
         const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
 
-        itemExistente.quantidade = Number(novaQuantidade.toFixed(2));
+        itemExistente.quantidade = tipoVendaEhUnidade(tipoVenda)
+            ? novaQuantidade
+            : Number(novaQuantidade.toFixed(2));
         itemExistente.preco_unitario = precoFinal;
         itemExistente.desconto_percentual = descontoPercentual;
         itemExistente.promocao_id = promocao?.id || null;
         itemExistente.desconto_atacado = descontoAtacadoItem;
+        itemExistente.tipo_venda = tipoVenda;
         itemExistente.subtotal = Number((itemExistente.quantidade * precoFinal).toFixed(2));
     } else {
         // avaliar atacado para quantidade inicial
-            if (Number(produto.venda_atacado || 0) === 1) {
+            if (!tipoVendaEhUnidade(tipoVenda) && Number(produto.venda_atacado || 0) === 1) {
                 const atac = obterPrecoAtacado(produto.id, quantidade, precoFinal);
                 precoFinal = atac.preco;
                 descontoAtacadoItem = atac.descontoAtacado;
             }
 
-            const precoBase = Number(produto.preco_venda || precoFinal);
+            const precoBase = tipoVendaEhUnidade(tipoVenda)
+                ? Number(produto.preco_unidade || precoFinal)
+                : Number(produto.preco_venda || precoFinal);
             const descontoPercentual = precoBase > 0 ? Number(((1 - precoFinal / precoBase) * 100).toFixed(2)) : 0;
 
             carrinho.push({
             id: produto.id,
             nome: produto.nome,
-            quantidade: Number(quantidade.toFixed(2)),
+            quantidade: tipoVendaEhUnidade(tipoVenda) ? quantidade : Number(quantidade.toFixed(2)),
             preco_unitario: precoFinal,
             preco_base: precoBase,
             desconto_percentual: descontoPercentual,
@@ -1811,7 +2081,8 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
             desconto_atacado: descontoAtacadoItem,
                 tipo_preco: (Number(produto.venda_atacado || 0) === 1 && descontoAtacadoItem > 0) ? 'atacado' : 'varejo',
             subtotal: Number((quantidade * precoFinal).toFixed(2)),
-            item_fiscal: Number(produto.item_fiscal || 0)
+            item_fiscal: Number(produto.item_fiscal || 0),
+            tipo_venda: tipoVenda
         });
     }
 
@@ -1819,6 +2090,119 @@ function adicionarItemNoCarrinho(produto, quantidade, precoUnitario, mensagemExt
     const msgDesconto = percentualPromocao > 0 ? ` (Promoção -${percentualPromocao}%)` : '';
     showNotification(`${produto.nome} adicionado ao carrinho${msgDesconto}${mensagemExtra}.`, 'success');
     focarCampoCodigo();
+}
+
+function abrirModalModoVendaProduto(produto, callback) {
+    $('#modalModoVendaProduto').remove();
+
+    const modalHtml = `
+        <div class="modal fade" id="modalModoVendaProduto" tabindex="-1">
+            <div class="modal-dialog modal-sm modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header py-2">
+                        <h6 class="modal-title">Como deseja vender?</h6>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="mb-3 fw-bold">${escapeHtml(produto.nome || 'Produto')}</p>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="radio" name="modoVendaProduto" id="modoVendaPeso" value="PESO" checked>
+                            <label class="form-check-label" for="modoVendaPeso">Peso</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="modoVendaProduto" id="modoVendaUnidade" value="UNIDADE">
+                            <label class="form-check-label" for="modoVendaUnidade">Unidade</label>
+                        </div>
+                    </div>
+                    <div class="modal-footer py-2">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="btnConfirmarModoVendaProduto">Continuar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    $('body').append(modalHtml);
+
+    const modalEl = document.getElementById('modalModoVendaProduto');
+    const modal = new bootstrap.Modal(modalEl);
+    modal.show();
+
+    const confirmar = () => {
+        const modo = $('input[name="modoVendaProduto"]:checked').val() || TIPO_VENDA_PESO;
+        modal.hide();
+        callback(modo);
+    };
+
+    $('#btnConfirmarModoVendaProduto').off('click').on('click', confirmar);
+    modalEl.addEventListener('hidden.bs.modal', function onHidden() {
+        modalEl.removeEventListener('hidden.bs.modal', onHidden);
+        $('#modalModoVendaProduto').remove();
+    }, { once: true });
+}
+
+function continuarAdicionarProdutoPdv(produto, promocao, tipoVenda = TIPO_VENDA_PESO) {
+    if (tipoVendaEhUnidade(tipoVenda)) {
+        const qtdTeste = obterQuantidadeEstoqueParaVenda(produto, 1, TIPO_VENDA_UNIDADE);
+        const validacaoMinima = pdvValidarEstoqueVenda(produto, qtdTeste > 0 ? qtdTeste : 0.001);
+        if (!validacaoMinima.sucesso) {
+            showNotification(validacaoMinima.mensagem, 'danger');
+            return;
+        }
+
+        abrirModalQuantidadeProduto(produto, function (quantidade) {
+            adicionarItemNoCarrinho(
+                produto,
+                quantidade,
+                Number(produto.preco_unidade || 0),
+                ` - ${quantidade} un.`,
+                null,
+                { tipo_venda: TIPO_VENDA_UNIDADE }
+            );
+        }, { tipo_venda: TIPO_VENDA_UNIDADE });
+        return;
+    }
+
+    if (permiteQuantidadeDecimal(produto)) {
+        const unidade = String(produto.unidade || 'UN').toUpperCase();
+        abrirModalQuantidadeProduto(produto, function (qtd) {
+            const extra = unidadeEhKg(produto)
+                ? ` - Peso: ${formatarQuantidadePdv(qtd, produto)} KG`
+                : ` - Qtd: ${formatarQuantidadePdv(qtd, produto)} ${unidade}`;
+            adicionarItemNoCarrinho(
+                produto,
+                qtd,
+                Number(produto.preco_venda || 0),
+                extra,
+                promocao,
+                { tipo_venda: TIPO_VENDA_PESO }
+            );
+        });
+        return;
+    }
+
+    abrirModalQuantidadeProduto(produto, function (quantidade) {
+        adicionarItemNoCarrinho(
+            produto,
+            quantidade,
+            Number(produto.preco_venda || 0),
+            '',
+            promocao,
+            { tipo_venda: TIPO_VENDA_PESO }
+        );
+    });
+}
+
+function iniciarFluxoAdicionarProdutoPdv(produto, promocao) {
+    if (produtoPermiteEscolhaVendaUnidade(produto)) {
+        abrirModalModoVendaProduto(produto, function (tipoVenda) {
+            continuarAdicionarProdutoPdv(produto, promocao, tipoVenda);
+        });
+        return;
+    }
+
+    continuarAdicionarProdutoPdv(produto, promocao, TIPO_VENDA_PESO);
 }
 
 function adicionarProdutoPorCodigo(codigo) {
@@ -1885,28 +2269,7 @@ function adicionarProdutoPorCodigo(codigo) {
 
     // Buscar promoção do produto
     buscarPromocaoAtivaProduto(produto.id).then(promocao => {
-        // 3) Produto fracionado digitado manualmente
-        if (permiteQuantidadeDecimal(produto)) {
-            const unidade = String(produto.unidade || 'UN').toUpperCase();
-            abrirModalQuantidadeProduto(produto, function (qtd) {
-                const extra = unidadeEhKg(produto)
-                    ? ` - Peso: ${formatarQuantidadePdv(qtd, produto)} KG`
-                    : ` - Qtd: ${formatarQuantidadePdv(qtd, produto)} ${unidade}`;
-                adicionarItemNoCarrinho(
-                    produto,
-                    qtd,
-                    Number(produto.preco_venda || 0),
-                    extra,
-                    promocao
-                );
-            });
-            return;
-        }
-
-        // 4) Produto unidade
-        abrirModalQuantidadeProduto(produto, function (quantidade) {
-            adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0), '', promocao);
-        });
+        iniciarFluxoAdicionarProdutoPdv(produto, promocao);
     });
 }
 
@@ -1921,14 +2284,27 @@ function atualizarQuantidade(index, quantidade) {
         return;
     }
 
-    const novaQuantidade = normalizarQuantidadePdv(parseQuantidadePdv(quantidade), produto);
+    const vendaUnidade = itemVendaPorUnidade(item);
+    const novaQuantidade = vendaUnidade
+        ? Math.max(0, Math.round(Number(parseQuantidadePdv(quantidade) || 0)))
+        : normalizarQuantidadePdv(parseQuantidadePdv(quantidade), produto);
 
     if (Number.isNaN(novaQuantidade) || novaQuantidade <= 0) {
         removerItemCarrinho(index);
         return;
     }
 
-    if (!pdvNotificarEstoqueInsuficiente(produto, novaQuantidade)) {
+    const quantidadeEstoque = vendaUnidade
+        ? obterQuantidadeEstoqueParaVenda(produto, novaQuantidade, 'unidade')
+        : novaQuantidade;
+
+    if (vendaUnidade && quantidadeEstoque <= 0) {
+        showNotification('Peso médio da unidade não configurado para este produto.', 'warning');
+        atualizarCarrinho();
+        return;
+    }
+
+    if (!pdvNotificarEstoqueInsuficiente(produto, quantidadeEstoque)) {
         atualizarCarrinho();
         return;
     }
@@ -1936,7 +2312,7 @@ function atualizarQuantidade(index, quantidade) {
     // reavaliar preço atacado quando a quantidade mudar
     let precoAplicado = Number(item.preco_unitario || 0);
     let descontoAtacadoItem = Number(item.desconto_atacado || 0);
-    if (Number(produto.venda_atacado || 0) === 1) {
+    if (!vendaUnidade && Number(produto.venda_atacado || 0) === 1) {
         try {
             let faixas = [];
             $.ajax({ url: `${API_URL}/produtos/${produto.id}/atacado`, method: 'GET', async: false, headers: { Authorization: 'Bearer ' + (localStorage.getItem('token') || '') }, success: function(res) { faixas = res || []; } });
@@ -1964,7 +2340,9 @@ function atualizarQuantidade(index, quantidade) {
     item.quantidade = novaQuantidade;
     item.preco_unitario = precoAplicado;
     item.desconto_atacado = Number((descontoAtacadoItem || 0).toFixed(2));
-    const precoBase = Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
+    const precoBase = vendaUnidade
+        ? Number(produto.preco_unidade || item.preco_base || item.preco_unitario || 0)
+        : Number(item.preco_base || produto?.preco_venda || item.preco_unitario || 0);
     item.desconto_percentual = precoBase > 0 ? Number(((1 - precoAplicado / precoBase) * 100).toFixed(2)) : 0;
     item.subtotal = Number((item.preco_unitario * novaQuantidade).toFixed(2));
     atualizarCarrinho();
@@ -3001,17 +3379,26 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         ],
         itens: carrinho.map(item => {
             const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.id));
-            return {
+            const tipoVenda = normalizarTipoVendaItem(item);
+            const quantidade = tipoVendaEhUnidade(tipoVenda)
+                ? Math.max(0, Math.round(Number(item.quantidade || 0)))
+                : normalizarQuantidadePdv(item.quantidade, produto);
+            const itemPayload = {
             produto_id: Number(item.id),
-            quantidade: normalizarQuantidadePdv(item.quantidade, produto),
+            quantidade,
             preco_unitario: Number(item.preco_unitario),
             desconto_percentual: Number(item.desconto_percentual || 0),
             promocao_id: item.promocao_id || null,
             desconto_atacado: Number(item.desconto_atacado || 0),
             tipo_preco: item.tipo_preco || 'varejo',
             subtotal: Math.round(Number(item.preco_unitario) * Number(item.quantidade) * 100) / 100,
-            item_fiscal: Number(item.item_fiscal || 0)
+            item_fiscal: Number(item.item_fiscal || 0),
+            tipo_venda: tipoVenda
         };
+            if (tipoVendaEhUnidade(tipoVenda) && produto) {
+                itemPayload.quantidade_estoque = obterQuantidadeEstoqueParaVenda(produto, quantidade, TIPO_VENDA_UNIDADE);
+            }
+            return itemPayload;
         }),
         supervisor_token: supervisorAuthToken || null
     };
@@ -3106,47 +3493,46 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
             usarConfirmacaoManual
         });
 
-        if (deveUsarTefAutomatico && ehPagamentoMisto) {
-            const pagamentosComTEF = await processarPagamentosMistosTEF(pagamentosMistos);
+        // =====================================================
+        // PRIORIDADE ABSOLUTA
+        // VENDA MISTA FISCAL / NÃO FISCAL
+        // =====================================================
 
-            dados.pagamentos = pagamentosComTEF;
-            dados.forma_pagamento = 'misto';
+        if (deveUsarTefAutomatico && totalFiscal > 0) {
+            console.log('[MOTOR FINANCEIRO] Fluxo Fiscal detectado.');
 
-            const primeiroTef = pagamentosComTEF.find(p => p.tef_transacao_id);
+            const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, totalFiscal);
 
-            if (primeiroTef && primeiroTef.tef) {
-                dados.tef = primeiroTef.tef;
+            if (!resultadoProcessamento.sucesso) {
+                vendaEmProcessamento = false;
+                showNotification(resultadoProcessamento.erro || 'Erro no pagamento fiscal.', 'danger');
+                return;
             }
-        } else if (deveUsarTefAutomatico) {
-            if (totalFiscal > 0) {
-                console.log('Processando pagamento fiscal com TEF');
-                const resultadoProcessamento = await processarVendaFiscalNaoFiscal(dados, totalFiscal);
-                
-                if (!resultadoProcessamento.sucesso) {
-                    vendaEmProcessamento = false;
-                    showNotification(resultadoProcessamento.erro || 'Erro ao processar pagamento fiscal.', 'danger');
-                    return;
+
+            const formaFiscal = obterFormaPagamentoFiscal();
+            const tefFiscal = resultadoProcessamento.tefFiscal;
+
+            dados.tef = montarObjetoTEF(tefFiscal);
+            dados.pagamentos = [
+                {
+                    forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaFiscal),
+                    valor: totalFiscal,
+                    tipo_recebimento: 'fiscal',
+                    tef_transacao_id: tefFiscal.transacao_id,
+                    nsu: tefFiscal.nsu,
+                    autorizacao: tefFiscal.autorizacao
                 }
+            ];
 
-                const formaFiscal = obterFormaPagamentoFiscal();
-                const tefFiscal = resultadoProcessamento.tefFiscal;
-
-                dados.tef = montarObjetoTEF(tefFiscal);
-                dados.pagamentos = [
-                    {
-                        forma_pagamento: formaPagamentoGravacaoFiscalPDV(formaFiscal),
-                        valor: totalFiscal,
-                        tipo_recebimento: 'fiscal',
-                        tef_transacao_id: tefFiscal.transacao_id,
-                        nsu: tefFiscal.nsu,
-                        autorizacao: tefFiscal.autorizacao
-                    }
-                ];
-
+            if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
                 dados.pagamentos_processados_pdv = true;
-
-                console.log('Pagamento fiscal processado. Não fiscal será registrado após a venda.');
-            } else if (totalNaoFiscal > 0) {
+            }
+        } else if (deveUsarTefAutomatico && ehPagamentoMisto) {
+            // somente vendas SEM PARTE FISCAL
+            const pagamentosComTEF = await processarPagamentosMistosTEF(pagamentosMistos);
+            dados.pagamentos = pagamentosComTEF;
+        } else if (deveUsarTefAutomatico) {
+            if (totalNaoFiscal > 0) {
                 const pagamentoNaoFiscal = await new Promise((resolve, reject) => {
                     abrirModalPagamentoNaoFiscal(
                         totalNaoFiscal,
@@ -3162,7 +3548,6 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                         tipo_recebimento: 'nao_fiscal'
                     }
                 ];
-                dados.pagamentos_processados_pdv = true;
             } else {
                 const parcelasTef = formaPagamentoNormalizada.includes('credito')
                     ? (Number($('#parcelasCartao').val()) || 1)
@@ -3197,7 +3582,10 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                         adquirente: retornoTef.adquirente
                     }
                 ];
-                dados.pagamentos_processados_pdv = true;
+
+                if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
+                    dados.pagamentos_processados_pdv = true;
+                }
             }
         } else if (usarConfirmacaoManual) {
             const resultadoManual = await processarVendaFiscalManual(dados, totalFiscal);
@@ -3230,7 +3618,9 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 ];
             }
 
-            dados.pagamentos_processados_pdv = true;
+            if (deveEnviarPagamentosProcessadosPdv(totalFiscal, totalNaoFiscal)) {
+                dados.pagamentos_processados_pdv = true;
+            }
             dados.confirmacao_fiscal_manual = true;
         }
     } catch (error) {
@@ -3244,38 +3634,10 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         const produto = produtosDisponiveis.find(p => Number(p.id) === Number(item.produto_id));
         return {
             ...item,
-            produto_nome: produto ? produto.nome : 'Produto'
+            produto_nome: produto ? produto.nome : 'Produto',
+            tipo_venda: normalizarTipoVendaItem(item)
         };
     });
-
-    function processarFiscalPosPagamentoNaoFiscal(vendaId, resultado) {
-        pagamentoFiscalAtual = null;
-
-        if (resultado.fiscal?.status === 'sem_itens_fiscais') {
-            showNotification(
-                resultado.fiscal.message || 'Venda sem itens fiscais. NFC-e não necessária.',
-                'info'
-            );
-            return;
-        }
-
-        if (resultado.fiscal?.success === false) {
-            showNotification(resultado.fiscal.message || 'Erro ao emitir NFC-e.', 'danger');
-            mostrarModalErroNFCe(vendaId, resultado.fiscal.message || 'NFC-e não autorizada.');
-            return;
-        }
-
-        if (resultado.fiscal?.success && resultado.fiscal?.numero) {
-            showNotification('NFC-e autorizada pela SEFAZ!', 'success');
-            imprimirDANFEFiscal(vendaId);
-            return;
-        }
-
-        if (dados.emitir_fiscal) {
-            mostrarModalProcessandoNFCe(vendaId);
-            setTimeout(() => emitirNFCeVenda(vendaId), 300);
-        }
-    }
 
     function enviarVenda(payload) {
         payload = getTerminalRequestData(payload);
@@ -3296,37 +3658,8 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                     return;
                 }
 
-                if (statusPagamento === 'aguardando_nao_fiscal' && totalNaoFiscal > 0) {
-                    showNotification('Pagamento fiscal confirmado. Cobre o valor não fiscal.', 'info');
-
-                    abrirModalPagamentoNaoFiscal(
-                        totalNaoFiscal,
-                        async function(pagamento) {
-                            try {
-                                const resultado = await concluirPagamentoNaoFiscalVenda(
-                                    vendaId,
-                                    pagamento,
-                                    !!dados.emitir_fiscal
-                                );
-
-                                processarFiscalPosPagamentoNaoFiscal(vendaId, resultado);
-                                finalizarPosVenda();
-                                vendaEmProcessamento = false;
-                                showNotification('Venda finalizada com sucesso.', 'success');
-                            } catch (error) {
-                                vendaEmProcessamento = false;
-                                showNotification(error.message || 'Erro ao registrar pagamento não fiscal.', 'danger');
-                            }
-                        },
-                        function() {
-                            vendaEmProcessamento = false;
-                            finalizarPosVenda();
-                            showNotification(
-                                `Venda #${vendaId} aguardando pagamento não fiscal.`,
-                                'warning'
-                            );
-                        }
-                    );
+                if (statusPagamento === 'aguardando_nao_fiscal') {
+                    iniciarFluxoPosVendaComNaoFiscal(vendaId);
                     return;
                 }
 
@@ -3334,13 +3667,10 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 pagamentoFiscalAtual = null;
 
                 const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
+                const deveEmitirCupomFiscal = dados.emitir_fiscal || Number(dados.valor_fiscal || 0) > 0;
 
-                if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
-                    showNotification('Venda finalizada. Emitindo NFC-e...', 'info');
-                    mostrarModalProcessandoNFCe(vendaId);
-                    setTimeout(() => {
-                        emitirNFCeVenda(vendaId);
-                    }, 300);
+                if (vendaQuitadaCompletamente && deveEmitirCupomFiscal) {
+                    processarFiscalPosPagamentoPosVenda(vendaId, response);
                 } else if (vendaPrazoInfo) {
                     imprimirCupomNaoFiscal(vendaId, {
                         ...payload,
@@ -3457,7 +3787,7 @@ function emitirNFCeVenda(vendaId) {
     $.ajax({
         url: `${API_URL}/fiscal/emitir/venda/${vendaId}`,
         method: 'POST',
-        timeout: 60000,
+        timeout: 180000,
 
         success: function(response) {
             console.log('Retorno NFC-e:', response);
@@ -3482,7 +3812,7 @@ function emitirNFCeVenda(vendaId) {
                 return;
             }
 
-            if (!response || response.success === false) {
+            if (!fiscalAutorizadaParaImpressao(response)) {
                 const mensagem = response?.message || 'NFC-e não autorizada pela SEFAZ.';
                 showNotification(mensagem, 'danger');
                 mostrarModalErroNFCe(vendaId, mensagem);
@@ -3683,247 +4013,7 @@ async function mostrarModalProcessandoNFCe(vendaId) {
     }, 100);
 }
 
-async function imprimirDANFEFiscal(vendaId) {
-    try {
-        const token = localStorage.getItem('token');
-
-        // Buscar DANFE
-        const resposta = await fetch(`${API_URL}/fiscal/danfe/venda/${vendaId}`, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            }
-        });
-
-        const htmlDanfe = await resposta.text();
-
-        if (!resposta.ok) {
-            console.error('Erro ao buscar DANFE:', {
-                status: resposta.status,
-                resposta: htmlDanfe
-            });
-
-            showNotification(`Erro ao abrir DANFE fiscal: ${htmlDanfe}`, 'danger');
-            return;
-        }
-
-        // No Electron, usar nova API de impressão DANFE NFC-e
-        // if (window.electronAPI?.imprimirDanfeNfce) {
-        //     try {
-        //         await window.electronAPI.imprimirDanfeNfce(htmlDanfe);
-        //         console.log('DANFE NFC-e impresso com sucesso.');
-        //         showNotification('DANFE NFC-e impresso com sucesso.', 'success');
-        //     } catch (erro) {
-        //         console.error('Erro ao imprimir DANFE NFC-e:', erro);
-        //         showNotification('Erro ao imprimir DANFE NFC-e.', 'danger');
-        //     }
-        //     return;
-        // }
-
-        // Usar API de impressão silenciosa direta
-        if (window.electronAPI?.imprimirDANFESilencioso) {
-            try {
-                // Buscar impressora configurada
-                const respImpressora = await fetch(`${API_URL}/configuracoes/impressora_cupom`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-
-                let deviceName = null;
-                try {
-                    const impressoraData = await respImpressora.json();
-                    if (impressoraData.caminho) {
-                        deviceName = impressoraData.caminho;
-                    }
-                } catch (e) {
-                    // Se não conseguir buscar, imprimir sem deviceName
-                }
-
-                // Imprimir silenciosamente sem mostrar janela
-                await window.electronAPI.imprimirDANFESilencioso(htmlDanfe, deviceName);
-                showNotification('Cupom fiscal enviado para impressora.', 'success');
-            } catch (printError) {
-                console.error('Erro na impressão silenciosa:', printError);
-                // Fallback: abrir comprovante
-                window.electronAPI.abrirComprovante(htmlDanfe);
-            }
-            return;
-        }
-
-        // Fallback para método antigo
-        if (window.electronAPI?.abrirComprovante) {
-            try {
-                // Buscar impressora configurada
-                const respImpressora = await fetch(`${API_URL}/configuracoes/impressora_cupom`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-
-                let deviceName = null;
-                try {
-                    const impressoraData = await respImpressora.json();
-                    if (impressoraData.caminho) {
-                        deviceName = impressoraData.caminho;
-                    }
-                } catch (e) {
-                    // Se não conseguir buscar, imprimir sem deviceName
-                }
-
-                // Abrir comprovante visível e imprimir silenciosamente
-                window.electronAPI.abrirComprovante(htmlDanfe, { silent: true, deviceName });
-                showNotification('Cupom fiscal enviado para impressora.', 'success');
-            } catch (printError) {
-                console.error('Erro na impressão:', printError);
-                // Fallback: abrir janela sem impressão automática
-                window.electronAPI.abrirComprovante(htmlDanfe);
-            }
-            return;
-        }
-
-        // Fallback para navegador
-        const janela = window.open('', '_blank', 'width=420,height=720');
-
-        if (!janela) {
-            showNotification('Permita pop-ups para imprimir o cupom fiscal.', 'warning');
-            return;
-        }
-
-        janela.document.open();
-        janela.document.write(htmlDanfe);
-        janela.document.close();
-
-        setTimeout(() => {
-            janela.focus();
-            janela.print();
-        }, 500);
-
-    } catch (error) {
-        console.error('Erro ao imprimir DANFE:', error);
-        showNotification('Erro ao imprimir DANFE NFC-e.', 'danger');
-    }
-}
-
-function imprimirCupomNaoFiscal(vendaId, venda, total, desconto) {
-    const dataHora = new Date().toLocaleString('pt-BR');
-    const formaPagamentoTexto = {
-        dinheiro: 'Dinheiro',
-        cartao_credito: 'Cartão de Crédito',
-        cartao_debito: 'Cartão de Débito',
-        pix: 'PIX',
-        prazo: 'A Prazo',
-        misto: 'Misto'
-    }[venda.forma_pagamento] || venda.forma_pagamento;
-
-    const clienteNome = venda.cliente_nome || (vendaPrazoInfo?.cliente_nome || '');
-    const linha = '------------------------------------------------';
-
-    const itensHtml = (venda.itens || []).map(item => `
-${escapeHtml(item.produto_nome || item.nome || 'Produto')}
-${Number(item.quantidade)} x R$ ${Number(item.preco_unitario || item.preco || 0).toFixed(2).replace('.', ',')} = R$ ${Number(item.subtotal || 0).toFixed(2).replace('.', ',')}
-`).join('');
-
-    const cupomHtml = `
-<pre style="
-  font-family: monospace;
-  font-size: 13px;
-  width: 300px;
-  margin: 0 auto;
-  white-space: pre-wrap;
-">
-        ${venda.nome_empresa || 'CDS Sistemas'}
-${venda.endereco || ''}
-
-COMPROVANTE NÃO FISCAL
-Venda #${vendaId}
-${dataHora}
-
-${linha}
-Item                 Qtd Vl.Unit Total
-${itensHtml}
-${linha}
-Total: R$ ${Number(total || 0).toFixed(2).replace('.', ',')}
-Desconto: R$ ${Number(desconto || 0).toFixed(2).replace('.', ',')}
-Forma pag.: ${formaPagamentoTexto}
-${clienteNome ? `Cliente: ${escapeHtml(clienteNome)}` : ''}
-${venda.forma_pagamento === 'prazo' && vendaPrazoInfo ? `
-Venda a Prazo
-Cliente: ${escapeHtml(vendaPrazoInfo.cliente_nome || 'Cliente')}
-Parcelas: ${vendaPrazoInfo.parcelas}
-1º Vencimento: ${escapeHtml(vendaPrazoInfo.primeiro_vencimento)}
-` : ''}
-${linha}
-ESTE COMPROVANTE NÃO POSSUI VALOR FISCAL
-OBRIGADO PELA PREFERÊNCIA!
-VOLTE SEMPRE.
-</pre>
-`;
-
-    const payloadEscPos = {
-        vendaId,
-        forma_pagamento: venda.forma_pagamento,
-        cliente_nome: clienteNome || null,
-        desconto,
-        total,
-        itens: Array.isArray(venda.itens) ? venda.itens : []
-    };
-
-    $.ajax({
-        url: `${API_URL}/impressao/cupom`,
-        method: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify(payloadEscPos),
-        success: function() {
-            showNotification('Cupom enviado para impressora ESC/POS.', 'success');
-        },
-        error: async function(xhr) {
-            console.warn('Falha ao imprimir via ESC/POS, usando fallback.', xhr);
-
-            if (window.electronAPI?.imprimirDANFESilencioso) {
-                let deviceName = null;
-
-                try {
-                    const respImpressora = await fetch(`${API_URL}/configuracoes/impressora_cupom`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-
-                    const impressoraData = await respImpressora.json();
-                    if (impressoraData.caminho) {
-                        deviceName = impressoraData.caminho;
-                    }
-                } catch (fetchError) {
-                    console.warn('Não foi possível buscar impressora configurada:', fetchError);
-                }
-
-                try {
-                    await window.electronAPI.imprimirDANFESilencioso(cupomHtml, deviceName);
-                    showNotification('Cupom fiscal enviado para impressora.', 'success');
-                    return;
-                } catch (printError) {
-                    console.error('Erro na impressão silenciosa:', printError);
-                    showNotification('Falha na impressão silenciosa do cupom.', 'danger');
-                    return;
-                }
-            }
-
-            if (window.electronAPI?.abrirComprovante) {
-                window.electronAPI.abrirComprovante(cupomHtml, { silent: true });
-                showNotification('Cupom fiscal enviado para impressora.', 'success');
-                return;
-            }
-
-            // Fallback para navegador
-            const printWindow = window.open('', '_blank', 'width=420,height=720');
-            if (!printWindow) {
-                showNotification('Permita pop-ups para imprimir o comprovante.', 'warning');
-                return;
-            }
-
-            printWindow.document.open();
-            printWindow.document.write(cupomHtml);
-            printWindow.document.close();
-            printWindow.focus();
-            printWindow.print();
-        }
-    });
-}
+// Impressão fiscal/não fiscal: ver frontend/js/fiscalImpressao.js
 
 function limparModaisTravados() {
     document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
@@ -3948,11 +4038,12 @@ function fecharModalErroNFCe() {
     }, 300);
 }
 
-function abrirModalQuantidadeProduto(produto, callback) {
+function abrirModalQuantidadeProduto(produto, callback, opcoes = {}) {
     $('#modalQuantidadeProduto').remove();
 
+    const vendaPorUnidade = tipoVendaEhUnidade(opcoes.tipo_venda ?? opcoes.modo_venda);
     const unidade = String(produto.unidade || 'UN').toUpperCase();
-    const fracionado = permiteQuantidadeDecimal(produto);
+    const fracionado = vendaPorUnidade ? false : permiteQuantidadeDecimal(produto);
 
     const modalHtml = `
         <div class="modal fade" id="modalQuantidadeProduto" tabindex="-1">
@@ -3967,7 +4058,7 @@ function abrirModalQuantidadeProduto(produto, callback) {
                         <p class="mb-2 fw-bold">${produto.nome}</p>
 
                         <label class="form-label">
-                            ${fracionado ? `Quantidade em ${unidade}` : 'Quantidade'}
+                            ${vendaPorUnidade ? 'Quantidade' : (fracionado ? `Quantidade em ${unidade}` : 'Quantidade')}
                         </label>
 
                         <input 
@@ -3978,12 +4069,23 @@ function abrirModalQuantidadeProduto(produto, callback) {
                             step="${fracionado ? '0.01' : '1'}"
                             inputmode="${fracionado ? 'decimal' : 'numeric'}"
                             value="${fracionado ? '' : '1'}"
-                            placeholder="${fracionado ? 'Ex: 7,25' : 'Ex: 1'}"
+                            placeholder="${vendaPorUnidade ? 'Ex: 5' : (fracionado ? 'Ex: 7,25' : 'Ex: 1')}"
                         >
 
                         <small class="text-muted">
-                            ${fracionado ? `Digite a quantidade em ${unidade}` : 'Digite a quantidade vendida'}
+                            ${vendaPorUnidade
+                                ? 'Exemplo: 5 unidades'
+                                : (fracionado ? `Digite a quantidade em ${unidade}` : 'Digite a quantidade vendida')}
                         </small>
+
+                        ${vendaPorUnidade ? `
+                        <div id="previewVendaUnidade" class="mt-3 p-2 bg-light rounded">
+                            <div class="small text-muted mb-1">Estoque (KG):</div>
+                            <div class="fw-semibold" id="previewVendaUnidadeKg">—</div>
+                            <div class="small text-muted mt-2 mb-1">Valor da venda:</div>
+                            <div class="fw-semibold text-success" id="previewVendaUnidadeValor">—</div>
+                        </div>
+                        ` : ''}
                     </div>
 
                     <div class="modal-footer py-2">
@@ -4010,15 +4112,24 @@ function abrirModalQuantidadeProduto(produto, callback) {
         const input = document.getElementById('inputQuantidadeProduto');
         input.focus();
         input.select();
+        if (vendaPorUnidade) {
+            atualizarPreviewVendaUnidadeModal(produto);
+        }
     });
 
+    if (vendaPorUnidade) {
+        $('#inputQuantidadeProduto').off('input').on('input', function () {
+            atualizarPreviewVendaUnidadeModal(produto);
+        });
+    }
+
     $('#btnConfirmarQuantidadeProduto').off('click').on('click', function () {
-        confirmarQuantidadeProduto(produto, callback, modal);
+        confirmarQuantidadeProduto(produto, callback, modal, opcoes);
     });
 
     $('#inputQuantidadeProduto').off('keydown').on('keydown', function (e) {
         if (e.key === 'Enter') {
-            confirmarQuantidadeProduto(produto, callback, modal);
+            confirmarQuantidadeProduto(produto, callback, modal, opcoes);
         }
     });
 
@@ -4027,9 +4138,12 @@ function abrirModalQuantidadeProduto(produto, callback) {
     });
 }
 
-function confirmarQuantidadeProduto(produto, callback, modal) {
+function confirmarQuantidadeProduto(produto, callback, modal, opcoes = {}) {
     const valor = $('#inputQuantidadeProduto').val();
-    const quantidade = normalizarQuantidadePdv(parseQuantidadePdv(valor), produto);
+    const tipoVenda = normalizarTipoVendaItem(opcoes);
+    const quantidade = tipoVendaEhUnidade(tipoVenda)
+        ? Math.max(0, Math.round(Number(parseQuantidadePdv(valor) || 0)))
+        : normalizarQuantidadePdv(parseQuantidadePdv(valor), produto);
 
     if (!quantidade || quantidade <= 0) {
         showNotification('Informe uma quantidade válida.', 'warning');
@@ -4037,7 +4151,14 @@ function confirmarQuantidadeProduto(produto, callback, modal) {
         return;
     }
 
-    if (!pdvNotificarEstoqueInsuficiente(produto, quantidade)) {
+    const quantidadeEstoque = obterQuantidadeEstoqueParaVenda(produto, quantidade, tipoVenda);
+    if (tipoVendaEhUnidade(tipoVenda) && quantidadeEstoque <= 0) {
+        showNotification('Peso médio da unidade não configurado para este produto.', 'warning');
+        $('#inputQuantidadeProduto').focus();
+        return;
+    }
+
+    if (!pdvNotificarEstoqueInsuficiente(produto, quantidadeEstoque)) {
         $('#inputQuantidadeProduto').focus();
         return;
     }
@@ -4938,37 +5059,21 @@ function toggleProdutosCategoria(categoriaId) {
 function adicionarProdutoConsultaPDV(produtoId) {
     const produto = produtosDisponiveis.find(p => Number(p.id) === Number(produtoId));
     if (!produto) {
-        showNotification('Produto não encontrado.', 'danger');
+        showNotification('Produto não encontrado na lista do PDV. Atualize o PDV e tente novamente.', 'danger');
         return;
     }
 
-    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
+    const qtdTeste = produtoPermiteEscolhaVendaUnidade(produto)
+        ? obterQuantidadeEstoqueParaVenda(produto, 1, TIPO_VENDA_UNIDADE)
+        : 1;
+    const validacaoMinima = pdvValidarEstoqueVenda(produto, qtdTeste > 0 ? qtdTeste : 1);
     if (!validacaoMinima.sucesso) {
-        showNotification(validacaoMinima.mensagem, 'danger');
+        showNotification(validacaoMinima.mensagem, 'warning');
         return;
     }
 
-    // Buscar promoção do produto
     buscarPromocaoAtivaProduto(produto.id).then(promocao => {
-        if (permiteQuantidadeDecimal(produto)) {
-            const unidade = String(produto.unidade || 'UN').toUpperCase();
-            abrirModalQuantidadeProduto(produto, function (qtd) {
-                const extra = unidadeEhKg(produto)
-                    ? ` - Peso: ${formatarQuantidadePdv(qtd, produto)} KG`
-                    : ` - Qtd: ${formatarQuantidadePdv(qtd, produto)} ${unidade}`;
-                adicionarItemNoCarrinho(
-                    produto,
-                    qtd,
-                    Number(produto.preco_venda || 0),
-                    extra,
-                    promocao
-                );
-            });
-        } else {
-            abrirModalQuantidadeProduto(produto, function (quantidade) {
-                adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0), '', promocao);
-            });
-        }
+        iniciarFluxoAdicionarProdutoPdv(produto, promocao);
     });
 }
 
@@ -5045,6 +5150,8 @@ function renderizarProdutosConsultaPDV(produtos) {
                 </td>
                 <td>${escapeHtml(p.unidade || 'UN')}</td>
                 <td class="fw-bold ${temPromocao ? 'text-danger' : 'text-success'}">${linhaDescontoPreco}</td>
+                <td>${formatarVendaUnidadeConsulta(p)}</td>
+                <td>${formatarPrecoUnidadeConsulta(p)}</td>
                 <td>
                     <span class="badge ${semEstoque ? 'bg-danger' : estoqueBaixo ? 'bg-warning text-dark' : 'bg-success'}">
                         ${estoque}
@@ -5073,6 +5180,8 @@ function renderizarProdutosConsultaPDV(produtos) {
                         <th>Produto</th>
                         <th>Un.</th>
                         <th>Preço</th>
+                        <th>Venda Unidade</th>
+                        <th>Preço Unidade</th>
                         <th>Estoque</th>
                         <th class="text-end">Ação</th>
                     </tr>
@@ -5083,27 +5192,6 @@ function renderizarProdutosConsultaPDV(produtos) {
             </table>
         </div>
     `);
-}
-
-function adicionarProdutoConsultaPDV(idProduto) {
-    const produto = produtosDisponiveis.find(p => Number(p.id) === Number(idProduto));
-
-    if (!produto) {
-        showNotification('Produto não encontrado na lista do PDV. Atualize o PDV e tente novamente.', 'danger');
-        return;
-    }
-
-    const validacaoMinima = pdvValidarEstoqueVenda(produto, 1);
-    if (!validacaoMinima.sucesso) {
-        showNotification(validacaoMinima.mensagem, 'warning');
-        return;
-    }
-
-    buscarPromocaoAtivaProduto(produto.id).then(promocao => {
-        abrirModalQuantidadeProduto(produto, function (quantidade) {
-            adicionarItemNoCarrinho(produto, quantidade, Number(produto.preco_venda || 0), '', promocao);
-        });
-    });
 }
 
 function atualizarDataHoraPdv() {

@@ -277,6 +277,10 @@ function aplicarModoFiscalGlobal() {
                 : 'Finalizar Venda';
         }
     }
+
+    if (typeof atualizarBarraModoFiscalSidebar === 'function') {
+        atualizarBarraModoFiscalSidebar();
+    }
 }
 
 function alternarModoFiscalGlobal() {
@@ -478,13 +482,17 @@ function filtrarMenuPorPermissoes() {
 }
 
 function renderSidebarBrandPadrao() {
-    const brand = document.getElementById('sidebar-brand');
-    if (!brand) return;
+    const brandContent = document.getElementById('sidebar-brand-content') || document.getElementById('sidebar-brand');
+    if (!brandContent) return;
 
-    brand.innerHTML = `
+    brandContent.innerHTML = `
         <h5 class="text-white">CDS</h5>
         <small class="text-muted">Sistemas</small>
     `;
+
+    if (typeof atualizarBarraModoFiscalSidebar === 'function') {
+        atualizarBarraModoFiscalSidebar();
+    }
 }
 
 function normalizeLogoPath(logoPath) {
@@ -507,8 +515,8 @@ function normalizeLogoPath(logoPath) {
 }
 
 async function carregarLogoSidebar() {
-    const brand = document.getElementById('sidebar-brand');
-    if (!brand) return;
+    const brandContent = document.getElementById('sidebar-brand-content') || document.getElementById('sidebar-brand');
+    if (!brandContent) return;
 
     try {
         const response = await fetch(`${API_URL}/configuracoes`, {
@@ -538,7 +546,7 @@ async function carregarLogoSidebar() {
             ? `${API_URL.replace('/api', '')}${logoPath}`
             : logoPath;
 
-        brand.innerHTML = `
+        brandContent.innerHTML = `
             <img
                 src="${logoUrl}"
                 alt="Logo da empresa"
@@ -549,6 +557,10 @@ async function carregarLogoSidebar() {
     } catch (error) {
         console.error('Erro ao carregar logo da sidebar:', error);
         renderSidebarBrandPadrao();
+    }
+
+    if (typeof atualizarBarraModoFiscalSidebar === 'function') {
+        atualizarBarraModoFiscalSidebar();
     }
 }
 

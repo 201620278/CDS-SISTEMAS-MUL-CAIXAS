@@ -98,7 +98,7 @@ function renderVendas(vendas) {
                                 <th>Total</th>
                                 <th>Forma</th>
                                 <th>Status</th>
-                                <th>Ações</th>
+                                <th class="historico-venda-acoes-col">Ações</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -111,11 +111,7 @@ function renderVendas(vendas) {
                                     <td>${formatCurrency(v.total)}</td>
                                     <td>${rotuloFormaPagamento(v.forma_pagamento)}</td>
                                     <td>${rotuloStatusVenda(v.status)}</td>
-                                    <td>
-                                        <button class="btn btn-sm btn-info" onclick="viewVenda(${v.id})"><i class="fas fa-eye"></i></button>
-                                        <button class="btn btn-sm btn-secondary" title="Resumo Venda/NFC-e/TEF" onclick="verResumoVendaFiscalTEF(${v.id})">📄</button>
-                                        ${v.status !== 'cancelada' ? `<button class="btn btn-sm btn-danger" onclick="cancelarVendaNaoFiscal(${v.id})"><i class="fas fa-times"></i></button>` : ''}
-                                    </td>
+                                    <td class="historico-venda-acoes-col">${montarHtmlAcoesHistoricoVenda(v, { incluirDevolucao: false })}</td>
                                 </tr>
                             `).join('') || '<tr><td colspan="8" class="text-center">Nenhuma venda encontrada.</td></tr>'}
                         </tbody>
@@ -174,6 +170,16 @@ function showVendaModal(venda) {
                             <div class="col-sm-4"><strong>Documento:</strong> ${escapeHtml(venda.documento || '-')}</div>
                             <div class="col-sm-4"><strong>Número de itens:</strong> ${itens.length}</div>
                         </div>
+                        ${vendaPossuiNfceAutorizada(venda) ? `
+                        <div class="alert alert-success py-2 mb-3">
+                            <i class="fas fa-receipt"></i>
+                            NFC-e autorizada${venda.nfce_numero ? ` — nota <strong>#${escapeHtml(String(venda.nfce_numero))}</strong>` : ''}
+                        </div>` : ''}
+                        ${vendaPossuiCupomNaoFiscal(venda) ? `
+                        <div class="alert alert-warning py-2 mb-3">
+                            <i class="fas fa-file-invoice"></i>
+                            Comprovante não fiscal disponível${Number(venda.valor_nao_fiscal || 0) > 0 ? ` — R$ ${Number(venda.valor_nao_fiscal).toFixed(2).replace('.', ',')}` : ''}
+                        </div>` : ''}
                         <div class="table-responsive">
                             <table class="table table-sm table-bordered">
                                 <thead>
@@ -192,6 +198,14 @@ function showVendaModal(venda) {
                         </div>
                     </div>
                     <div class="modal-footer">
+                        ${vendaPossuiCupomNaoFiscal(venda) ? `
+                        <button type="button" class="btn btn-warning" onclick="reimprimirCupomNaoFiscalHistorico(${venda.id})">
+                            <i class="fas fa-receipt"></i> Reimprimir cupom não fiscal
+                        </button>` : ''}
+                        ${vendaPossuiNfceAutorizada(venda) ? `
+                        <button type="button" class="btn btn-success" onclick="reimprimirCupomFiscalHistorico(${venda.id})">
+                            <i class="fas fa-print"></i> Reimprimir cupom fiscal
+                        </button>` : ''}
                         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
                     </div>
                 </div>

@@ -427,7 +427,11 @@ function criarMainWindow(opcoes = {}) {
 
   ipcMain.removeAllListeners('abrir-comprovante');
   ipcMain.on('abrir-comprovante', (event, html, options = {}) => {
-    const { deviceName, silent = false } = options;
+    const {
+      deviceName,
+      silent = false,
+      autoFecharMs = 5000
+    } = options;
 
     const cupomWindow = new BrowserWindow({
       width: 380,
@@ -435,7 +439,7 @@ function criarMainWindow(opcoes = {}) {
       title: 'DANFE NFC-e',
       parent: mainWindow,
       modal: false,
-      show: !silent,
+      show: false,
       alwaysOnTop: true,
       autoHideMenuBar: true,
       webPreferences: {
@@ -492,6 +496,73 @@ function criarMainWindow(opcoes = {}) {
     </style>
   </head>`);
 
+    let impressaoConcluida = false;
+    let conteudoPronto = false;
+    let autoFecharTimer = null;
+
+    function executarImpressao(callback) {
+      const printOptions = {
+        silent: true,
+        printBackground: true,
+        margins: {
+          marginType: 'none'
+        }
+      };
+
+      if (deviceName) {
+        printOptions.deviceName = deviceName;
+      }
+
+      cupomWindow.webContents.print(printOptions, (success, errorType) => {
+        if (success) {
+          console.log('[IMPRESSAO] DANFE NFC-e impresso.');
+        } else {
+          console.error('[IMPRESSAO] Falha:', errorType);
+        }
+
+        impressaoConcluida = true;
+        if (typeof callback === 'function') {
+          callback();
+        }
+      });
+    }
+
+    function fecharCupomComImpressao() {
+      if (cupomWindow.isDestroyed()) {
+        return;
+      }
+
+      if (autoFecharTimer) {
+        clearTimeout(autoFecharTimer);
+        autoFecharTimer = null;
+      }
+
+      if (impressaoConcluida) {
+        cupomWindow.destroy();
+        return;
+      }
+
+      if (!conteudoPronto) {
+        cupomWindow.destroy();
+        return;
+      }
+
+      executarImpressao(() => {
+        if (!cupomWindow.isDestroyed()) {
+          cupomWindow.destroy();
+        }
+      });
+    }
+
+    cupomWindow.on('close', (e) => {
+      if (impressaoConcluida || cupomWindow.isDestroyed()) {
+        return;
+      }
+
+      e.preventDefault();
+      fecharCupomComImpressao();
+    });
+
     cupomWindow.loadURL(
       `data:text/html;charset=utf-8,${encodeURIComponent(htmlFinal)}`
     );
@@ -526,29 +597,25 @@ function criarMainWindow(opcoes = {}) {
       });
     `);
 
-      const printOptions = {
-        silent: true,
-        printBackground: true,
-        margins: {
-          marginType: 'none'
-        }
-      };
+      conteudoPronto = true;
 
-      if (deviceName) {
-        printOptions.deviceName = deviceName;
+      if (silent) {
+        executarImpressao(() => {
+          if (!cupomWindow.isDestroyed()) {
+            cupomWindow.destroy();
+          }
+        });
+        return;
       }
 
-      cupomWindow.webContents.print(printOptions, (success, errorType) => {
-        if (success) {
-          console.log('[IMPRESSAO] DANFE NFC-e impresso.');
-        } else {
-          console.error('[IMPRESSAO] Falha:', errorType);
-        }
+      cupomWindow.show();
+      cupomWindow.focus();
 
+      autoFecharTimer = setTimeout(() => {
         if (!cupomWindow.isDestroyed()) {
           cupomWindow.close();
         }
-      });
+      }, Math.max(Number(autoFecharMs) || 5000, 1000));
     });
   });
 
