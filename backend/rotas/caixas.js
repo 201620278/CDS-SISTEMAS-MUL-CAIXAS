@@ -370,13 +370,14 @@ router.delete('/:id', (req, res) => {
 
   const { id } = req.params;
 
-  // Verificar se caixa está aberto
+  // Verificar se caixa administrativo está com sessão aberta
   db.get(
-    `SELECT * FROM caixa WHERE status = 'aberto' LIMIT 1`,
-    (errCheck, caixaAberto) => {
+    `SELECT id FROM caixa_sessoes WHERE caixa_id = ? AND status = 'aberto' LIMIT 1`,
+    [id],
+    (errCheck, sessaoAberta) => {
       if (errCheck) return res.status(500).json({ error: errCheck.message });
-      if (caixaAberto) {
-        return res.status(400).json({ error: 'Não é possível desativar um caixa aberto' });
+      if (sessaoAberta) {
+        return res.status(400).json({ error: 'Não é possível desativar um caixa com sessão aberta.' });
       }
 
       // Soft delete

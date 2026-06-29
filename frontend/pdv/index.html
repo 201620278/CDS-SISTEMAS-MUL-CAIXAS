@@ -62,7 +62,17 @@
                                 <i class="fas fa-print"></i> Reimpressão de Cupom
                             </a>
                         </li>
-                        <li class="nav-item" id="nav-abrir-erp">
+                        <li class="nav-item" id="nav-nome-terminal-pdv" style="display:none">
+                            <a class="nav-link text-white" href="#" data-page="nome-terminal-pdv">
+                                <i class="fas fa-tag"></i> Nome deste PDV
+                            </a>
+                        </li>
+                        <li class="nav-item" id="nav-config-rede-pdv" style="display:none">
+                            <a class="nav-link text-warning" href="#" data-page="configuracao-rede">
+                                <i class="fas fa-network-wired"></i> Configuração de Rede
+                            </a>
+                        </li>
+                        <li class="nav-item" id="nav-abrir-erp" style="display:none">
                             <a class="nav-link text-info" href="/erp">
                                 <i class="fas fa-building"></i> Abrir ERP
                             </a>
@@ -74,6 +84,7 @@
                             <i class="fas fa-user"></i> <span id="user-nome">Carregando...</span>
                             <br>
                             <small id="user-perfil" class="text-muted">-</small>
+                            <small id="pdv-terminal-rotulo" class="d-block mt-1" style="display:none"></small>
                         </div>
                         <button class="btn btn-danger btn-sm w-100" onclick="logout()">
                             <i class="fas fa-sign-out-alt"></i> Sair
@@ -97,14 +108,20 @@
 
     <script src="/vendor/jquery/jquery.min.js"></script>
     <script src="/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
+    <script>
+        window.CDS_MODULE = 'pdv';
+        window.CDS_DEFAULT_PAGE = 'pdv';
+    </script>
     <script src="/shared/js/estacaoHostname.js"></script>
     <script src="/shared/js/access-control.js"></script>
     <script src="/shared/js/core.js"></script>
+    <script src="/shared/js/configuracaoRede.js"></script>
     <script src="/js/modoFiscalHelpers.js"></script>
     <script src="/js/fiscalImpressao.js"></script>
     <script src="/js/vendasHistoricoUi.js"></script>
     <script src="/shared/js/tefFluxoPagamento.js"></script>
     <script src="/pdv/js/pdv.js"></script>
+    <script src="/shared/js/nomeTerminalPdv.js"></script>
     <script src="/pdv/js/caixa.js"></script>
     <script src="/pdv/js/clientes.js"></script>
     <script src="/pdv/js/vendas.js"></script>
@@ -116,15 +133,5 @@
         &copy; CDS Sistemas — PDV (Frente de Caixa)
     </footer>
 
-    <script>
-        $(document).ready(function() {
-            const user = typeof obterUsuarioLogado === 'function' ? obterUsuarioLogado() : {};
-            if (typeof isUsuarioAdministrador === 'function' && isUsuarioAdministrador(user)) {
-                $('#nav-abrir-erp').show();
-            } else {
-                $('#nav-abrir-erp').hide();
-            }
-        });
-    </script>
 </body>
 </html>

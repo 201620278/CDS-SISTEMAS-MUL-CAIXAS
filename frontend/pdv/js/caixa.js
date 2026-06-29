@@ -63,18 +63,35 @@ function getTerminalRequestQuery(params = {}) {
 }
 
 function carregarCaixaAberto() {
-  $.get(`${API_URL}/caixa/aberto`, getTerminalRequestQuery(), function(resumo) {
-    if (!resumo) {
-      renderStatusCaixa(null);
-      renderAbrirCaixa();
-      return;
-    }
+  const carregar = () => {
+    $.get(`${API_URL}/caixa/aberto`, getTerminalRequestQuery(), function(resumo) {
+      if (!resumo) {
+        renderStatusCaixa(null);
+        renderAbrirCaixa();
+        return;
+      }
 
-    renderStatusCaixa(resumo);
-    renderCaixaAberto(resumo);
-  }).fail(function(xhr) {
-    showNotification(xhr.responseJSON?.error || 'Erro ao carregar caixa.', 'danger');
-  });
+      renderStatusCaixa(resumo);
+      renderCaixaAberto(resumo);
+    }).fail(function(xhr) {
+      if (xhr.status === 400 && typeof terminalPdvRegistrado === 'function' && !terminalPdvRegistrado()) {
+        renderStatusCaixa(null);
+        renderAbrirCaixa();
+        return;
+      }
+      showNotification(xhr.responseJSON?.error || 'Erro ao carregar caixa.', 'danger');
+    });
+  };
+
+  if (typeof aguardarTerminalPdv === 'function') {
+    aguardarTerminalPdv((registrado) => {
+      if (registrado) carregar();
+      else renderAbrirCaixa();
+    });
+    return;
+  }
+
+  carregar();
 }
 
 function formatarHora(dataTexto) {
@@ -93,6 +110,10 @@ function formatarHora(dataTexto) {
 }
 
 function renderStatusCaixa(resumo) {
+  if (!$('#status-caixa-area').length) {
+    return;
+  }
+
   if (!resumo) {
     $('#status-caixa-area').html(`
       <div class="alert alert-danger d-flex align-items-center justify-content-between">
@@ -114,6 +135,37 @@ function renderStatusCaixa(resumo) {
 function renderAbrirCaixa() {
   $('.modal-backdrop').remove();
   $('body').removeClass('modal-open').css('padding-right', '');
+
+  if (typeof aguardarTerminalPdv === 'function') {
+    aguardarTerminalPdv((registrado) => {
+      if (!registrado) {
+        $('#caixa-area').html(`
+          <div class="card">
+            <div class="card-header"><strong>Abrir Caixa</strong></div>
+            <div class="card-body">
+              <div class="alert alert-warning mb-0">
+                <strong>Terminal não registrado.</strong>
+                Aguarde alguns segundos ou reinicie o PDV. Se o problema persistir,
+                verifique a conexão com o servidor e vincule este terminal no ERP em
+                <em>Gerenciar Caixas</em>.
+              </div>
+            </div>
+          </div>
+        `);
+        return;
+      }
+      renderFormularioAbrirCaixa();
+    });
+    return;
+  }
+
+  renderFormularioAbrirCaixa();
+}
+
+function renderFormularioAbrirCaixa() {
+  if (!$('#caixa-area').length) {
+    return;
+  }
 
   $('#caixa-area').html(`
     <div class="card">
@@ -152,7 +204,7 @@ function renderAbrirCaixa() {
 }
 
 function carregarSaldoInicialSugerido() {
-  $.get(`${API_URL}/caixa/saldo-inicial-sugerido`, function(res) {
+  $.get(`${API_URL}/caixa/saldo-inicial-sugerido`, getTerminalRequestQuery(), function(res) {
     const valor = Number(res.valor_sugerido || 0);
 
     $('#valor-inicial-caixa').val(
@@ -335,6 +387,11 @@ function renderCaixaAberto(resumo) {
 }
 
 function abrirCaixa() {
+  if (typeof terminalPdvRegistrado === 'function' && !terminalPdvRegistrado()) {
+    showNotification('Terminal não registrado. Aguarde o registro ou reinicie o PDV.', 'warning');
+    return;
+  }
+
   const valor = pegarValorCampo('#valor-inicial-caixa');
 
   if (valor < 0) {

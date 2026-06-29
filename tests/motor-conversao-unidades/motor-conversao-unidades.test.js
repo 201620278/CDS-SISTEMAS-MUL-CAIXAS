@@ -157,6 +157,20 @@ async function run() {
     assert.strictEqual(estoque.quantidade, 500);
   });
 
+  await test('Venda não fiscal — consome estoque não fiscal primeiro', () => {
+    const venda = distribuirQuantidadeVenda(7.25, 300, 200, false);
+    assert.strictEqual(venda.sucesso, true);
+    assert.strictEqual(venda.quantidadeNaoFiscal, 7.25);
+    assert.strictEqual(venda.quantidadeFiscal, 0);
+  });
+
+  await test('Venda fiscal — consome estoque fiscal primeiro', () => {
+    const venda = distribuirQuantidadeVenda(7.25, 300, 200, true);
+    assert.strictEqual(venda.sucesso, true);
+    assert.strictEqual(venda.quantidadeFiscal, 7.25);
+    assert.strictEqual(venda.quantidadeNaoFiscal, 0);
+  });
+
   await test('Venda parcial — 7,25 MT de 500 MT em estoque', () => {
     const venda = distribuirQuantidadeVenda(7.25, 300, 200);
     assert.strictEqual(venda.sucesso, true);

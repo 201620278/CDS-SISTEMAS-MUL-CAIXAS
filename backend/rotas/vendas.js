@@ -20,7 +20,8 @@
   const OrquestradorPagamento = require('../services/OrquestradorPagamento');
   const {
     distribuirQuantidadeVenda,
-    distribuirItemVenda
+    distribuirItemVenda,
+    parseVendaFiscalFlag
   } = require('../services/distribuidorEstoqueVenda');
   const { cancelarFiscal } = require('../services/tef/ReversaoFiscal');
   const { resolverQuantidadesVendaItem, calcularDevolucaoVendaFiscalPrimeiro } = require('../services/estoqueFiscalService');
@@ -530,7 +531,7 @@ justificativa: ${justificativa.trim()}
     const valorFiscal = Number(opcoes.valorFiscal || 0);
     const recebimentos = Array.isArray(recebimentosNaoFiscal) ? recebimentosNaoFiscal : [];
 
-    if (valor <= 0) {
+    if (valor <= 0 && valorFiscal <= 0) {
       return statusAtual;
     }
 
@@ -542,16 +543,20 @@ justificativa: ${justificativa.trim()}
       recebimentos.length > 0
       && Math.abs(totalConfirmado - valor) <= 0.01;
 
-    // Venda mista: nunca quitada na criação sem recebimento não fiscal confirmado
-    if (valorFiscal > 0) {
+    // Venda mista (fiscal + não fiscal): 2ª etapa obrigatória
+    if (valorFiscal > 0 && valor > 0) {
       return naoFiscalConfirmado ? statusAtual : 'aguardando_nao_fiscal';
     }
 
-    // Somente não fiscal
-    if (!naoFiscalConfirmado) {
-      return recebimentos.length === 0 ? 'aguardando_nao_fiscal' : statusAtual;
+    // Venda somente não fiscal: pagamento único na criação — nunca aguarda 2ª etapa
+    if (valorFiscal <= 0 && valor > 0) {
+      if (naoFiscalConfirmado || statusAtual === 'quitada' || statusAtual === 'pendente') {
+        return 'quitada';
+      }
+      return statusAtual;
     }
 
+    // Venda somente fiscal
     return statusAtual;
   }
 
@@ -652,15 +657,16 @@ justificativa: ${justificativa.trim()}
       || emitirFiscal === 'true'
       || emitirFiscal === 1
       || emitirFiscal === '1';
-    const emitirExplicitoNegado = emitirFiscal === false
-      || emitirFiscal === 'false'
-      || emitirFiscal === 0
-      || emitirFiscal === '0';
-    const deveEmitir = emitirExplicito
-      || (!emitirExplicitoNegado && Number(venda?.valor_fiscal || 0) > 0);
 
-    if (!deveEmitir) {
+    if (!emitirExplicito) {
       return null;
+    }
+
+    if (Number(venda?.valor_fiscal || 0) <= 0) {
+      return {
+        status: 'sem_itens_fiscais',
+        message: 'Venda sem itens fiscais. NFC-e não necessária.'
+      };
     }
 
     try {
@@ -965,7 +971,8 @@ justificativa: ${justificativa.trim()}
   // NOVA LÓGICA: Suporte a venda a prazo
   // Substitui o bloqueio por verificação baseada em sessão (`caixa_sessoes`)
   router.post('/pre-calcular-distribuicao', validarCaixaAberto, (req, res) => {
-    const { itens } = req.body;
+    const { itens, emitir_fiscal } = req.body;
+    const vendaFiscal = parseVendaFiscalFlag(emitir_fiscal);
 
     if (!itens || !Array.isArray(itens) || itens.length === 0) {
       return res.status(400).json({
@@ -1018,7 +1025,8 @@ justificativa: ${justificativa.trim()}
         const resultado = distribuirItemVenda(
           item,
           Number(produto.saldo_fiscal || 0),
-          Number(produto.saldo_nao_fiscal || 0)
+          Number(produto.saldo_nao_fiscal || 0),
+          vendaFiscal
         );
 
         if (!resultado.sucesso) {
@@ -1109,6 +1117,8 @@ justificativa: ${justificativa.trim()}
       valor_fiscal,
       valor_nao_fiscal
     } = req.body;
+
+    const vendaFiscal = parseVendaFiscalFlag(emitir_fiscal);
 
     const cpfCnpjNotaLimpo = String(cpf_cnpj_nota || '').replace(/\D/g, '');
 
@@ -1226,7 +1236,8 @@ justificativa: ${justificativa.trim()}
           distribuirItemVenda(
             item,
             Number(produto.saldo_fiscal || 0),
-            Number(produto.saldo_nao_fiscal || 0)
+            Number(produto.saldo_nao_fiscal || 0),
+            vendaFiscal
           );
 
         if (!resultado.sucesso) {
@@ -2024,6 +2035,86 @@ justificativa: ${justificativa.trim()}
       }
 
       const valorFiscalVenda = Number(venda.valor_fiscal || 0);
+      const valorNaoFiscalVenda = Number(venda.valor_nao_fiscal || 0);
+      const vendaSomenteNaoFiscal = valorFiscalVenda <= 0 && valorNaoFiscalVenda > 0;
+
+      if (vendaSomenteNaoFiscal) {
+        if (venda.status_pagamento === 'quitada') {
+          res.json({
+            id: Number(id),
+            codigo: venda.codigo,
+            status_pagamento: 'quitada',
+            message: 'Venda não fiscal já finalizada.',
+            saldo_pendente: 0,
+            fiscal: null
+          });
+          return;
+        }
+
+        const totalInformado = pagamentosInformados.reduce(
+          (acc, p) => acc + Number(p.valor || 0),
+          0
+        );
+        const totalEsperado = Number(venda.total || valorNaoFiscalVenda || 0);
+
+        if (Math.abs(totalInformado - totalEsperado) > 0.01) {
+          res.status(400).json({
+            error: 'Valor informado não confere com o total da venda não fiscal.',
+            saldo_pendente: totalEsperado
+          });
+          return;
+        }
+
+        const recebimentos = pagamentosInformados.map((pagamento) => ({
+          tipo_recebimento: 'nao_fiscal',
+          forma_pagamento: String(pagamento.forma_pagamento).toLowerCase().trim(),
+          valor: Number(pagamento.valor || 0),
+          tef_transacao_id: pagamento.tef_transacao_id || null,
+          nsu: pagamento.nsu || null,
+          autorizacao: pagamento.autorizacao || null
+        }));
+
+        db.serialize(() => {
+          db.run('BEGIN IMMEDIATE');
+
+          gravarRecebimentos(id, recebimentos, (gravarErr) => {
+            if (gravarErr) {
+              db.run('ROLLBACK');
+              res.status(500).json({ error: gravarErr.message });
+              return;
+            }
+
+            db.run(
+              `UPDATE vendas SET status_pagamento = 'quitada' WHERE id = ?`,
+              [id],
+              (updateErr) => {
+                if (updateErr) {
+                  db.run('ROLLBACK');
+                  res.status(500).json({ error: updateErr.message });
+                  return;
+                }
+
+                db.run('COMMIT', async (commitErr) => {
+                  if (commitErr) {
+                    res.status(500).json({ error: commitErr.message });
+                    return;
+                  }
+
+                  res.json({
+                    id: Number(id),
+                    codigo: venda.codigo,
+                    status_pagamento: 'quitada',
+                    message: 'Venda não fiscal finalizada com sucesso.',
+                    saldo_pendente: 0,
+                    fiscal: null
+                  });
+                });
+              }
+            );
+          });
+        });
+        return;
+      }
 
       if (valorFiscalVenda <= 0) {
         if (venda.status_pagamento === 'quitada') {

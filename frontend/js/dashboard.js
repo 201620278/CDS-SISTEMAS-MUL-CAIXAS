@@ -410,8 +410,8 @@ async function carregarModoDashboardFiscalPadrao(apiUrl) {
         console.error('Erro ao carregar modo_dashboard_fiscal:', error);
     }
 
-    localStorage.setItem('modo_dashboard_fiscal', '0');
-    localStorage.setItem('pdv_modo_fiscal_ativo', '0');
+    localStorage.setItem('modo_dashboard_fiscal', '1');
+    localStorage.setItem('pdv_modo_fiscal_ativo', '1');
 }
 
 async function carregarDashboard(inicio = null, fim = null) {

@@ -49,6 +49,19 @@ async function resolverHostnameEstacao() {
   const daUrl = capturarHostnameDaUrl();
   if (daUrl) return daUrl;
 
+  if (!estaEmElectron()) {
+    try {
+      const key = 'cds_pdv_hostname_fallback';
+      let fallback = localStorage.getItem(key);
+      if (!fallback) {
+        fallback = `pdv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        localStorage.setItem(key, fallback);
+      }
+      sessionStorage.setItem('cds_estacao_hostname', fallback);
+      return fallback;
+    } catch (e) { /* ignore */ }
+  }
+
   return null;
 }
 

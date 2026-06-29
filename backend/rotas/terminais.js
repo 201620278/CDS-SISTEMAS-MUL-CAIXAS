@@ -106,6 +106,82 @@ function registrarTerminalAuto(req, res) {
   });
 }
 
+function exigirSuperAdminTerminal(req, res, next) {
+  const perfil = String(req.user?.perfil || '').toUpperCase();
+  if (perfil !== 'SUPER_ADMIN') {
+    return res.status(403).json({ error: 'Apenas SUPER_ADMIN pode nomear este PDV.' });
+  }
+  next();
+}
+
+function atualizarNomeTerminalPdv(req, res) {
+  const hostname = String(req.body?.hostname || '').trim();
+  const nome = String(req.body?.nome || '').trim();
+
+  if (!hostname || hostname === 'web-browser') {
+    return res.status(400).json({ error: 'Hostname do terminal PDV inválido.' });
+  }
+
+  if (!nome) {
+    return res.status(400).json({ error: 'Informe um nome para identificar este PDV.' });
+  }
+
+  if (nome.length > 80) {
+    return res.status(400).json({ error: 'Nome muito longo (máximo 80 caracteres).' });
+  }
+
+  const agora = new Date().toISOString();
+
+  db.get(`SELECT * FROM terminais WHERE hostname = ?`, [hostname], (err, terminal) => {
+    if (err) return res.status(500).json({ error: err.message });
+
+    const salvarNome = (terminalId) => {
+      db.run(
+        `UPDATE terminais SET nome = ?, updated_at = ? WHERE id = ?`,
+        [nome, agora, terminalId],
+        (updateErr) => {
+          if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+          db.get(`
+            SELECT t.*, c.nome AS caixa_nome
+            FROM terminais t
+            LEFT JOIN caixas c ON c.id = t.caixa_id
+            WHERE t.id = ?
+          `, [terminalId], (getErr, row) => {
+            if (getErr) return res.status(500).json({ error: getErr.message });
+
+            gravarAuditoria({
+              usuario_id: req.user?.id || null,
+              usuario_nome: req.user?.nome || req.user?.username || null,
+              modulo: 'terminais',
+              acao: 'nomear_terminal_pdv',
+              referencia_tipo: 'terminal',
+              referencia_id: terminalId,
+              detalhes: { hostname, nome, origem: 'pdv' },
+              ip_requisicao: req.ip || null
+            }).catch((auditErr) => console.error('Erro ao gravar auditoria de nome do terminal:', auditErr));
+
+            res.json({ ...row, online: terminalEstaOnline(row.ultima_conexao) });
+          });
+        }
+      );
+    };
+
+    if (terminal) {
+      return salvarNome(terminal.id);
+    }
+
+    db.run(
+      `INSERT INTO terminais (nome, hostname, ativo, ultima_conexao, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)`,
+      [nome, hostname, agora, agora, agora],
+      function(insertErr) {
+        if (insertErr) return res.status(500).json({ error: insertErr.message });
+        salvarNome(this.lastID);
+      }
+    );
+  });
+}
+
 function registrarTerminalOffline(req, res) {
   const origem = String(req.query.origem || '').trim().toLowerCase();
   if (origem !== 'pdv') {
@@ -163,6 +239,9 @@ router.post('/', (req, res) => {
     }
   );
 });
+
+router.put('/auto/nome', exigirSuperAdminTerminal, atualizarNomeTerminalPdv);
+router.post('/auto/nome', exigirSuperAdminTerminal, atualizarNomeTerminalPdv);
 
 router.put('/:id', (req, res) => {
   const id = Number(req.params.id);
@@ -239,5 +318,7 @@ router.put('/:id', (req, res) => {
 module.exports = router;
 module.exports.registrarTerminalAuto = registrarTerminalAuto;
 module.exports.registrarTerminalOffline = registrarTerminalOffline;
+module.exports.atualizarNomeTerminalPdv = atualizarNomeTerminalPdv;
+module.exports.exigirSuperAdminTerminal = exigirSuperAdminTerminal;
 module.exports.terminalEstaOnline = terminalEstaOnline;
 module.exports.HEARTBEAT_ONLINE_MS = HEARTBEAT_ONLINE_MS;

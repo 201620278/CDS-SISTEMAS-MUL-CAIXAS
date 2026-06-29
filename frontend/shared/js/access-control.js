@@ -136,7 +136,7 @@ function obterDestinoPosLogin(user) {
 function usuarioTemPermissao(page) {
     const { role, permissoes } = obterPermissoesUsuario();
 
-    if (page === 'configuracoes-avancadas') {
+    if (page === 'configuracoes-avancadas' || page === 'configuracao-rede' || page === 'nome-terminal-pdv') {
         return isSuperAdminUser();
     }
 

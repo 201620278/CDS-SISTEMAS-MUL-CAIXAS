@@ -61,7 +61,7 @@ setInterval(() => {
     }
 }, 3000);
 
-let CONFIG_IMPLANTACAO = null;
+const MODO_FISCAL_PADRAO = '1';
 
 function obterRecursosImplantacao() {
     return (CONFIG_IMPLANTACAO && CONFIG_IMPLANTACAO.recursos) || {};
@@ -153,6 +153,148 @@ function aplicarModoFiscalGlobal() {
     }
 }
 
+let modoFiscalSyncInterval = null;
+let modoFiscalSalvandoServidor = false;
+
+function normalizarValorModoFiscal(valor) {
+    return valor === true || valor === 'true' || valor === 1 || valor === '1' ? '1' : '0';
+}
+
+async function obterModoFiscalServidor() {
+    if (!implantacaoPermiteFiscal()) {
+        return '0';
+    }
+
+    try {
+        const response = await fetch(`${API_URL}/configuracoes/modo_dashboard_fiscal`, {
+            headers: {
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            }
+        });
+
+        if (!response.ok) {
+            return null;
+        }
+
+        const data = await response.json();
+        if (data && data.valor !== undefined && data.valor !== null) {
+            return normalizarValorModoFiscal(data.valor);
+        }
+    } catch (error) {
+        console.warn('Erro ao obter modo fiscal do servidor:', error);
+    }
+
+    return null;
+}
+
+async function salvarModoFiscalServidor(valor) {
+    if (!implantacaoPermiteFiscal()) {
+        return;
+    }
+
+    const normalizado = normalizarValorModoFiscal(valor);
+
+    try {
+        modoFiscalSalvandoServidor = true;
+        await fetch(`${API_URL}/configuracoes/modo_dashboard_fiscal`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+            },
+            body: JSON.stringify({ valor: normalizado })
+        });
+    } catch (error) {
+        console.warn('Erro ao salvar modo fiscal no servidor:', error);
+    } finally {
+        modoFiscalSalvandoServidor = false;
+    }
+}
+
+function aplicarModoFiscalLocal(valor, opcoes = {}) {
+    const normalizado = normalizarValorModoFiscal(valor);
+    const atual = localStorage.getItem('pdv_modo_fiscal_ativo');
+
+    if (atual === normalizado && !opcoes.forcar) {
+        aplicarModoFiscalGlobal();
+        return false;
+    }
+
+    localStorage.setItem('pdv_modo_fiscal_ativo', normalizado);
+    localStorage.setItem('modo_dashboard_fiscal', normalizado);
+    aplicarModoFiscalGlobal();
+
+    if (opcoes.recarregar !== false && typeof recarregarModulosModoFiscal === 'function') {
+        recarregarModulosModoFiscal();
+    } else if (opcoes.recarregar !== false && currentPage === 'vendas' && typeof loadVendas === 'function') {
+        loadVendas();
+    }
+
+    return true;
+}
+
+async function carregarModoFiscalInicial() {
+    const remoto = await obterModoFiscalServidor();
+
+    if (remoto !== null) {
+        aplicarModoFiscalLocal(remoto, { recarregar: false });
+        return;
+    }
+
+    if (localStorage.getItem('pdv_modo_fiscal_ativo') === null) {
+        aplicarModoFiscalLocal(MODO_FISCAL_PADRAO, { recarregar: false });
+        if (remoto === null && implantacaoPermiteFiscal()) {
+            salvarModoFiscalServidor(MODO_FISCAL_PADRAO);
+        }
+    } else {
+        aplicarModoFiscalGlobal();
+    }
+}
+
+async function sincronizarModoFiscalServidor(opcoes = {}) {
+    if (!implantacaoPermiteFiscal() || modoFiscalSalvandoServidor) {
+        return;
+    }
+
+    const remoto = await obterModoFiscalServidor();
+    if (remoto === null) {
+        return;
+    }
+
+    const local = localStorage.getItem('pdv_modo_fiscal_ativo');
+    if (local === remoto) {
+        return;
+    }
+
+    const alterou = aplicarModoFiscalLocal(remoto, { recarregar: true });
+
+    if (alterou && opcoes.notificar) {
+        showNotification(
+            remoto === '1'
+                ? 'Modo fiscal ativado no servidor (F12). PDV sincronizado.'
+                : 'Modo completo ativado no servidor (F12). PDV sincronizado.',
+            'info'
+        );
+    }
+}
+
+function iniciarSincronizacaoModoFiscalServidor() {
+    if (modoFiscalSyncInterval) {
+        clearInterval(modoFiscalSyncInterval);
+        modoFiscalSyncInterval = null;
+    }
+
+    if (!implantacaoPermiteFiscal()) {
+        return;
+    }
+
+    const intervaloMs = window.CDS_MODULE === 'pdv' ? 3000 : 5000;
+
+    modoFiscalSyncInterval = setInterval(() => {
+        sincronizarModoFiscalServidor({ notificar: window.CDS_MODULE === 'pdv' });
+    }, intervaloMs);
+}
+
 function alternarModoFiscalGlobal() {
     if (!implantacaoPermiteFiscal()) {
         showNotification('Emissão fiscal desabilitada para o tipo de implantação configurado.', 'warning');
@@ -163,6 +305,7 @@ function alternarModoFiscalGlobal() {
     localStorage.setItem('pdv_modo_fiscal_ativo', novoValor);
     localStorage.setItem('modo_dashboard_fiscal', novoValor);
     aplicarModoFiscalGlobal();
+    salvarModoFiscalServidor(novoValor);
 
     showNotification(
         novoValor === '1'
@@ -384,6 +527,13 @@ function filtrarMenuPorPermissoes() {
 
     $('#nav-config-avancadas').toggle(isSuperAdminUser());
     $('#nav-abrir-pdv').toggle(window.CDS_MODULE === 'erp' && podeAcessarModulo('pdv'));
+    $('#nav-config-rede-pdv').toggle(window.CDS_MODULE === 'pdv' && isSuperAdminUser());
+    $('#nav-nome-terminal-pdv').toggle(window.CDS_MODULE === 'pdv' && isSuperAdminUser());
+    $('#nav-abrir-erp').toggle(
+        window.CDS_MODULE === 'pdv' &&
+        typeof isUsuarioAdministrador === 'function' &&
+        isUsuarioAdministrador(obterUsuarioLogado())
+    );
 }
 
 function formatCurrency(value) {
@@ -518,10 +668,11 @@ function inicializarShellModulo(options = {}) {
         url: `${API_URL}/auth/verificar`,
         method: 'POST',
         success: function () {
-            carregarConfiguracaoImplantacao().finally(function () {
-                aplicarModoFiscalGlobal();
+            carregarConfiguracaoImplantacao().finally(async function () {
+                await carregarModoFiscalInicial();
+                iniciarSincronizacaoModoFiscalServidor();
 
-                if (window.CDS_MODULE === 'pdv') {
+                if (implantacaoPermiteFiscal()) {
                     $(document).off('keydown.modoFiscalF12').on('keydown.modoFiscalF12', function (e) {
                         if (e.key === 'F12') {
                             e.preventDefault();

@@ -11,6 +11,11 @@ function escapeHtml(text) {
 }
 
 async function carregarAuditoria(page = 1) {
+    const tbody = document.getElementById('auditTabelaCorpo');
+    if (!tbody) {
+        return;
+    }
+
     auditPage = page;
     const apiUrl = (typeof API_URL === 'string' && API_URL.trim() !== '') ? API_URL : `${window.location.origin}/api`;
 
@@ -37,7 +42,6 @@ async function carregarAuditoria(page = 1) {
             throw new Error(data.error || 'Erro ao buscar auditoria');
         }
 
-        const tbody = document.getElementById('auditTabelaCorpo');
         tbody.innerHTML = '';
 
         (data.rows || []).forEach(row => {
@@ -47,7 +51,7 @@ async function carregarAuditoria(page = 1) {
 
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${(row.criado_em || '').replace('T', ' ').slice(0,19)}</td>
+                <td>${(row.criado_em || '').replace('T', ' ').slice(0, 19)}</td>
                 <td>${escapeHtml(row.usuario_nome)}</td>
                 <td>${escapeHtml(row.modulo)}</td>
                 <td>${escapeHtml(row.acao)}</td>
@@ -58,20 +62,38 @@ async function carregarAuditoria(page = 1) {
         });
 
         const resumo = document.getElementById('auditResumo');
-        resumo.textContent = `Página ${data.page} — itens nesta página: ${data.rows.length} — total: ${data.total}`;
+        if (resumo) {
+            resumo.textContent = `Página ${data.page} — itens nesta página: ${data.rows.length} — total: ${data.total}`;
+        }
 
-        document.getElementById('auditPrev').disabled = data.page <= 1;
-        document.getElementById('auditNext').disabled = (data.page * data.pageSize) >= data.total;
+        const prev = document.getElementById('auditPrev');
+        const next = document.getElementById('auditNext');
+        if (prev) prev.disabled = data.page <= 1;
+        if (next) next.disabled = (data.page * data.pageSize) >= data.total;
 
     } catch (err) {
         console.error('Erro auditoria:', err);
-        showNotification(err.message || 'Erro ao carregar auditoria', 'danger');
+        if (typeof showNotification === 'function') {
+            showNotification(err.message || 'Erro ao carregar auditoria', 'danger');
+        }
     }
 }
 
-document.getElementById('auditBuscar')?.addEventListener('click', () => carregarAuditoria(1));
-document.getElementById('auditPrev')?.addEventListener('click', () => carregarAuditoria(Math.max(1, auditPage - 1)));
-document.getElementById('auditNext')?.addEventListener('click', () => carregarAuditoria(auditPage + 1));
+function inicializarPaginaAuditoria() {
+    if (!document.getElementById('auditTabelaCorpo')) {
+        return;
+    }
 
-// Carregar inicialmente
-carregarAuditoria(1);
+    const btnBuscar = document.getElementById('auditBuscar');
+    const btnPrev = document.getElementById('auditPrev');
+    const btnNext = document.getElementById('auditNext');
+
+    if (btnBuscar) btnBuscar.onclick = () => carregarAuditoria(1);
+    if (btnPrev) btnPrev.onclick = () => carregarAuditoria(Math.max(1, auditPage - 1));
+    if (btnNext) btnNext.onclick = () => carregarAuditoria(auditPage + 1);
+
+    carregarAuditoria(1);
+}
+
+window.carregarAuditoria = carregarAuditoria;
+window.inicializarPaginaAuditoria = inicializarPaginaAuditoria;

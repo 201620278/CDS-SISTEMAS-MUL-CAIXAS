@@ -111,9 +111,19 @@ app.get('/api/configuracoes/login_background', (req, res) => {
     });
 });
 
-// Rota de login (página pública)
+const frontendRoot = path.join(__dirname, '../frontend');
+
+// Login e módulos ERP/PDV (páginas HTML)
 app.get('/login', (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend/login.html'));
+    res.sendFile(path.join(frontendRoot, 'shared/login.html'));
+});
+
+app.get(['/pdv', '/pdv/'], verificarToken, (req, res) => {
+    res.sendFile(path.join(frontendRoot, 'pdv/index.html'));
+});
+
+app.get(['/erp', '/erp/'], verificarToken, (req, res) => {
+    res.sendFile(path.join(frontendRoot, 'erp/index.html'));
 });
 
 
@@ -170,6 +180,18 @@ app.use('/api/caixa', verificarToken, caixaRoutes);
 app.use('/api/caixas', verificarToken, exigirRecurso('multiCaixa'), caixasRoutes);
 app.get('/api/terminais/auto', terminaisRoutes.registrarTerminalAuto);
 app.get('/api/terminais/auto/offline', terminaisRoutes.registrarTerminalOffline);
+app.put(
+  '/api/terminais/auto/nome',
+  verificarToken,
+  terminaisRoutes.exigirSuperAdminTerminal,
+  terminaisRoutes.atualizarNomeTerminalPdv
+);
+app.post(
+  '/api/terminais/auto/nome',
+  verificarToken,
+  terminaisRoutes.exigirSuperAdminTerminal,
+  terminaisRoutes.atualizarNomeTerminalPdv
+);
 app.use('/api/terminais', verificarToken, exigirRecurso('multiCaixa'), terminaisRoutes);
 app.use('/api/backup', verificarToken, backupRoutes);
 app.use('/api/tef', tefRoutes);

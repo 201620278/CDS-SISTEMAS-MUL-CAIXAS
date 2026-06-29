@@ -5,6 +5,7 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const { tratarFalhaConexaoRemota, aplicarRecuperacaoModoLocal } = require('./electron-rede-recuperacao');
+const { iniciarConexaoClienteRemoto, confirmarModoLocalEmergencia } = require('./electron-rede-cliente');
 const {
   definirSessaoClienteRemoto,
   obterSessaoClienteRemoto,
@@ -239,9 +240,14 @@ function aguardarListening(server, timeout = 15000) {
   });
 }
 
-function carregarConfiguracaoServidor() {
+function carregarConfiguracaoServidor(modulo = 'erp') {
   if (process.argv.includes('--cds-forcar-local')) {
     console.log('Modo local forçado via argumento --cds-forcar-local');
+    return { modo: 'local', ipServidor: '127.0.0.1', porta: obterPortaServidor() };
+  }
+
+  if (modulo === 'erp') {
+    console.log('Módulo ERP: esta estação inicia sempre com servidor local integrado.');
     return { modo: 'local', ipServidor: '127.0.0.1', porta: obterPortaServidor() };
   }
 
@@ -249,11 +255,11 @@ function carregarConfiguracaoServidor() {
     const configService = require('./backend/services/configuracaoService');
     configService.consumirFlagForcarModoLocal();
     configService.ensureConfigFile();
-    const cfg = configService.readConfig();
-    configService.syncElectronConfig(cfg);
-    return configService.getModoRedeElectron(cfg);
+    const estacao = configService.getModoRedeEstacaoElectron();
+    console.log('CONFIG ESTAÇÃO (PDV):', estacao);
+    return estacao;
   } catch (err) {
-    console.warn('Não foi possível ler configuracoes.json, usando configuração padrão.', err.message);
+    console.warn('Não foi possível ler config da estação, usando modo local.', err.message);
     return { modo: 'local', ipServidor: '127.0.0.1', porta: 3001 };
   }
 }
@@ -525,7 +531,8 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes = {}
         const acao = await tratarFalhaConexaoRemota({
           error,
           configServidor: opcoes.modoClienteRemoto,
-          remoteUrl: url
+          remoteUrl: url,
+          modulo: appModuloAtual
         });
 
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -538,6 +545,10 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes = {}
         }
 
         if (acao === 'local') {
+          const confirmado = await confirmarModoLocalEmergencia(appModuloAtual);
+          if (!confirmado) {
+            return abrirJanelaApp(url, tituloErro, mensagemErro, tituloJanela, opcoes);
+          }
           try {
             await iniciarBackendLocal(tituloJanela);
             return;
@@ -612,11 +623,20 @@ function iniciarAplicacaoElectron(options = {}) {
       });
 
       process.env.FISCAL_DIR = fiscalDir;
-      const configServidor = carregarConfiguracaoServidor();
+      const configServidor = carregarConfiguracaoServidor(appModuloAtual);
 
       if (configServidor.modo === 'cliente') {
-        const urlRemota = `http://${configServidor.ipServidor}:${configServidor.porta}`;
-        createWindowRemote(urlRemota, tituloJanela, configServidor);
+        console.log(`Modo CLIENTE ativado. Servidor: http://${configServidor.ipServidor}:${configServidor.porta}`);
+        iniciarConexaoClienteRemoto({
+          configServidor,
+          modulo: appModuloAtual,
+          abrirJanelaRemota: (urlBase) => createWindowRemote(urlBase, tituloJanela, configServidor),
+          iniciarServidorLocal: () => iniciarBackendLocal(tituloJanela),
+          encerrarApp: () => app.quit()
+        }).catch((error) => {
+          dialog.showErrorBox('Erro ao conectar no servidor', error.message || String(error));
+          app.quit();
+        });
         return;
       }
 

@@ -259,6 +259,61 @@ function validateConfig(obj) {
   return { valid: errors.length === 0, errors, config };
 }
 
+function readElectronStationConfig() {
+  const global = readConfig();
+  const data = readJsonFile(getElectronConfigPath());
+  const porta = Number.isInteger(Number(data?.porta)) && Number(data.porta) > 0
+    ? Number(data.porta)
+    : (global.porta || DEFAULT.porta);
+
+  if (String(data?.modo || '').toLowerCase() === 'cliente' && String(data?.ipServidor || '').trim()) {
+    return {
+      modo: 'cliente',
+      ipServidor: String(data.ipServidor).trim(),
+      porta
+    };
+  }
+
+  return {
+    modo: 'local',
+    ipServidor: '127.0.0.1',
+    porta
+  };
+}
+
+function saveElectronStationConfig({ modo, ipServidor, porta }) {
+  const modoNormalizado = String(modo || 'local').trim().toLowerCase() === 'cliente' ? 'cliente' : 'local';
+  const global = readConfig();
+  const portaFinal = Number.isInteger(Number(porta)) && Number(porta) > 0
+    ? Number(porta)
+    : (global.porta || DEFAULT.porta);
+
+  const payload = modoNormalizado === 'cliente'
+    ? {
+      modo: 'cliente',
+      ipServidor: String(ipServidor || '').trim(),
+      porta: portaFinal
+    }
+    : {
+      modo: 'local',
+      porta: portaFinal
+    };
+
+  if (payload.modo === 'cliente' && !payload.ipServidor) {
+    throw new Error('IP do servidor é obrigatório no modo cliente.');
+  }
+
+  const electronPath = getElectronConfigPath();
+  const dir = path.dirname(electronPath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(electronPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload;
+}
+
+function getModoRedeEstacaoElectron() {
+  return readElectronStationConfig();
+}
+
 function syncElectronConfig(cfg) {
   const config = normalizeConfig(cfg);
   const modoRede = getModoRedeElectron(config);
@@ -342,36 +397,36 @@ function recursoHabilitado(nomeRecurso) {
 
 function obterModoEstacaoLocal() {
   ensureConfigFile();
-  const cfg = readConfig();
-  const modoRede = getModoRedeElectron(cfg);
-  return {
-    modo: modoRede.modo,
-    ipServidor: modoRede.ipServidor || '',
-    porta: modoRede.porta || DEFAULT.porta
-  };
+  return readElectronStationConfig();
 }
 
 function voltarModoLocalEstacao() {
-  const current = readConfig();
-  return saveConfig({
-    tipoImplantacao: current.tipoImplantacao,
-    modoOperacao: 'LOCAL',
-    ipServidor: '',
-    porta: current.porta || DEFAULT.porta,
-    modo_confirmacao_fiscal: current.modo_confirmacao_fiscal
+  const current = readElectronStationConfig();
+  return saveElectronStationConfig({
+    modo: 'local',
+    porta: current.porta || DEFAULT.porta
   });
 }
 
 function salvarModoEstacaoLocal({ modo, ipServidor, porta }) {
-  const current = readConfig();
   const modoNormalizado = String(modo || 'local').trim().toLowerCase() === 'cliente' ? 'cliente' : 'local';
+  const current = readConfig();
 
-  return saveConfig({
-    tipoImplantacao: current.tipoImplantacao,
-    modoOperacao: modoNormalizado === 'cliente' ? 'CLIENTE_SERVIDOR' : 'LOCAL',
+  if (modoNormalizado === 'cliente' && current.tipoImplantacao !== 'ERP_MULTICAIXA') {
+    saveConfig({
+      ...current,
+      tipoImplantacao: 'ERP_MULTICAIXA',
+      modoOperacao: current.modoOperacao,
+      ipServidor: current.ipServidor,
+      porta: current.porta,
+      modo_confirmacao_fiscal: current.modo_confirmacao_fiscal
+    });
+  }
+
+  return saveElectronStationConfig({
+    modo: modoNormalizado,
     ipServidor: modoNormalizado === 'cliente' ? String(ipServidor || '').trim() : '',
-    porta: Number.isInteger(Number(porta)) && Number(porta) > 0 ? Number(porta) : (current.porta || DEFAULT.porta),
-    modo_confirmacao_fiscal: current.modo_confirmacao_fiscal
+    porta
   });
 }
 
@@ -396,6 +451,9 @@ module.exports = {
   ensureConfigFile,
   getRecursos,
   getModoRedeElectron,
+  getModoRedeEstacaoElectron,
+  readElectronStationConfig,
+  saveElectronStationConfig,
   syncElectronConfig,
   reloadGlobalConfig,
   recursoHabilitado,

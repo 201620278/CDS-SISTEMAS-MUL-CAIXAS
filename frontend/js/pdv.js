@@ -13,20 +13,40 @@ let formaPagamentoSelecionadaPDV = null;
 let supervisorAuthToken = null;
 let terminalId = null;
 let terminalHostname = null;
+/** Escolha explícita do operador: emitir NFC-e nesta venda (null = ainda não definido). */
+let pdvEmitirFiscalNaVenda = null;
 const DESCONTO_MANUAL_LIMITE = 50;
 
+function obterTerminalIdPdv() {
+    if (Number.isInteger(terminalId) && terminalId > 0) {
+        return terminalId;
+    }
+    if (Number.isInteger(window.terminalId) && window.terminalId > 0) {
+        return window.terminalId;
+    }
+    return null;
+}
+
 function getTerminalRequestData(body = {}) {
-    if (terminalId) {
-        body.terminal_id = terminalId;
+    const id = obterTerminalIdPdv();
+    if (id) {
+        body.terminal_id = id;
     }
     return body;
 }
 
 function getTerminalRequestQuery(params = {}) {
-    if (terminalId) {
-        params.terminal_id = terminalId;
+    const id = obterTerminalIdPdv();
+    if (id) {
+        params.terminal_id = id;
     }
     return params;
+}
+
+function buildTerminalQueryString(params = {}) {
+    const query = getTerminalRequestQuery(params);
+    const search = new URLSearchParams(query).toString();
+    return search ? `?${search}` : '';
 }
 
 function normalizarTexto(texto) {
@@ -707,10 +727,11 @@ async function confirmarRecebimentoFiscalManual(valorFiscal) {
     });
 }
 
-function distribuirQuantidadeVendaLocal(quantidadeVendida, saldoFiscal, saldoNaoFiscal) {
+function distribuirQuantidadeVendaLocal(quantidadeVendida, saldoFiscal, saldoNaoFiscal, vendaFiscal = false) {
     quantidadeVendida = Number(quantidadeVendida || 0);
     saldoFiscal = Number(saldoFiscal || 0);
     saldoNaoFiscal = Number(saldoNaoFiscal || 0);
+    const priorizarFiscal = vendaFiscal === true;
 
     const estoqueTotal = saldoFiscal + saldoNaoFiscal;
 
@@ -721,8 +742,16 @@ function distribuirQuantidadeVendaLocal(quantidadeVendida, saldoFiscal, saldoNao
         };
     }
 
-    const quantidadeFiscal = Math.min(quantidadeVendida, saldoFiscal);
-    const quantidadeNaoFiscal = quantidadeVendida - quantidadeFiscal;
+    let quantidadeFiscal;
+    let quantidadeNaoFiscal;
+
+    if (priorizarFiscal) {
+        quantidadeFiscal = Math.min(quantidadeVendida, saldoFiscal);
+        quantidadeNaoFiscal = quantidadeVendida - quantidadeFiscal;
+    } else {
+        quantidadeNaoFiscal = Math.min(quantidadeVendida, saldoNaoFiscal);
+        quantidadeFiscal = quantidadeVendida - quantidadeNaoFiscal;
+    }
 
     return {
         sucesso: true,
@@ -731,7 +760,7 @@ function distribuirQuantidadeVendaLocal(quantidadeVendida, saldoFiscal, saldoNao
     };
 }
 
-function calcularDistribuicaoFiscalLocal(itens) {
+function calcularDistribuicaoFiscalLocal(itens, vendaFiscal = false) {
     let totalFiscal = 0;
     let totalNaoFiscal = 0;
     const itensDistribuidos = [];
@@ -748,7 +777,8 @@ function calcularDistribuicaoFiscalLocal(itens) {
         const resultado = distribuirQuantidadeVendaLocal(
             qtdEstoque,
             saldos.saldo_fiscal,
-            saldos.saldo_nao_fiscal
+            saldos.saldo_nao_fiscal,
+            vendaFiscal
         );
 
         if (!resultado.sucesso) {
@@ -792,7 +822,7 @@ function calcularDistribuicaoFiscalLocal(itens) {
     };
 }
 
-async function precalcularDistribuicaoFiscalVenda(itens) {
+async function precalcularDistribuicaoFiscalVenda(itens, vendaFiscal = false) {
     try {
         const response = await fetch(`${API_URL}/vendas/pre-calcular-distribuicao`, {
             method: 'POST',
@@ -800,7 +830,10 @@ async function precalcularDistribuicaoFiscalVenda(itens) {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${localStorage.getItem('token') || ''}`
             },
-            body: JSON.stringify(getTerminalRequestData({ itens }))
+            body: JSON.stringify(getTerminalRequestData({
+                itens,
+                emitir_fiscal: vendaFiscal
+            }))
         });
 
         const data = await response.json().catch(() => ({}));
@@ -816,7 +849,7 @@ async function precalcularDistribuicaoFiscalVenda(itens) {
         console.warn('Falha na API pre-calcular-distribuicao, usando cálculo local:', error);
     }
 
-    return calcularDistribuicaoFiscalLocal(itens);
+    return calcularDistribuicaoFiscalLocal(itens, vendaFiscal);
 }
 
 function aplicarDescontoProporcionalDistribuicao(distribuicao, subtotal, desconto) {
@@ -874,17 +907,21 @@ function normalizarPagamentosSemTef(pagamentos) {
         }));
 }
 
-async function concluirPagamentoNaoFiscalVenda(vendaId, pagamento, emitirFiscal = true) {
+async function concluirPagamentoNaoFiscalVenda(vendaId, pagamento, emitirFiscal = false) {
+    if (!obterTerminalIdPdv()) {
+        throw new Error('Terminal não registrado. Aguarde o registro do PDV ou reinicie a aplicação.');
+    }
+
     const response = await fetch(`${API_URL}/vendas/${vendaId}/pagamento-nao-fiscal`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify({
+        body: JSON.stringify(getTerminalRequestData({
             pagamentos: [pagamento],
             emitir_fiscal: emitirFiscal
-        })
+        }))
     });
 
     const data = await response.json().catch(() => ({}));
@@ -897,11 +934,14 @@ async function concluirPagamentoNaoFiscalVenda(vendaId, pagamento, emitirFiscal 
 }
 
 async function obterSaldoPagamentoNaoFiscalVenda(vendaId) {
-    const response = await fetch(`${API_URL}/vendas/${vendaId}/pagamento-nao-fiscal`, {
+    const response = await fetch(
+        `${API_URL}/vendas/${vendaId}/pagamento-nao-fiscal${buildTerminalQueryString()}`,
+        {
         headers: {
             'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
-    });
+    }
+    );
 
     const data = await response.json().catch(() => ({}));
 
@@ -970,7 +1010,8 @@ function iniciarFluxoPosVendaComNaoFiscal(vendaId, opcoes = {}) {
                 info.valor_nao_fiscal ??
                 0
             );
-            const emitirFiscal = Number(info.valor_fiscal || 0) > 0;
+            const emitirFiscal = opcoes.emitirFiscal === true
+                || (opcoes.emitirFiscal !== false && pdvEmitirFiscalNaVenda === true);
 
             abrirModalPagamentoNaoFiscal(
                 valorPendente,
@@ -1438,12 +1479,6 @@ function atualizarDataHora() {
 
 function bindEventosPDV() {
     $(document).off('keydown.pdvAtalhos').on('keydown.pdvAtalhos', function(e) {
-        if (e.key === 'F12') {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            alternarModoFiscalPdv();
-            return false;
-        }
         if (e.key === 'F1') {
             e.preventDefault();
             e.stopPropagation();
@@ -2804,81 +2839,35 @@ function abrirModalDecisaoFiscal(skipPagamento = false) {
 
     const clienteId = clienteSelecionado?.id || vendaPrazoInfo?.cliente_id || Number($('#clientePrazoId').val()) || null;
 
+    formaPagamentoSelecionadaPDV = formaPagamentoSelecionadaPDV || formaPagamento;
+    prosseguirFinalizacaoConformeModoFiscal(formaPagamento);
+}
+
+function prosseguirFinalizacaoConformeModoFiscal(formaPagamentoOverride) {
+    const forma = formaPagamentoOverride || formaPagamentoSelecionadaPDV;
+
     if (typeof implantacaoPermiteFiscal === 'function' && !implantacaoPermiteFiscal()) {
-        executarFinalizacaoVenda(false, null, formaPagamento);
+        pdvEmitirFiscalNaVenda = false;
+        executarFinalizacaoVenda(false, null, forma);
         return;
     }
 
-    // Modo fiscal ativo: pular a tela de decisão e seguir direto para emissão fiscal.
     if (pdvModoFiscalAtivo()) {
+        pdvEmitirFiscalNaVenda = true;
         mostrarModalCpfCnpjNota();
         return;
     }
 
-    $('#modal-container').html(`
-        <div class="modal fade" id="decisaoFiscalModal" tabindex="-1" aria-hidden="true">
-            <div class="modal-dialog modal-sm modal-dialog-centered">
-                <div class="modal-content border-0 shadow">
-                    <div class="modal-header bg-warning">
-                        <h5 class="modal-title text-dark mb-0">Finalizar Venda</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
-                    </div>
-
-                    <div class="modal-body text-center">
-                        <p class="mb-3">
-                            Deseja emitir NFC-e desta venda agora?
-                        </p>
-
-                        <div class="d-grid gap-2">
-                            <button
-                                type="button"
-                                class="btn btn-secondary btn-fiscal-bloqueado"
-                                onclick="finalizarComFiscal()"
-                                title="Emitir NFC-e"
-                            >
-                                Sim, emitir NFC-e
-                            </button>
-
-                            <button
-                                type="button"
-                                class="btn btn-success"
-                                onclick="finalizarSemFiscal()"
-                            >
-                                Não, finalizar sem NFC-e
-                            </button>
-                        </div>
-
-                        <small class="text-muted d-block mt-3">
-                            A emissão fiscal está temporariamente em desenvolvimento.
-                        </small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `);
-
-    const modalEl = document.getElementById('decisaoFiscalModal');
-    const modal = new bootstrap.Modal(modalEl);
-    modal.show();
+    pdvEmitirFiscalNaVenda = false;
+    executarFinalizacaoVenda(false, null, forma);
 }
 
-function finalizarComFiscal() {
-    const modalEl = document.getElementById('decisaoFiscalModal');
-
-    if (document.activeElement) {
-        document.activeElement.blur();
-    }
-
-    const instancia = bootstrap.Modal.getInstance(modalEl);
-
-    if (instancia) {
-        instancia.hide();
-    }
-
-    setTimeout(() => {
-        mostrarModalCpfCnpjNota();
-    }, 300);
+function mostrarModalDecisaoFiscal() {
+    prosseguirFinalizacaoConformeModoFiscal();
 }
+
+window.prosseguirFinalizacaoConformeModoFiscal = prosseguirFinalizacaoConformeModoFiscal;
+window.mostrarModalDecisaoFiscal = mostrarModalDecisaoFiscal;
 
 function limparCpfCnpj(valor) {
     return String(valor || '').replace(/\D/g, '');
@@ -3149,6 +3138,13 @@ function abrirPagamentoMisto() {
 }
 
 function mostrarModalCpfCnpjNota() {
+    if (!pdvModoFiscalAtivo()) {
+        prosseguirFinalizacaoConformeModoFiscal();
+        return;
+    }
+
+    pdvEmitirFiscalNaVenda = true;
+
     $('#modal-container').html(`
         <div class="modal fade" id="cpfCnpjNotaModal" tabindex="-1" aria-hidden="true">
             <div class="modal-dialog modal-sm modal-dialog-centered">
@@ -3227,7 +3223,7 @@ function mostrarModalCpfCnpjNota() {
         modal.hide();
 
         setTimeout(() => {
-            const emitirFiscal = pdvModoFiscalAtivo();
+            const emitirFiscal = pdvEmitirFiscalNaVenda === true;
             executarFinalizacaoVenda(emitirFiscal, limparCpfCnpj(cpfCnpj), formaPagamentoSelecionadaPDV);
         }, 300);
     });
@@ -3240,29 +3236,10 @@ function mostrarModalCpfCnpjNota() {
         modal.hide();
 
         setTimeout(() => {
-            const emitirFiscal = pdvModoFiscalAtivo();
+            const emitirFiscal = pdvEmitirFiscalNaVenda === true;
             executarFinalizacaoVenda(emitirFiscal, null, formaPagamentoSelecionadaPDV);
         }, 300);
     });
-}
-
-
-function finalizarSemFiscal() {
-    const modalEl = document.getElementById('decisaoFiscalModal');
-
-    if (document.activeElement) {
-        document.activeElement.blur();
-    }
-
-    const instancia = bootstrap.Modal.getInstance(modalEl);
-
-    if (instancia) {
-        instancia.hide();
-    }
-
-    setTimeout(() => {
-        executarFinalizacaoVenda(false, null, formaPagamentoSelecionadaPDV);
-    }, 300);
 }
 
 function mostrarModalAvisoDebitoCliente(aviso, totalEmAberto, parcelasVencidas, onConfirm) {
@@ -3414,7 +3391,7 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
         dados.primeiro_vencimento = dataRecebimento;
     }
 
-    const distribuicao = await precalcularDistribuicaoFiscalVenda(dados.itens);
+    const distribuicao = await precalcularDistribuicaoFiscalVenda(dados.itens, emitirFiscal);
 
     if (!distribuicao.sucesso) {
         showNotification(distribuicao.error || 'Erro ao calcular distribuição fiscal.', 'danger');
@@ -3659,7 +3636,21 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 }
 
                 if (statusPagamento === 'aguardando_nao_fiscal') {
-                    iniciarFluxoPosVendaComNaoFiscal(vendaId);
+                    if (Number(dados.valor_fiscal || 0) > 0) {
+                        iniciarFluxoPosVendaComNaoFiscal(vendaId, {
+                            emitirFiscal: Boolean(dados.emitir_fiscal)
+                        });
+                        return;
+                    }
+
+                    vendaEmProcessamento = false;
+                    pagamentoFiscalAtual = null;
+                    imprimirCupomNaoFiscal(vendaId, {
+                        ...payload,
+                        itens: itensParaCupom
+                    }, total, desconto);
+                    finalizarPosVenda();
+                    showNotification('Venda não fiscal finalizada com sucesso.', 'success');
                     return;
                 }
 
@@ -3667,11 +3658,10 @@ async function executarFinalizacaoVenda(emitirFiscal = false, cpfCnpjNota = null
                 pagamentoFiscalAtual = null;
 
                 const vendaQuitadaCompletamente = !vendaPrazoInfo && statusPagamento === 'quitada';
-                const deveEmitirCupomFiscal = dados.emitir_fiscal || Number(dados.valor_fiscal || 0) > 0;
 
-                if (vendaQuitadaCompletamente && deveEmitirCupomFiscal) {
+                if (vendaQuitadaCompletamente && dados.emitir_fiscal) {
                     processarFiscalPosPagamentoPosVenda(vendaId, response);
-                } else if (vendaPrazoInfo) {
+                } else if (vendaQuitadaCompletamente || vendaPrazoInfo) {
                     imprimirCupomNaoFiscal(vendaId, {
                         ...payload,
                         itens: itensParaCupom
@@ -3711,6 +3701,7 @@ function finalizarPosVenda() {
     vendaPrazoInfo = null;
     pagamentosMistos = [];
     supervisorAuthToken = null;
+    pdvEmitirFiscalNaVenda = null;
     $('#descontoPdv').val(0);
     $('#formaPagamentoPdv').val('');
     $('#valorRecebidoPDV').val('');
@@ -4378,7 +4369,7 @@ function selecionarPagamentoPDV(forma) {
         setTimeout(async () => {
             const tefOn = await obterTefHabilitadoConfig();
             if (tefOn) {
-                mostrarModalCpfCnpjNota();
+                mostrarModalDecisaoFiscal();
                 return;
             }
 
@@ -4386,14 +4377,14 @@ function selecionarPagamentoPDV(forma) {
             if (ativo) {
                 iniciarPixAutomaticoPDV();
             } else {
-                mostrarModalCpfCnpjNota();
+                mostrarModalDecisaoFiscal();
             }
         }, 300);
     } else if (forma === 'prazo') {
         mostrarModalClientePrazo();
     } else {
         setTimeout(() => {
-            mostrarModalCpfCnpjNota();
+            mostrarModalDecisaoFiscal();
         }, 300);
     }
 }
@@ -4752,7 +4743,7 @@ function confirmarPagamentoPrazo() {
 
     // Continuar com solicitação de CPF
     setTimeout(() => {
-        mostrarModalCpfCnpjNota();
+        mostrarModalDecisaoFiscal();
     }, 300);
 }
 
@@ -4848,18 +4839,8 @@ function confirmarTroco() {
     }
 
     setTimeout(() => {
-        mostrarModalCpfCnpjNota();
+        mostrarModalDecisaoFiscal();
     }, 300);
-}
-
-function mostrarModalDecisaoFiscal() {
-    if (!pdvModoFiscalAtivo()) {
-        executarFinalizacaoVenda(false, null, formaPagamentoSelecionadaPDV);
-        return;
-    }
-
-    // Modo fiscal ativo: pular a tela de decisão e seguir direto para emissão fiscal.
-    mostrarModalCpfCnpjNota();
 }
 
 // =======================================================
@@ -5225,26 +5206,23 @@ function abrirFechamentoCaixa() {
     } else {
         showNotification('Erro ao navegar para fechamento de caixa.', 'danger');
     }
-}document.addEventListener("DOMContentLoaded", () => {
+}
 
-    // Sempre inicia em modo fiscal ao abrir o sistema
-    localStorage.setItem('pdv_modo_fiscal_ativo', '1');
+document.addEventListener("DOMContentLoaded", () => {
+    if (!document.getElementById('statusCaixaPdv')) {
+        return;
+    }
 
-    // Coloca foco automático na busca de produtos
     const busca = document.getElementById("buscaProdutoPdv");
     if (busca) {
         busca.focus();
     }
 
-    // Aplica todas as regras do modo fiscal
-    aplicarModoFiscalPdv();
-
-    // Atualiza visual após pequeno atraso
-    setTimeout(() => {
+    if (typeof aplicarModoFiscalPdv === 'function') {
         aplicarModoFiscalPdv();
-    }, 100);
-
+    }
 });
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "F2") {
     e.preventDefault();

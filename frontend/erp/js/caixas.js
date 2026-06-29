@@ -120,8 +120,11 @@ function atualizarSelectTerminais(valorSelecionado) {
     opt.value = hostname;
     const online = terminalEstaOnline(t.ultima_conexao, t.online);
     const rotulo = rotuloTerminal(t);
+    const nomeCustom = t.nome && t.nome !== t.hostname;
     const vinculo = t.caixa_nome ? ` — ${t.caixa_nome}` : '';
-    opt.textContent = `${rotulo} (${hostname})${online ? ' · online' : ''}${vinculo}`;
+    opt.textContent = nomeCustom
+      ? `${rotulo} (${hostname})${online ? ' · online' : ''}${vinculo}`
+      : `${hostname}${online ? ' · online' : ''}${vinculo} (sem nome)`;
     select.appendChild(opt);
   });
 

@@ -6,6 +6,8 @@ const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
 const bcrypt = require('bcryptjs');
 const { gravarAuditoria } = require('../services/auditoria');
 const { FILTRO_VENDA_VALIDA, getExprValorVenda } = require('../services/reportFiscalHelpers');
+const { isMultiCaixaAtivo, exigirTerminalId, obterTerminalIdDaRequisicao } = require('../utils/multiCaixa');
+const { obterCaixaTurnoId } = require('../utils/caixaSessaoHelpers');
 
 function n(valor) {
   return Number(valor || 0);
@@ -33,12 +35,14 @@ function hoje() {
 }
 
 function obterTerminalId(req) {
-  const rawId = req.body?.terminal_id || req.query?.terminal_id || req.headers['x-terminal-id'];
-  const id = Number(rawId || 0);
-  return Number.isInteger(id) && id > 0 ? id : null;
+  return obterTerminalIdDaRequisicao(req);
 }
 
 function obterSessaoAberta(terminalId, callback) {
+  if (!terminalId && isMultiCaixaAtivo()) {
+    return callback(null, null);
+  }
+
   if (terminalId) {
     db.get(
       `SELECT * FROM caixa_sessoes WHERE status = 'aberto' AND terminal_id = ? ORDER BY id DESC LIMIT 1`,
@@ -56,6 +60,10 @@ function obterSessaoAberta(terminalId, callback) {
 }
 
 function obterCaixaAberto(terminalId, callback) {
+  if (!terminalId && isMultiCaixaAtivo()) {
+    return callback(null, null);
+  }
+
   if (terminalId) {
     db.get(
       `SELECT * FROM caixa WHERE status = 'aberto' AND terminal_id = ? ORDER BY id DESC LIMIT 1`,
@@ -72,8 +80,43 @@ function obterCaixaAberto(terminalId, callback) {
   );
 }
 
+function validarTerminalParaAbertura(terminalId, callback) {
+  db.get(
+    `SELECT t.*, c.ativo AS caixa_ativo, c.nome AS caixa_nome
+     FROM terminais t
+     LEFT JOIN caixas c ON c.id = t.caixa_id
+     WHERE t.id = ?`,
+    [terminalId],
+    (err, terminal) => {
+      if (err) return callback(err);
+      if (!terminal) {
+        return callback(null, { ok: false, error: 'Terminal não encontrado.' });
+      }
+      if (!terminal.ativo) {
+        return callback(null, { ok: false, error: 'Terminal inativo. Ative-o no ERP em Gerenciar Caixas.' });
+      }
+      if (!terminal.caixa_id) {
+        return callback(null, {
+          ok: false,
+          error: 'Terminal não vinculado a um caixa. Vincule no ERP em Gerenciar Caixas.'
+        });
+      }
+      if (!terminal.caixa_ativo) {
+        return callback(null, { ok: false, error: `Caixa "${terminal.caixa_nome || terminal.caixa_id}" está inativo.` });
+      }
+      return callback(null, { ok: true, terminal, caixaConfigId: terminal.caixa_id });
+    }
+  );
+}
+
 function normalizarForma(forma) {
   return String(forma || '').toLowerCase().trim();
+}
+
+function buscarCaixaTurnoDaSessao(sessao, callback) {
+  const turnoId = obterCaixaTurnoId(sessao);
+  if (!turnoId) return callback(null, null);
+  db.get('SELECT * FROM caixa WHERE id = ?', [turnoId], callback);
 }
 
 function calcularResumoCaixa(caixa, options = {}, callback) {
@@ -238,12 +281,14 @@ function validarSenhaAdmin(senhaAdmin, callback) {
 router.get('/aberto', (req, res) => {
   const terminalId = obterTerminalId(req);
 
-  // Preferir sessão aberta por terminal
+  if (isMultiCaixaAtivo() && !terminalId) {
+    return res.json(null);
+  }
+
   obterSessaoAberta(terminalId, (sessErr, sessao) => {
     if (sessErr) return res.status(500).json({ error: sessErr.message });
     if (sessao) {
-      // buscar caixa relacionado
-      db.get('SELECT * FROM caixa WHERE id = ?', [sessao.caixa_id], (cErr, caixa) => {
+      buscarCaixaTurnoDaSessao(sessao, (cErr, caixa) => {
         if (cErr) return res.status(500).json({ error: cErr.message });
         if (!caixa) return res.json(null);
         calcularResumoCaixa(caixa, { sessaoId: sessao.id }, (calcErr, resumo) => {
@@ -255,7 +300,6 @@ router.get('/aberto', (req, res) => {
       return;
     }
 
-    // fallback para compatibilidade com implementações antigas
     obterCaixaAberto(terminalId, (err, caixa) => {
       if (err) return res.status(500).json({ error: err.message });
       if (!caixa) return res.json(null);
@@ -269,6 +313,20 @@ router.get('/aberto', (req, res) => {
 });
 
 router.get('/saldo-inicial-sugerido', (req, res) => {
+  const terminalId = obterTerminalId(req);
+
+  if (isMultiCaixaAtivo() && !terminalId) {
+    return res.json({
+      valor_sugerido: 0,
+      ultimo_caixa_id: null,
+      fechado_em: null,
+      mensagem: 'Aguardando registro do terminal para sugerir saldo.'
+    });
+  }
+
+  const filtroTerminal = terminalId ? 'AND terminal_id = ?' : '';
+  const params = terminalId ? [terminalId] : [];
+
   db.get(`
     SELECT
       id,
@@ -276,9 +334,10 @@ router.get('/saldo-inicial-sugerido', (req, res) => {
       fechado_em
     FROM caixa
     WHERE status = 'fechado'
+      ${filtroTerminal}
     ORDER BY id DESC
     LIMIT 1
-  `, [], (err, caixa) => {
+  `, params, (err, caixa) => {
     if (err) {
       return res.status(500).json({ error: err.message });
     }
@@ -296,11 +355,7 @@ router.get('/saldo-inicial-sugerido', (req, res) => {
   });
 });
 
-router.post('/abrir', verificarToken, (req, res) => {
-  const valorInicial = n(req.body.valor_inicial);
-  const terminalId = obterTerminalId(req);
-
-  // Impedir abertura se já existir SESSÃO aberta neste terminal (lock de terminal)
+function executarAberturaCaixa(req, res, { valorInicial, terminalId, caixaConfigId }) {
   obterSessaoAberta(terminalId, (sessErr, sessaoAberta) => {
     if (sessErr) return res.status(500).json({ error: sessErr.message });
     if (sessaoAberta) {
@@ -313,23 +368,22 @@ router.post('/abrir', verificarToken, (req, res) => {
       status: 'aberto',
       aberto_em: agoraLocalBrasil(),
       operador_abertura_id: req.user?.id || null,
-      terminal_id: terminalId
+      terminal_id: terminalId || null
     };
 
     db.insertSafe('caixa', caixaData, function(insertErr, info) {
       if (insertErr) return res.status(500).json({ error: insertErr.message });
 
-      const caixaId = info && info.lastID ? info.lastID : this && this.lastID ? this.lastID : null;
+      const caixaTurnoId = info && info.lastID ? info.lastID : this && this.lastID ? this.lastID : null;
+      const sessaoCaixaConfigId = isMultiCaixaAtivo() ? caixaConfigId : caixaTurnoId;
 
-      // Criar sessão de caixa vinculada (cada abertura gera nova sessão)
       db.run(`
         INSERT INTO caixa_sessoes (
-          caixa_id, terminal_id, operador_id, valor_abertura, aberto_em, status
-        ) VALUES (?, ?, ?, ?, DATETIME('now','localtime'), 'aberto')
-      `, [caixaId, terminalId, req.user?.id || null, valorInicial], function(sessInsertErr) {
+          caixa_id, caixa_turno_id, terminal_id, operador_id, valor_abertura, aberto_em, status
+        ) VALUES (?, ?, ?, ?, ?, DATETIME('now','localtime'), 'aberto')
+      `, [sessaoCaixaConfigId, caixaTurnoId, terminalId || null, req.user?.id || null, valorInicial], function(sessInsertErr) {
         if (sessInsertErr) {
-          // tentar rollback da caixa principal
-          db.run('DELETE FROM caixa WHERE id = ?', [caixaId]);
+          db.run('DELETE FROM caixa WHERE id = ?', [caixaTurnoId]);
           return res.status(500).json({ error: sessInsertErr.message });
         }
 
@@ -345,10 +399,9 @@ router.post('/abrir', verificarToken, (req, res) => {
             usuario_id,
             terminal_id
           ) VALUES (?, ?, 'abertura', ?, 'Abertura de caixa', ?, ?)
-        `, [caixaId, sessaoId, valorInicial, req.user?.id || null, terminalId], (movErr) => {
+        `, [caixaTurnoId, sessaoId, valorInicial, req.user?.id || null, terminalId || null], (movErr) => {
           if (movErr) return res.status(500).json({ error: movErr.message });
 
-          // Registrar auditoria centralizada
           gravarAuditoria({
             usuario_id: req.user?.id || null,
             usuario_nome: req.user?.nome || req.user?.username || null,
@@ -356,17 +409,44 @@ router.post('/abrir', verificarToken, (req, res) => {
             acao: 'abrir_caixa',
             referencia_tipo: 'caixa_sessao',
             referencia_id: sessaoId,
-            detalhes: { valor_inicial: valorInicial, caixa_id: caixaId },
+            detalhes: {
+              valor_inicial: valorInicial,
+              caixa_turno_id: caixaTurnoId,
+              caixa_config_id: sessaoCaixaConfigId,
+              terminal_id: terminalId || null
+            },
             ip_requisicao: req.ip || null
           }).catch((auditErr) => console.error('Erro ao gravar auditoria de abertura de caixa:', auditErr));
 
           res.json({
             message: 'Caixa aberto com sucesso.',
-            caixa_id: caixaId,
-            sessao_id: sessaoId
+            caixa_id: caixaTurnoId,
+            caixa_config_id: sessaoCaixaConfigId,
+            sessao_id: sessaoId,
+            terminal_id: terminalId || null
           });
         });
       });
+    });
+  });
+}
+
+router.post('/abrir', verificarToken, exigirTerminalId, (req, res) => {
+  const valorInicial = n(req.body.valor_inicial);
+  const terminalId = obterTerminalId(req);
+
+  if (!isMultiCaixaAtivo()) {
+    return executarAberturaCaixa(req, res, { valorInicial, terminalId, caixaConfigId: null });
+  }
+
+  validarTerminalParaAbertura(terminalId, (valErr, validacao) => {
+    if (valErr) return res.status(500).json({ error: valErr.message });
+    if (!validacao.ok) return res.status(400).json({ error: validacao.error });
+
+    executarAberturaCaixa(req, res, {
+      valorInicial,
+      terminalId,
+      caixaConfigId: validacao.caixaConfigId
     });
   });
 });
@@ -402,7 +482,7 @@ router.post('/sangria', verificarToken, validarCaixaAberto, async (req, res) => 
           return res.status(400).json({ error: terminalId ? 'Nenhuma sessão de caixa aberta para este terminal.' : 'Nenhuma sessão de caixa aberta.' });
         }
 
-        db.get('SELECT * FROM caixa WHERE id = ?', [sessao.caixa_id], (errCaixa, caixa) => {
+        db.get('SELECT * FROM caixa WHERE id = ?', [obterCaixaTurnoId(sessao)], (errCaixa, caixa) => {
           if (errCaixa) return res.status(500).json({ error: errCaixa.message });
           if (!caixa) return res.status(400).json({ error: 'Caixa vinculado à sessão não encontrado.' });
 
@@ -505,7 +585,7 @@ router.post('/suprimento', verificarToken, validarCaixaAberto, (req, res) => {
       if (errSess) return res.status(500).json({ error: errSess.message });
       if (!sessao) return res.status(400).json({ error: terminalId ? 'Nenhuma sessão de caixa aberta para este terminal.' : 'Nenhuma sessão de caixa aberta.' });
 
-      db.get('SELECT * FROM caixa WHERE id = ?', [sessao.caixa_id], (err, caixa) => {
+      db.get('SELECT * FROM caixa WHERE id = ?', [obterCaixaTurnoId(sessao)], (err, caixa) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!caixa) return res.status(400).json({ error: 'Caixa vinculado à sessão não encontrado.' });
 
@@ -591,7 +671,7 @@ router.post('/fechar', verificarToken, validarCaixaAberto, (req, res) => {
       if (errSess) return res.status(500).json({ error: errSess.message });
       if (!sessao) return res.status(400).json({ error: terminalId ? 'Nenhuma sessão de caixa aberta para este terminal.' : 'Nenhuma sessão de caixa aberta.' });
 
-      db.get('SELECT * FROM caixa WHERE id = ?', [sessao.caixa_id], (err, caixa) => {
+      db.get('SELECT * FROM caixa WHERE id = ?', [obterCaixaTurnoId(sessao)], (err, caixa) => {
         if (err) return res.status(500).json({ error: err.message });
         if (!caixa) return res.status(400).json({ error: 'Caixa vinculado à sessão não encontrado.' });
 
@@ -867,7 +947,11 @@ function obterDetalhesCaixa(caixaId, callback) {
     if (err) return callback(err);
     if (!caixa) return callback(null, null);
 
-    db.get(`SELECT id FROM caixa_sessoes WHERE caixa_id = ? ORDER BY id DESC LIMIT 1`, [caixaId], (sErr, sRow) => {
+    db.get(`
+      SELECT id FROM caixa_sessoes
+      WHERE caixa_turno_id = ? OR (caixa_turno_id IS NULL AND caixa_id = ?)
+      ORDER BY id DESC LIMIT 1
+    `, [caixaId, caixaId], (sErr, sRow) => {
       if (sErr) return callback(sErr);
 
       if (!sRow) {
@@ -986,7 +1070,11 @@ router.get('/por-data', (req, res) => {
 
     caixas.forEach((caixa) => {
       // Resolver última sessão e calcular resumo por sessão
-      db.get(`SELECT id FROM caixa_sessoes WHERE caixa_id = ? ORDER BY id DESC LIMIT 1`, [caixa.id], (sErr, sRow) => {
+      db.get(`
+        SELECT id FROM caixa_sessoes
+        WHERE caixa_turno_id = ? OR (caixa_turno_id IS NULL AND caixa_id = ?)
+        ORDER BY id DESC LIMIT 1
+      `, [caixa.id, caixa.id], (sErr, sRow) => {
         if (sErr) {
           return res.status(500).json({ sucesso: false, mensagem: sErr.message });
         }

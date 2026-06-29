@@ -730,10 +730,10 @@ function loadPage(page) {
             });
         case 'auditoria':
             return carregarPaginaHtml('auditoria.html', function() {
-                if (typeof carregarAuditoria === 'function') {
+                if (typeof inicializarPaginaAuditoria === 'function') {
+                    inicializarPaginaAuditoria();
+                } else if (typeof carregarAuditoria === 'function') {
                     carregarAuditoria(1);
-                } else if (typeof loadAuditoria === 'function') {
-                    loadAuditoria();
                 } else {
                     $('#page-content').html('<div class="alert alert-danger">Erro ao carregar auditoria.</div>');
                 }

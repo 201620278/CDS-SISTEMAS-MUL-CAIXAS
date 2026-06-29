@@ -24,6 +24,8 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
     console.error('Erro ao conectar ao banco:', err.message);
   } else {
     console.log('Conectado ao banco de dados SQLite');
+    db.run('PRAGMA journal_mode=WAL');
+    db.run('PRAGMA busy_timeout=5000');
     inicializarBanco();
   }
 });
@@ -118,6 +120,7 @@ function aplicarAlteracoesPosCriacao() {
   aplicarAlteracaoSegura('auditoria_caixa', `ALTER TABLE auditoria_caixa ADD COLUMN terminal_id INTEGER REFERENCES terminais(id)`);
   aplicarAlteracaoSegura('terminais', `ALTER TABLE terminais ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id)`);
   aplicarAlteracaoSegura('terminais', `ALTER TABLE terminais ADD COLUMN usuario_nome TEXT`);
+  aplicarAlteracaoSegura('caixa_sessoes', `ALTER TABLE caixa_sessoes ADD COLUMN caixa_turno_id INTEGER REFERENCES caixa(id)`);
 
   // Adicionar colunas faltantes na tabela vendas_itens (para suportar promoções e desconto atacado)
   aplicarAlteracaoSegura('vendas_itens', `ALTER TABLE vendas_itens ADD COLUMN desconto_percentual DECIMAL(5,2) DEFAULT 0`);
@@ -1602,9 +1605,12 @@ function migrarRecalcularSaldosEstoque() {
 }
 
 function inicializarBanco() {
+  const { migrarDadosCaixaSessoes } = require('./utils/caixaSessaoHelpers');
+
   db.serialize(() => {
     criarTabelas();
     aplicarAlteracoesPosCriacao();
+    migrarDadosCaixaSessoes(db);
     inserirConfiguracoesPadrao();
     seedPinpadCatalogoTEF();
     criarUsuarioAdminPadrao();
@@ -1895,7 +1901,7 @@ function inserirConfiguracoesPadrao() {
     ['backup_google_redirect_uris', '[]', 'text', 'Google Redirect URIs para OAuth'],
     ['backup_google_refresh_token', '', 'text', 'Google Refresh Token para backup']
     ,['tef_ativo', 'true', 'boolean', 'TEF habilitado']
-    ,['modo_dashboard_fiscal', '0', 'boolean', 'Dashboard exibe apenas valor fiscal (F12)']
+    ,['modo_dashboard_fiscal', '1', 'boolean', 'Modo fiscal ativo por padrão (F12) — ERP e PDV']
   ];
 
   configs.forEach(config => {
@@ -1910,6 +1916,25 @@ function inserirConfiguracoesPadrao() {
   });
   
   console.log('Configurações padrão inseridas/verificadas');
+
+  db.get(
+    `SELECT valor FROM configuracoes WHERE chave = 'migracao_modo_fiscal_padrao_ativo'`,
+    [],
+    (migErr, migRow) => {
+      if (migErr || migRow) return;
+
+      db.run(
+        `UPDATE configuracoes SET valor = '1', updated_at = datetime('now', 'localtime') WHERE chave = 'modo_dashboard_fiscal'`,
+        [],
+        () => {
+          db.run(
+            `INSERT INTO configuracoes (chave, valor, tipo, descricao) VALUES ('migracao_modo_fiscal_padrao_ativo', '1', 'boolean', 'Migração: F12 ativo por padrão')`
+          );
+          console.log('Migração: modo_dashboard_fiscal definido como ativo (F12) por padrão');
+        }
+      );
+    }
+  );
 }
 
 function seedPinpadCatalogoTEF() {
@@ -2007,6 +2032,7 @@ db.serialize(() => {
     CREATE TABLE IF NOT EXISTS caixa_sessoes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       caixa_id INTEGER,
+      caixa_turno_id INTEGER,
       terminal_id INTEGER,
       operador_id INTEGER,
       valor_abertura DECIMAL(10,2) DEFAULT 0,
@@ -2017,6 +2043,7 @@ db.serialize(() => {
       observacoes TEXT,
       criado_em DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (caixa_id) REFERENCES caixas(id),
+      FOREIGN KEY (caixa_turno_id) REFERENCES caixa(id),
       FOREIGN KEY (terminal_id) REFERENCES terminais(id),
       FOREIGN KEY (operador_id) REFERENCES usuarios(id)
     )

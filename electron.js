@@ -5,6 +5,7 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const { tratarFalhaConexaoRemota, aplicarRecuperacaoModoLocal } = require('./electron-rede-recuperacao');
+const { iniciarConexaoClienteRemoto, confirmarModoLocalEmergencia } = require('./electron-rede-cliente');
 const {
   definirSessaoClienteRemoto,
   obterSessaoClienteRemoto,
@@ -309,9 +310,18 @@ function aguardarListening(server, timeout = 15000) {
   });
 }
 
-function carregarConfiguracaoServidor() {
+function carregarConfiguracaoServidor(modulo = 'erp') {
   if (process.argv.includes('--cds-forcar-local')) {
     console.log('Modo local forçado via argumento --cds-forcar-local');
+    return {
+      modo: 'local',
+      ipServidor: '127.0.0.1',
+      porta: obterPortaServidor()
+    };
+  }
+
+  if (modulo === 'erp') {
+    console.log('Módulo ERP: esta estação inicia sempre com servidor local integrado.');
     return {
       modo: 'local',
       ipServidor: '127.0.0.1',
@@ -323,15 +333,14 @@ function carregarConfiguracaoServidor() {
     const configService = require('./backend/services/configuracaoService');
     configService.consumirFlagForcarModoLocal();
     configService.ensureConfigFile();
-    const cfg = configService.readConfig();
-    configService.syncElectronConfig(cfg);
-    const modoRede = configService.getModoRedeElectron(cfg);
+    const estacao = configService.getModoRedeEstacaoElectron();
     console.log('CONFIG PATH:', configService.CONFIG_PATH);
     console.log('ELECTRON CONFIG PATH:', configService.ELECTRON_CONFIG_PATH);
     console.log('DB_DIR:', process.env.DB_DIR);
-    return modoRede;
+    console.log('CONFIG ESTAÇÃO (PDV):', estacao);
+    return estacao;
   } catch (err) {
-    console.warn('Não foi possível ler configuracoes.json, usando configuração padrão.', err.message);
+    console.warn('Não foi possível ler config da estação, usando modo local.', err.message);
     return {
       modo: 'local',
       ipServidor: '127.0.0.1',
@@ -681,6 +690,16 @@ function iniciarBackendLocal() {
     });
 }
 
+function montarUrlLogin(baseUrl) {
+  const modulo = process.env.CDS_APP_MODULO === 'pdv' ? 'pdv' : 'erp';
+  const hostname = encodeURIComponent(os.hostname());
+  return `${baseUrl}/login?modulo=${modulo}&estacao_hostname=${hostname}`;
+}
+
+function obterModuloApp() {
+  return process.env.CDS_APP_MODULO === 'pdv' ? 'pdv' : 'erp';
+}
+
 function abrirJanelaApp(url, tituloErro, mensagemErro, opcoes = {}) {
   criarMainWindow(opcoes);
 
@@ -694,7 +713,8 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, opcoes = {}) {
         const acao = await tratarFalhaConexaoRemota({
           error,
           configServidor: opcoes.modoClienteRemoto,
-          remoteUrl: url
+          remoteUrl: url,
+          modulo: obterModuloApp()
         });
 
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -707,6 +727,10 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, opcoes = {}) {
         }
 
         if (acao === 'local') {
+          const confirmado = await confirmarModoLocalEmergencia(obterModuloApp());
+          if (!confirmado) {
+            return abrirJanelaApp(url, tituloErro, mensagemErro, opcoes);
+          }
           try {
             await iniciarBackendLocal();
             return;
@@ -733,7 +757,7 @@ function abrirJanelaApp(url, tituloErro, mensagemErro, opcoes = {}) {
 function createWindow(serverPort) {
   definirSessaoClienteRemoto(null);
   return abrirJanelaApp(
-    `http://127.0.0.1:${serverPort}/login`,
+    montarUrlLogin(`http://127.0.0.1:${serverPort}`),
     'Erro ao iniciar servidor',
     (error) => `O backend do sistema não respondeu.\n\n${error.message}\n\nDB_DIR: ${process.env.DB_DIR}`
   );
@@ -746,7 +770,7 @@ function createWindowRemote(remoteUrl, configServidor = {}) {
   });
 
   return abrirJanelaApp(
-    `${remoteUrl}/login`,
+    montarUrlLogin(remoteUrl),
     'Erro ao carregar servidor remoto',
     (error) => `Não foi possível conectar ao servidor remoto.\n\n${error.message}`,
     {
@@ -781,13 +805,21 @@ app.whenReady().then(() => {
     process.env.FISCAL_DIR = fiscalDir;
     console.log('FISCAL_DIR definido para:', process.env.FISCAL_DIR);
 
-    const configServidor = carregarConfiguracaoServidor();
+    const configServidor = carregarConfiguracaoServidor(obterModuloApp());
     console.log('CONFIG SERVIDOR:', configServidor);
 
     if (configServidor.modo === 'cliente') {
-      const urlRemota = `http://${configServidor.ipServidor}:${configServidor.porta}`;
-      console.log(`Modo CLIENTE ativado. Conectando ao servidor remoto: ${urlRemota}`);
-      createWindowRemote(urlRemota, configServidor);
+      console.log(`Modo CLIENTE ativado. Servidor: http://${configServidor.ipServidor}:${configServidor.porta}`);
+      iniciarConexaoClienteRemoto({
+        configServidor,
+        modulo: obterModuloApp(),
+        abrirJanelaRemota: (urlBase) => createWindowRemote(urlBase, configServidor),
+        iniciarServidorLocal: () => iniciarBackendLocal(),
+        encerrarApp: () => app.quit()
+      }).catch((error) => {
+        dialog.showErrorBox('Erro ao conectar no servidor', error.message || String(error));
+        app.quit();
+      });
       return;
     }
 

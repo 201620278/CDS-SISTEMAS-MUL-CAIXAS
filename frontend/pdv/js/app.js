@@ -60,6 +60,22 @@ function loadPage(page) {
         case 'tef':
             showNotification('TEF integrado ao fluxo de venda. Para reimprimir comprovantes, use Reimpressão de Cupom.', 'info');
             return loadPage('reimpressao');
+        case 'configuracao-rede':
+            if (typeof abrirModalConfiguracaoRede === 'function') {
+                abrirModalConfiguracaoRede({ somenteSuperAdmin: true });
+            }
+            currentPage = 'pdv';
+            $('.nav-link').removeClass('active');
+            $('.nav-link[data-page="pdv"]').first().addClass('active');
+            return;
+        case 'nome-terminal-pdv':
+            if (typeof abrirModalNomeTerminalPdv === 'function') {
+                abrirModalNomeTerminalPdv({ somenteSuperAdmin: true });
+            }
+            currentPage = 'pdv';
+            $('.nav-link').removeClass('active');
+            $('.nav-link[data-page="pdv"]').first().addClass('active');
+            return;
         default:
             $('#page-content').html('<div class="alert alert-warning">Página não encontrada.</div>');
     }

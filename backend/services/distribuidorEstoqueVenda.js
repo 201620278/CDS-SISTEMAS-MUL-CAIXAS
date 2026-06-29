@@ -1,15 +1,26 @@
+function parseVendaFiscalFlag(valor) {
+  return valor === true
+    || valor === 'true'
+    || valor === 1
+    || valor === '1';
+}
+
+/**
+ * Distribui quantidade vendida entre saldo fiscal e não fiscal.
+ * @param {boolean} vendaFiscal - true: consome fiscal primeiro; false: consome não fiscal primeiro
+ */
 function distribuirQuantidadeVenda(
   quantidadeVendida,
   saldoFiscal,
-  saldoNaoFiscal
+  saldoNaoFiscal,
+  vendaFiscal = true
 ) {
   quantidadeVendida = Number(quantidadeVendida || 0);
   saldoFiscal = Number(saldoFiscal || 0);
   saldoNaoFiscal = Number(saldoNaoFiscal || 0);
+  const priorizarFiscal = parseVendaFiscalFlag(vendaFiscal);
 
-  const estoqueTotal =
-    saldoFiscal +
-    saldoNaoFiscal;
+  const estoqueTotal = saldoFiscal + saldoNaoFiscal;
 
   if (quantidadeVendida > estoqueTotal) {
     return {
@@ -19,15 +30,16 @@ function distribuirQuantidadeVenda(
     };
   }
 
-  const quantidadeFiscal =
-    Math.min(
-      quantidadeVendida,
-      saldoFiscal
-    );
+  let quantidadeFiscal;
+  let quantidadeNaoFiscal;
 
-  const quantidadeNaoFiscal =
-    quantidadeVendida -
-    quantidadeFiscal;
+  if (priorizarFiscal) {
+    quantidadeFiscal = Math.min(quantidadeVendida, saldoFiscal);
+    quantidadeNaoFiscal = quantidadeVendida - quantidadeFiscal;
+  } else {
+    quantidadeNaoFiscal = Math.min(quantidadeVendida, saldoNaoFiscal);
+    quantidadeFiscal = quantidadeVendida - quantidadeNaoFiscal;
+  }
 
   return {
     sucesso: true,
@@ -36,14 +48,14 @@ function distribuirQuantidadeVenda(
   };
 }
 
-function distribuirItemVenda(item, saldoFiscal, saldoNaoFiscal) {
+function distribuirItemVenda(item, saldoFiscal, saldoNaoFiscal, vendaFiscal = true) {
   const qtdVenda = Number(item.quantidade || 0);
   const qtdEstoque = item.quantidade_estoque != null && item.quantidade_estoque !== ''
     ? Number(item.quantidade_estoque)
     : qtdVenda;
   const precoUnitario = Number(item.preco_unitario || 0);
 
-  const resultado = distribuirQuantidadeVenda(qtdEstoque, saldoFiscal, saldoNaoFiscal);
+  const resultado = distribuirQuantidadeVenda(qtdEstoque, saldoFiscal, saldoNaoFiscal, vendaFiscal);
   if (!resultado.sucesso) {
     return resultado;
   }
@@ -72,6 +84,7 @@ function distribuirItemVenda(item, saldoFiscal, saldoNaoFiscal) {
 }
 
 module.exports = {
+  parseVendaFiscalFlag,
   distribuirQuantidadeVenda,
   distribuirItemVenda
 };
