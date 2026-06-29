@@ -8,14 +8,49 @@ function escapeHtmlHistoricoVenda(text) {
         .replace(/'/g, '&#039;');
 }
 
+function historicoVendaModoFiscalAtivo() {
+    return typeof isModoFiscalVisualizacaoAtivo === 'function' && isModoFiscalVisualizacaoAtivo();
+}
+
+function itemPossuiParteFiscalHistorico(item) {
+    return Number(item?.quantidade_fiscal ?? 0) > 0 || Number(item?.valor_fiscal ?? 0) > 0;
+}
+
+function filtrarItensHistoricoVenda(venda) {
+    const itens = Array.isArray(venda?.itens) ? venda.itens : [];
+    if (!historicoVendaModoFiscalAtivo()) {
+        return itens;
+    }
+    return itens.filter(itemPossuiParteFiscalHistorico);
+}
+
+function obterTotalExibicaoHistoricoVenda(venda, itensFiltrados = []) {
+    if (historicoVendaModoFiscalAtivo()) {
+        const valorFiscal = Number(venda?.valor_fiscal ?? 0);
+        if (valorFiscal > 0) {
+            return valorFiscal;
+        }
+        return itensFiltrados.reduce((total, item) => total + Number(item.valor_fiscal || 0), 0);
+    }
+    return Number(venda?.total || 0);
+}
+
+function exibirCupomNaoFiscalHistorico(venda) {
+    if (historicoVendaModoFiscalAtivo()) {
+        return false;
+    }
+    return typeof vendaPossuiCupomNaoFiscal === 'function' && vendaPossuiCupomNaoFiscal(venda);
+}
+
 function montarHtmlAcoesHistoricoVenda(venda, opcoes = {}) {
     const incluirDevolucao = opcoes.incluirDevolucao !== false;
     const id = Number(venda.id);
     const dropdownId = `acoesVenda${id}`;
     const cancelada = String(venda.status || '').toLowerCase() === 'cancelada';
+    const modoFiscal = historicoVendaModoFiscalAtivo();
 
     const temFiscal = typeof vendaPossuiNfceAutorizada === 'function' && vendaPossuiNfceAutorizada(venda);
-    const temNaoFiscal = typeof vendaPossuiCupomNaoFiscal === 'function' && vendaPossuiCupomNaoFiscal(venda);
+    const temNaoFiscal = !modoFiscal && typeof vendaPossuiCupomNaoFiscal === 'function' && vendaPossuiCupomNaoFiscal(venda);
     const nfceNumero = venda.nfce_numero ? ` #${venda.nfce_numero}` : '';
 
     const blocoImpressao = (temFiscal || temNaoFiscal) ? `
@@ -91,3 +126,7 @@ function montarHtmlAcoesHistoricoVenda(venda, opcoes = {}) {
 }
 
 window.montarHtmlAcoesHistoricoVenda = montarHtmlAcoesHistoricoVenda;
+window.historicoVendaModoFiscalAtivo = historicoVendaModoFiscalAtivo;
+window.filtrarItensHistoricoVenda = filtrarItensHistoricoVenda;
+window.obterTotalExibicaoHistoricoVenda = obterTotalExibicaoHistoricoVenda;
+window.exibirCupomNaoFiscalHistorico = exibirCupomNaoFiscalHistorico;
