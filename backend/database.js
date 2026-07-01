@@ -1,6 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
 // BANCO OFICIAL DEFINITIVO
@@ -14,6 +15,37 @@ if (!fs.existsSync(DB_DIR)) {
 
 const DB_PATH = path.join(DB_DIR, 'mercadao.db');
 
+let bancoPronto = false;
+const filaProntidao = [];
+let inicializacoesPendentes = 2;
+
+function marcarBancoPronto(err) {
+  if (err) {
+    console.error('Erro ao finalizar inicialização do banco:', err.message);
+  } else {
+    console.log('Banco de dados pronto para uso.');
+  }
+  bancoPronto = true;
+  while (filaProntidao.length) {
+    const callback = filaProntidao.shift();
+    try {
+      callback(err || null);
+    } catch (callbackErr) {
+      console.error('Erro em callback de prontidão do banco:', callbackErr);
+    }
+  }
+}
+
+function sinalizarInicializacaoParcial(err) {
+  if (err) {
+    console.error('Erro durante inicialização do banco:', err.message);
+  }
+  inicializacoesPendentes -= 1;
+  if (inicializacoesPendentes <= 0) {
+    marcarBancoPronto(err);
+  }
+}
+
 console.log('======================================');
 console.log('BANCO OFICIAL EM USO:');
 console.log(DB_PATH);
@@ -25,7 +57,8 @@ const db = new sqlite3.Database(DB_PATH, (err) => {
   } else {
     console.log('Conectado ao banco de dados SQLite');
     db.run('PRAGMA journal_mode=WAL');
-    db.run('PRAGMA busy_timeout=5000');
+    db.run('PRAGMA busy_timeout=30000');
+    db.run('PRAGMA foreign_keys=ON');
     inicializarBanco();
   }
 });
@@ -303,7 +336,10 @@ function aplicarAlteracoesPosCriacao() {
     `ALTER TABLE tef_transacoes ADD COLUMN criado_em DATETIME`,
     `ALTER TABLE tef_transacoes ADD COLUMN atualizado_em DATETIME`,
     `ALTER TABLE tef_transacoes ADD COLUMN created_at DATETIME`,
-    `ALTER TABLE tef_transacoes ADD COLUMN updated_at DATETIME`
+    `ALTER TABLE tef_transacoes ADD COLUMN updated_at DATETIME`,
+    `ALTER TABLE tef_transacoes ADD COLUMN reversao_executada INTEGER DEFAULT 0`,
+    `ALTER TABLE tef_transacoes ADD COLUMN reversao_motivo TEXT`,
+    `ALTER TABLE tef_transacoes ADD COLUMN reversao_data DATETIME`
   ];
   alteracoesTefTransacoes.forEach((sql) => aplicarAlteracaoSegura('tef_transacoes', sql));
   aplicarAlteracaoSegura(
@@ -1612,6 +1648,7 @@ function inicializarBanco() {
     aplicarAlteracoesPosCriacao();
     migrarDadosCaixaSessoes(db);
     inserirConfiguracoesPadrao();
+    migrarUrlsFiscalProducao();
     seedPinpadCatalogoTEF();
     criarUsuarioAdminPadrao();
     garantirCategoriasPadraoDespesa();
@@ -1619,6 +1656,7 @@ function inicializarBanco() {
     garantirColunasFinanceiro();
     recuperarItemFiscalComprasItens();
     recuperarQuantidadesFiscaisComprasItens();
+    db.run('SELECT 1', (readyErr) => sinalizarInicializacaoParcial(readyErr));
   });
 }
 
@@ -1847,6 +1885,41 @@ function garantirCategoriasPadraoDespesa() {
 }
 
 // Função separada para inserir configurações padrão
+function migrarUrlsFiscalProducao() {
+  const urlsProducaoPadrao = [
+    ['fiscal_ws_autorizacao_producao', 'https://nfce.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx', 'string', 'WS autorização produção'],
+    ['fiscal_ws_retorno_producao', 'https://nfce.svrs.rs.gov.br/ws/NFeRetAutorizacao/NFeRetAutorizacao4.asmx', 'string', 'WS retorno produção'],
+    ['fiscal_ws_status_producao', 'https://nfce.svrs.rs.gov.br/ws/NfeStatusServico/NFeStatusServico4.asmx', 'string', 'WS status produção'],
+    ['fiscal_csc_qrcode_url_producao', 'https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Base QR Code produção CE'],
+    ['fiscal_consulta_chave_url_producao', 'https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Consulta chave produção CE']
+  ];
+
+  urlsProducaoPadrao.forEach(([chave, valor, tipo, descricao]) => {
+    db.run(
+      `UPDATE configuracoes
+       SET valor = ?, updated_at = datetime('now', 'localtime')
+       WHERE chave = ? AND (valor IS NULL OR TRIM(valor) = '')`,
+      [valor, chave],
+      function onUpdateUrl(err) {
+        if (err) {
+          console.error(`Erro ao migrar URL fiscal ${chave}:`, err.message);
+          return;
+        }
+
+        if (this.changes > 0) {
+          console.log(`Migração fiscal: ${chave} preenchido com URL padrão CE`);
+          return;
+        }
+
+        db.run(
+          `INSERT OR IGNORE INTO configuracoes (chave, valor, tipo, descricao) VALUES (?, ?, ?, ?)`,
+          [chave, valor, tipo, descricao]
+        );
+      }
+    );
+  });
+}
+
 function inserirConfiguracoesPadrao() {
   const configs = [
     ['nome_empresa', 'Mercadão da Economia', 'string', 'Nome da empresa'],
@@ -1884,6 +1957,11 @@ function inserirConfiguracoesPadrao() {
     ['fiscal_ws_status_homologacao', 'https://nfce-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NFeStatusServico4.asmx', 'string', 'WS status homologação'],
     ['fiscal_csc_qrcode_url_homologacao', 'https://nfceh.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Base QR Code homologação CE'],
     ['fiscal_consulta_chave_url_homologacao', 'https://nfceh.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Consulta chave homologação CE'],
+    ['fiscal_ws_autorizacao_producao', 'https://nfce.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx', 'string', 'WS autorização produção'],
+    ['fiscal_ws_retorno_producao', 'https://nfce.svrs.rs.gov.br/ws/NFeRetAutorizacao/NFeRetAutorizacao4.asmx', 'string', 'WS retorno produção'],
+    ['fiscal_ws_status_producao', 'https://nfce.svrs.rs.gov.br/ws/NfeStatusServico/NFeStatusServico4.asmx', 'string', 'WS status produção'],
+    ['fiscal_csc_qrcode_url_producao', 'https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Base QR Code produção CE'],
+    ['fiscal_consulta_chave_url_producao', 'https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Consulta chave produção CE'],
     ['fiscal_tp_imp', '4', 'number', 'Tipo impressão DANFE NFC-e'],
     ['fiscal_municipio_codigo', '2307304', 'string', 'Código município emitente'],
     ['fiscal_municipio_nome', 'Juazeiro do Norte', 'string', 'Nome município emitente'],
@@ -1955,27 +2033,43 @@ function seedPinpadCatalogoTEF() {
 }
 
 function seedUsuarioAdmin() {
-  const hash = bcrypt.hashSync('pdb100623', 10);
+  db.get('SELECT COUNT(*) AS total FROM usuarios', [], (countErr, countRow) => {
+    if (countErr) {
+      console.error('Erro ao verificar usuários existentes:', countErr);
+      return;
+    }
 
-  // Inserir ou ignorar se já existe
-  db.run(`
-    INSERT OR IGNORE INTO usuarios (username, password_hash, role, nome, perfil, pode_alterar_senhas)
-    VALUES ('Diego', ?, 'admin', 'Diego', 'SUPER_ADMIN', 1)
-  `, [hash], (err) => {
-    if (err) console.error('Erro ao criar usuário administrador padrão:', err);
-    else console.log('Usuário administrador padrão verificado (Diego)');
-  });
+    if ((countRow?.total || 0) > 0) {
+      db.run(`
+        UPDATE usuarios
+        SET perfil = 'SUPER_ADMIN',
+            pode_alterar_senhas = 1,
+            nome = 'Diego'
+        WHERE username = 'Diego'
+      `, (err) => {
+        if (err) console.error('Erro ao atualizar perfil do administrador:', err);
+      });
+      return;
+    }
 
-  // Atualizar usuário existente para SUPER_ADMIN (caso já exista)
-  db.run(`
-    UPDATE usuarios
-    SET perfil = 'SUPER_ADMIN',
-        pode_alterar_senhas = 1,
-        nome = 'Diego'
-    WHERE username = 'Diego'
-  `, (err) => {
-    if (err) console.error('Erro ao atualizar perfil do administrador:', err);
-    else console.log('Perfil SUPER_ADMIN garantido para Diego');
+    const senhaInicial = process.env.ADMIN_SEED_PASSWORD || crypto.randomBytes(12).toString('base64url');
+    const hash = bcrypt.hashSync(senhaInicial, 10);
+
+    db.run(`
+      INSERT INTO usuarios (username, password_hash, role, nome, perfil, pode_alterar_senhas)
+      VALUES ('Diego', ?, 'admin', 'Diego', 'SUPER_ADMIN', 1)
+    `, [hash], (err) => {
+      if (err) {
+        console.error('Erro ao criar usuário administrador padrão:', err);
+        return;
+      }
+
+      console.log('Usuário administrador inicial criado (Diego).');
+      if (!process.env.ADMIN_SEED_PASSWORD) {
+        console.warn('[SEGURANÇA] Senha temporária do admin:', senhaInicial);
+        console.warn('[SEGURANÇA] Defina ADMIN_SEED_PASSWORD ou altere a senha no primeiro acesso.');
+      }
+    });
   });
 }
 
@@ -2132,6 +2226,20 @@ db.serialize(() => {
         FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
       )
     `);
+    db.run('SELECT 1', (readyErr) => sinalizarInicializacaoParcial(readyErr));
 });
+
+db.whenReady = function whenReady(callback) {
+  if (typeof callback !== 'function') return;
+  if (bancoPronto) {
+    callback(null);
+    return;
+  }
+  filaProntidao.push(callback);
+};
+
+db.isReady = function isReady() {
+  return bancoPronto;
+};
 
 module.exports = db;

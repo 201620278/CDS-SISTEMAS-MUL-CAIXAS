@@ -903,7 +903,11 @@ function atualizarStatus(elementId, ok) {
 }
 
 async function verificarSDK() {
-    const resposta = await fetch('/api/tef/diagnostico-sdk');
+    const resposta = await fetch('/api/tef/diagnostico-sdk', {
+        headers: {
+            Authorization: `Bearer ${localStorage.getItem('token') || ''}`
+        }
+    });
     const dados = await resposta.json();
     console.log(dados);
 }

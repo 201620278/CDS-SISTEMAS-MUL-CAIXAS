@@ -539,6 +539,7 @@ router.get('/consulta-pdv/buscar', (req, res) => {
       p.codigo_barras,
       p.nome,
       p.unidade,
+      p.preco_compra,
       p.preco_venda,
       (SELECT preco_atacado FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS preco_atacado,
       (SELECT quantidade_minima FROM produto_atacado WHERE produto_id = p.id ORDER BY quantidade_minima ASC LIMIT 1) AS quantidade_minima_atacado,

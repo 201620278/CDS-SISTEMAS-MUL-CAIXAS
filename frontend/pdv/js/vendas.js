@@ -1,6 +1,6 @@
 let vendasList = [];
 let termoBuscaVendas = '';
-let verTodasVendas = false;
+let verTodasVendas = true;
 
 function loadVendas() {
     let url = `${API_URL}/vendas`;
@@ -62,7 +62,10 @@ function renderVendas(vendas) {
                 </div>
             </div>
             <div class="card-body">
-                <!-- Mensagem de modo fiscal removida -->
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <small class="text-muted">${vendas.length} venda(s) encontrada(s)</small>
+                    ${!verTodasVendas ? '<small class="text-warning"><i class="fas fa-filter"></i> Exibindo apenas vendas de hoje</small>' : ''}
+                </div>
                 <div class="row mb-3">
                     <div class="col-md-8">
                         <input
@@ -84,7 +87,7 @@ function renderVendas(vendas) {
                     </div>
                 </div>
 
-                <div class="table-responsive">
+                <div class="table-responsive historico-vendas-tabela">
                     <table class="table table-striped table-hover">
                         <thead>
                             <tr>
@@ -253,6 +256,21 @@ function escapeHtml(text) {
         .replace(/'/g, '&#039;');
 }
 
+function montarPayloadCancelamentoVenda(motivo) {
+    const payload = { motivo };
+    if (typeof getTerminalRequestData === 'function') {
+        return getTerminalRequestData(payload);
+    }
+    if (Number.isInteger(window.terminalId) && window.terminalId > 0) {
+        payload.terminal_id = window.terminalId;
+    }
+    return payload;
+}
+
+function extrairMensagemErroResposta(dados, status) {
+    return dados?.mensagem || dados?.error || `Erro ao cancelar venda (HTTP ${status}).`;
+}
+
 function cancelarVendaNaoFiscal(vendaId) {
     // Usar modal customizado em vez de prompt() para compatibilidade com Electron
     const modalHtml = `
@@ -270,7 +288,8 @@ function cancelarVendaNaoFiscal(vendaId) {
                         </div>
                         <div class="mb-3">
                             <label for="motivoCancelamento" class="form-label fw-bold">Motivo do cancelamento:</label>
-                            <textarea id="motivoCancelamento" class="form-control" rows="3" placeholder="Informe o motivo do cancelamento..."></textarea>
+                            <textarea id="motivoCancelamento" class="form-control" rows="3" placeholder="Descreva o motivo do cancelamento (mínimo 15 caracteres se houver NFC-e)..."></textarea>
+                            <small class="text-muted">Para vendas com NFC-e autorizada, o motivo precisa ter pelo menos 15 caracteres.</small>
                         </div>
                     </div>
                     <div class="modal-footer">
@@ -313,6 +332,15 @@ function cancelarVendaNaoFiscal(vendaId) {
             return;
         }
 
+        if (motivo.length < 15) {
+            const confirmarCurto = window.confirm(
+                'O motivo tem menos de 15 caracteres. Vendas com NFC-e exigem no mínimo 15. Deseja continuar mesmo assim?'
+            );
+            if (!confirmarCurto) {
+                return;
+            }
+        }
+
         modal.hide();
 
         try {
@@ -324,16 +352,14 @@ function cancelarVendaNaoFiscal(vendaId) {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${localStorage.getItem('token')}`
                     },
-                    body: JSON.stringify({
-                        motivo
-                    })
+                    body: JSON.stringify(montarPayloadCancelamentoVenda(motivo))
                 }
             );
 
-            const dados = await resposta.json();
+            const dados = await resposta.json().catch(() => ({}));
 
-            if (!dados.sucesso) {
-                throw new Error(dados.mensagem);
+            if (!resposta.ok || !dados.sucesso) {
+                throw new Error(extrairMensagemErroResposta(dados, resposta.status));
             }
 
             showNotification(

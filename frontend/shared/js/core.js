@@ -546,8 +546,13 @@ function formatCurrency(value) {
 
 function formatDate(date) {
     if (!date) return '';
+    const texto = String(date).trim();
+    const matchData = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (matchData) {
+        return `${matchData[3]}/${matchData[2]}/${matchData[1]}`;
+    }
     const d = new Date(date);
-    return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString('pt-BR');
+    return Number.isNaN(d.getTime()) ? texto : d.toLocaleDateString('pt-BR');
 }
 
 function formatDateTime(dateString) {

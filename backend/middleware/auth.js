@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mercadao-jwt-secret-alterar-em-producao';
+const { getJwtSecret } = require('../config/secrets');
+const JWT_SECRET = getJwtSecret();
 
 function authMiddleware(req, res, next) {
   const h = req.headers.authorization;

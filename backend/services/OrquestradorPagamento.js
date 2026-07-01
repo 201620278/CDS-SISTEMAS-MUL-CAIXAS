@@ -12,6 +12,7 @@
  */
 
 const tefManager = require('./tef/TefManager');
+const tefContrato = require('./tef/tefContrato');
 const tefConfigService = require('./tef/tefConfigService');
 const tefFluxoPagamento = require('./tef/tefFluxoPagamento');
 const { distribuirPagamentos } = require('./DistribuidorPagamento');
@@ -167,7 +168,7 @@ async function processarTEFFiscal(recebimentosFiscal) {
         parcelas: 1
       });
       
-      if (!tefManager.estaAprovado(retornoTEF)) {
+      if (!tefContrato.estaAprovado(retornoTEF)) {
         // Cancelar transações anteriores
         for (const transacaoId of transacoesAutorizadas) {
           try {

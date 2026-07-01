@@ -22,8 +22,13 @@ class CryptoService {
     if (envKey) {
       return Buffer.from(envKey, 'hex');
     }
-    
-    // Chave padrão para desenvolvimento (NÃO usar em produção)
+
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[SEGURANÇA] TEF_ENCRYPTION_KEY não definido em produção.');
+    } else {
+      console.warn('[SEGURANÇA] TEF_ENCRYPTION_KEY não definido — usando chave de desenvolvimento.');
+    }
+
     const defaultKey = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     return Buffer.from(defaultKey, 'hex');
   }

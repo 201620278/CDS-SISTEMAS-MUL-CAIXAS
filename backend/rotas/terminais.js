@@ -4,7 +4,8 @@ const jwt = require('jsonwebtoken');
 const db = require('../database');
 const { gravarAuditoria } = require('../services/auditoria');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mercantil_do_nando_secret_key_2024';
+const { getJwtSecret } = require('../config/secrets');
+const JWT_SECRET = getJwtSecret();
 const HEARTBEAT_ONLINE_MS = 3 * 60 * 1000;
 
 function terminalEstaOnline(ultimaConexao) {

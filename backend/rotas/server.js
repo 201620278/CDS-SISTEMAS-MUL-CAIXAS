@@ -8,8 +8,8 @@ const db = require('../database');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Chave secreta (deve ser a mesma do auth.js)
-const JWT_SECRET = 'mercantil_do_nando_secret_key_2024';
+const { getJwtSecret } = require('../config/secrets');
+const JWT_SECRET = getJwtSecret();
 
 // ============ GERENCIAMENTO DE PROMOÇÕES AUTOMÁTICAS ============
 // Função para encerrar promoções expiradas automaticamente

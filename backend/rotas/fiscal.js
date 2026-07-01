@@ -98,7 +98,7 @@ router.post('/certificado/upload', upload.single('certificado'), async (req, res
 
 router.get('/config', async (req, res) => {
   try {
-    const config = await getFiscalConfig();
+    const config = await getFiscalConfig({ validarUrls: false });
     res.json(config);
   } catch (error) {
     res.status(500).json({ error: error.message });

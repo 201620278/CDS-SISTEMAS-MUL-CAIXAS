@@ -273,6 +273,18 @@ html, body {
     white-space: nowrap;
 }
 
+.historico-vendas-tabela {
+    max-height: calc(100vh - 280px);
+    overflow-y: auto;
+}
+
+.historico-vendas-tabela thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f8f9fa;
+}
+
 .historico-venda-acoes {
     display: inline-flex;
     align-items: center;

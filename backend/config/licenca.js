@@ -1,3 +1,7 @@
+const { getLicenseMasterKey } = require('./secrets');
+
 module.exports = {
-    CHAVE_MESTRE: 'CDS_MASTER_KEY_2026'
+  get CHAVE_MESTRE() {
+    return getLicenseMasterKey();
+  }
 };

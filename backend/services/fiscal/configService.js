@@ -21,7 +21,7 @@ function getConfiguracoes(chaves) {
   });
 }
 
-async function getFiscalConfig() {
+async function getFiscalConfig({ validarUrls = true } = {}) {
   const cfg = await getConfiguracoes([
     'nome_empresa',
     'cnpj',
@@ -96,7 +96,7 @@ async function getFiscalConfig() {
 
   const urlsSelecionadas = ambienteFiscal === 1 ? urlsProducao : urlsHomologacao;
 
-  if (!urlsSelecionadas.autorizacao) {
+  if (validarUrls && !urlsSelecionadas.autorizacao) {
     throw new Error(
       ambienteFiscal === 1
         ? 'URL de autorização em PRODUÇÃO não configurada.'

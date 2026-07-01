@@ -124,17 +124,25 @@ function obterQuantidadeEstoqueParaVenda(produto, quantidadeVenda, tipoVenda = T
 
 function formatarVendaUnidadeConsulta(produto) {
     if (!produtoUsaConversaoUnidadesPdv(produto)) {
-        return '—';
+        return 'NÃO';
     }
     return Number(produto?.permite_venda_unidade ?? 0) === 1 ? 'SIM' : 'NÃO';
 }
 
+function obterPrecoVendaConsultaPdv(produto) {
+    const preco = Number(produto?.preco_venda || 0);
+    const temPromocao = produto?.tem_promocao === 1 || produto?.tem_promocao === true;
+    const precoPromocional = Number(produto?.preco_promocional || 0);
+    return temPromocao && precoPromocional > 0 ? precoPromocional : preco;
+}
+
 function formatarPrecoUnidadeConsulta(produto) {
-    if (Number(produto?.permite_venda_unidade ?? 0) !== 1) {
-        return '—';
+    const precoUnidade = Number(produto?.preco_unidade ?? 0);
+    if (Number(produto?.permite_venda_unidade ?? 0) === 1 && precoUnidade > 0) {
+        return formatCurrency(precoUnidade);
     }
-    const preco = Number(produto?.preco_unidade ?? 0);
-    return preco > 0 ? formatCurrency(preco) : '—';
+    const precoVenda = obterPrecoVendaConsultaPdv(produto);
+    return precoVenda > 0 ? formatCurrency(precoVenda) : formatCurrency(0);
 }
 
 function formatarPesoKgPdv(valor) {
@@ -441,7 +449,8 @@ async function processarPagamentoTEF(tipo, valor, parcelas = 1, opcoes = {}) {
         const response = await fetch(`${API_URL}/tef/pagar`, {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${localStorage.getItem('token') || ''}`
             },
             body: JSON.stringify({
                 tipo: tipoTef,
@@ -3736,12 +3745,14 @@ async function cancelarVendaAtual() {
     // Cancelar pagamento fiscal se existir
     if (pagamentoFiscalAtual && pagamentoFiscalAtual.transacao_id) {
         try {
-            await fetch(`${API_URL}/tef/cancelar/${pagamentoFiscalAtual.transacao_id}`, {
+            await fetch(`${API_URL}/tef/cancelar`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${localStorage.getItem('token') || ''}`
                 },
                 body: JSON.stringify({
+                    transacao_id: pagamentoFiscalAtual.transacao_id,
                     motivo: 'Cancelamento operador'
                 })
             });
@@ -5107,6 +5118,7 @@ function renderizarProdutosConsultaPDV(produtos) {
     const linhas = produtos.map(p => {
         const estoque = pdvEstoqueDisponivel(p);
         const preco = Number(p.preco_venda || 0);
+        const precoCompra = Number(p.preco_compra || 0);
         const estoqueBaixo = estoque <= Number(p.estoque_minimo || 0);
         const semEstoque = !pdvValidarEstoqueVenda(p, 1).sucesso;
         const temPromocao = p.tem_promocao === 1 || p.tem_promocao === true;
@@ -5130,6 +5142,7 @@ function renderizarProdutosConsultaPDV(produtos) {
                     </small>
                 </td>
                 <td>${escapeHtml(p.unidade || 'UN')}</td>
+                <td>${formatCurrency(precoCompra)}</td>
                 <td class="fw-bold ${temPromocao ? 'text-danger' : 'text-success'}">${linhaDescontoPreco}</td>
                 <td>${formatarVendaUnidadeConsulta(p)}</td>
                 <td>${formatarPrecoUnidadeConsulta(p)}</td>
@@ -5160,7 +5173,8 @@ function renderizarProdutosConsultaPDV(produtos) {
                         <th>ID</th>
                         <th>Produto</th>
                         <th>Un.</th>
-                        <th>Preço</th>
+                        <th>Preço Compra</th>
+                        <th>Preço Venda</th>
                         <th>Venda Unidade</th>
                         <th>Preço Unidade</th>
                         <th>Estoque</th>

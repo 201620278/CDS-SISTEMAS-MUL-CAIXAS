@@ -33,8 +33,11 @@ class TefFiscalValidator {
       default: 10.00
     },
     
-    // Tipos de cartão permitidos
-    TIPOS_PERMITIDOS: ['debito', 'credito', 'pix', 'pix_tef'],
+    // Tipos de cartão permitidos (inclui aliases usados pelo PDV)
+    TIPOS_PERMITIDOS: [
+      'debito', 'credito', 'pix', 'pix_tef',
+      'cartao', 'cartao_credito', 'cartao_debito', 'tef'
+    ],
     
     // Bandeiras permitidas
     BANDEIRAS_PERMITIDAS: ['visa', 'mastercard', 'elo', 'hipercard', 'amex', 'discover', 'jcb', 'diners', 'aura'],
@@ -62,9 +65,25 @@ class TefFiscalValidator {
         parcelas_maximas: 1,
         valor_minimo: 1.00
       },
+      cartao_debito: {
+        parcelas_maximas: 1,
+        valor_minimo: 1.00
+      },
       credito: {
         parcelas_maximas: 12,
         valor_minimo: 10.00
+      },
+      cartao_credito: {
+        parcelas_maximas: 12,
+        valor_minimo: 10.00
+      },
+      cartao: {
+        parcelas_maximas: 12,
+        valor_minimo: 10.00
+      },
+      tef: {
+        parcelas_maximas: 12,
+        valor_minimo: 1.00
       },
       pix: {
         parcelas_maximas: 1,
@@ -91,7 +110,15 @@ class TefFiscalValidator {
       '12x': 120.00
     }
   };
-  
+
+  static _normalizarTipoCartao(tipo) {
+    const normalizado = String(tipo || '').toLowerCase().trim();
+    if (normalizado === 'cartao_credito' || normalizado === 'cartao') return 'credito';
+    if (normalizado === 'cartao_debito') return 'debito';
+    if (normalizado === 'tef') return 'credito';
+    return normalizado;
+  }
+
   /**
    * Valida uma transação TEF de acordo com as regras fiscais
    * @param {Object} dados - Dados da transação TEF
@@ -170,7 +197,7 @@ class TefFiscalValidator {
   static _validarParcelamento(dados, erros) {
     const parcelas = Number(dados.parcelas) || 1;
     const valor = Number(dados.valor) || 0;
-    const tipo = dados.tipo?.toLowerCase().trim() || 'credito';
+    const tipo = this._normalizarTipoCartao(dados.tipo);
     const bandeira = dados.bandeira?.toLowerCase().trim() || 'default';
     
     // Validar número de parcelas por tipo de cartão
@@ -218,7 +245,6 @@ class TefFiscalValidator {
    */
   static _validarBandeira(bandeira, erros) {
     if (!bandeira) {
-      erros.push('Bandeira do cartão não informada');
       return;
     }
     

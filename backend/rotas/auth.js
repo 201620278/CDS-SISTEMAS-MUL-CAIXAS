@@ -10,7 +10,8 @@ function parsePositiveInteger(value) {
   return Number.isInteger(num) && num > 0 ? num : null;
 }
 
-const JWT_SECRET = 'mercantil_do_nando_secret_key_2024';
+const { getJwtSecret } = require('../config/secrets');
+const JWT_SECRET = getJwtSecret();
 
 const PERMISSOES_DISPONIVEIS = [
   'pdv',
@@ -92,6 +93,91 @@ function buscarPermissoesUsuario(usuarioId, callback) {
   );
 }
 
+function responderErroInternoLogin(res, contexto, err) {
+  console.error(`[LOGIN] ${contexto}:`, err);
+  const mensagemBusy = err && /SQLITE_BUSY/i.test(String(err.message || ''));
+  return res.status(mensagemBusy ? 503 : 500).json({
+    error: mensagemBusy
+      ? 'Banco de dados ocupado. Aguarde alguns segundos e tente novamente.'
+      : 'Erro interno do servidor. Tente novamente.'
+  });
+}
+
+function dbGetComRetry(sql, params, tentativasRestantes, callback) {
+  db.get(sql, params, (err, row) => {
+    if (err && /SQLITE_BUSY/i.test(String(err.message || '')) && tentativasRestantes > 0) {
+      return setTimeout(
+        () => dbGetComRetry(sql, params, tentativasRestantes - 1, callback),
+        250
+      );
+    }
+    callback(err, row);
+  });
+}
+
+function finalizarLoginComUsuario(req, res, usuario) {
+  buscarPermissoesUsuario(usuario.id, (errPerm, permissoes) => {
+    if (errPerm) {
+      return responderErroInternoLogin(res, 'ERRO PERMISSÕES', errPerm);
+    }
+
+    if (usuario.role === 'admin') {
+      permissoes = PERMISSOES_DISPONIVEIS;
+    }
+
+    const terminalId = parsePositiveInteger(req.body?.terminal_id);
+    const caixaSessaoId = parsePositiveInteger(req.body?.caixa_sessao_id);
+
+    try {
+      const token = jwt.sign(
+        {
+          id: usuario.id,
+          usuario_id: usuario.id,
+          username: usuario.username,
+          nome: usuario.nome || usuario.username,
+          role: usuario.role,
+          perfil: usuario.perfil || 'USUARIO',
+          permissoes,
+          terminal_id: terminalId,
+          caixa_sessao_id: caixaSessaoId
+        },
+        JWT_SECRET,
+        { expiresIn: '8h' }
+      );
+
+      res.json({
+        token,
+        user: {
+          id: usuario.id,
+          usuario_id: usuario.id,
+          username: usuario.username,
+          role: usuario.role,
+          perfil: usuario.perfil || 'USUARIO',
+          nome: usuario.nome || usuario.username,
+          permissoes,
+          terminal_id: terminalId,
+          caixa_sessao_id: caixaSessaoId
+        }
+      });
+
+      gravarAuditoria({
+        usuario_id: usuario.id,
+        usuario_nome: usuario.username,
+        modulo: 'auth',
+        acao: 'login',
+        referencia_tipo: 'usuario',
+        referencia_id: usuario.id,
+        detalhes: { ip: req.ip, username: usuario.username },
+        ip_requisicao: req.ip || null
+      }).catch((auditErr) => {
+        console.error('Erro ao gravar auditoria de login:', auditErr);
+      });
+    } catch (tokenErr) {
+      responderErroInternoLogin(res, 'ERRO TOKEN', tokenErr);
+    }
+  });
+}
+
 function isSupervisorPerfil(usuario) {
   const perfil = String(usuario?.perfil || '').trim().toUpperCase();
   return usuario?.role === 'admin' || ['SUPER_ADMIN', 'ADMIN', 'SUPERVISOR'].includes(perfil);
@@ -129,8 +215,11 @@ router.post('/supervisor/authorize', (req, res) => {
     [username],
     (err, usuario) => {
       if (err) {
-        console.error('Erro ao consultar usuário:', err);
-        return res.status(500).json({ error: 'Erro interno do servidor' });
+        console.error('ERRO SQL LOGIN:', err);
+        return res.status(500).json({
+          error: err.message,
+          stack: err.stack
+        });
       }
 
       if (!usuario) {
@@ -183,86 +272,50 @@ router.post('/supervisor/authorize', (req, res) => {
 });
 
 router.post('/login', (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Usuário e senha são obrigatórios' });
   }
 
-  db.get(
+  if (typeof db.whenReady === 'function' && typeof db.isReady === 'function' && !db.isReady()) {
+    return res.status(503).json({
+      error: 'Sistema ainda inicializando. Aguarde alguns segundos e tente novamente.'
+    });
+  }
+
+  dbGetComRetry(
     `SELECT * FROM usuarios WHERE username = ? AND COALESCE(ativo, 1) = 1`,
     [username],
+    5,
     (err, usuario) => {
       if (err) {
-        console.error('Erro ao consultar usuário:', err);
-        return res.status(500).json({ error: 'Erro interno do servidor' });
+        return responderErroInternoLogin(res, 'ERRO SQL LOGIN', err);
       }
 
       if (!usuario) {
         return res.status(401).json({ error: 'Usuário ou senha inválidos' });
       }
 
-      const senhaValida = bcrypt.compareSync(password, usuario.password_hash);
+      if (!usuario.password_hash) {
+        console.error('[LOGIN] Usuário sem password_hash:', usuario.username);
+        return res.status(500).json({
+          error: 'Conta de usuário incompleta. Contate o administrador.'
+        });
+      }
+
+      let senhaValida = false;
+      try {
+        senhaValida = bcrypt.compareSync(password, usuario.password_hash);
+      } catch (compareErr) {
+        return responderErroInternoLogin(res, 'ERRO BCRYPT', compareErr);
+      }
 
       if (!senhaValida) {
         return res.status(401).json({ error: 'Usuário ou senha inválidos' });
       }
 
-      buscarPermissoesUsuario(usuario.id, (errPerm, permissoes) => {
-        if (errPerm) {
-          return res.status(500).json({ error: 'Erro ao carregar permissões.' });
-        }
-
-        if (usuario.role === 'admin') {
-          permissoes = PERMISSOES_DISPONIVEIS;
-        }
-
-        const terminalId = parsePositiveInteger(req.body?.terminal_id);
-        const caixaSessaoId = parsePositiveInteger(req.body?.caixa_sessao_id);
-
-        const token = jwt.sign(
-          {
-            id: usuario.id,
-            usuario_id: usuario.id,
-            username: usuario.username,
-            nome: usuario.nome || usuario.username,
-            role: usuario.role,
-            perfil: usuario.perfil || 'USUARIO',
-            permissoes,
-            terminal_id: terminalId,
-            caixa_sessao_id: caixaSessaoId
-          },
-          JWT_SECRET,
-          { expiresIn: '8h' }
-        );
-
-        res.json({
-          token,
-          user: {
-            id: usuario.id,
-            usuario_id: usuario.id,
-            username: usuario.username,
-            role: usuario.role,
-            perfil: usuario.perfil || 'USUARIO',
-            nome: usuario.nome || usuario.username,
-            permissoes,
-            terminal_id: terminalId,
-            caixa_sessao_id: caixaSessaoId
-          }
-        });
-        gravarAuditoria({
-          usuario_id: usuario.id,
-          usuario_nome: usuario.username,
-          modulo: 'auth',
-          acao: 'login',
-          referencia_tipo: 'usuario',
-          referencia_id: usuario.id,
-          detalhes: { ip: req.ip, username },
-          ip_requisicao: req.ip || null
-        }).catch((auditErr) => {
-          console.error('Erro ao gravar auditoria de login:', auditErr);
-        });
-      });
+      finalizarLoginComUsuario(req, res, usuario);
     }
   );
 });

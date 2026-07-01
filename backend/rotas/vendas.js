@@ -2,7 +2,7 @@
   const router = express.Router();
   const db = require('../database');
   const moment = require('moment');
-  const { validarCaixaAberto } = require('../middleware/validarCaixaAberto');
+  const { validarCaixaAberto, validarCaixaAbertoCancelamentoVenda } = require('../middleware/validarCaixaAberto');
   const configService = require('../services/configuracaoService');
   const { emitirPorVendaId } = require('../services/fiscal/emissor');
   const tefManager = require('../services/tef/TefManager');
@@ -2430,7 +2430,7 @@ justificativa: ${justificativa.trim()}
   });
 
   // Cancelar venda
-  router.put('/:id/cancelar', validarCaixaAberto, (req, res) => {
+  router.put('/:id/cancelar', validarCaixaAbertoCancelamentoVenda, (req, res) => {
     const { id } = req.params;
     const motivo = req.body.motivo || req.body.justificativa || '';
 
@@ -2574,7 +2574,7 @@ justificativa: ${justificativa.trim()}
   });
 
   // Cancelar venda não fiscal
-  router.post('/cancelar/:id', validarCaixaAberto, (req, res) => {
+  router.post('/cancelar/:id', validarCaixaAbertoCancelamentoVenda, (req, res) => {
     const vendaId = req.params.id;
     const { motivo } = req.body;
 

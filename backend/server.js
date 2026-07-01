@@ -7,15 +7,26 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
+const http = require('http');
+const { getJwtSecret, isCorsOriginAllowed } = require('./config/secrets');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Chave secreta (deve ser a mesma do auth.js)
-const JWT_SECRET = 'mercantil_do_nando_secret_key_2024';
+const JWT_SECRET = getJwtSecret();
 
 // Middleware
-app.use(cors());
+app.use((req, res, next) => {
+  cors({
+    origin(origin, callback) {
+      if (isCorsOriginAllowed(origin, req.headers.host)) {
+        return callback(null, true);
+      }
+      callback(new Error('Origem não permitida pelo CORS'));
+    },
+    credentials: true
+  })(req, res, next);
+});
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -194,7 +205,7 @@ app.post(
 );
 app.use('/api/terminais', verificarToken, exigirRecurso('multiCaixa'), terminaisRoutes);
 app.use('/api/backup', verificarToken, backupRoutes);
-app.use('/api/tef', tefRoutes);
+app.use('/api/tef', verificarToken, tefRoutes);
 app.use('/api/pix', verificarToken, pixRoutes);
 app.use('/api/alertas', verificarToken, alertasRoutes);
 app.use('/api/auditoria', verificarToken, auditoriaRoutes);
@@ -226,27 +237,47 @@ app.get('*.jpg', (req, res, next) => {
     next();
 });
 
+// Error handler — JSON inválido
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        return res.status(400).json({ error: 'Requisição inválida.' });
+    }
+    next(err);
+});
+
 // Error handler
 app.use((err, req, res, next) => {
     console.error('Erro:', err);
+    if (err && String(err.message || '').includes('CORS')) {
+        return res.status(403).json({ error: 'Origem não permitida pelo CORS' });
+    }
     res.status(500).json({ error: 'Erro interno do servidor' });
 });
 
-// Iniciar servidor
-const server = app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
-    console.log(`Acesse: http://localhost:${PORT}/login`);
-    console.log('Configuração avançada:', configService.getRecursos());
-});
-
-server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        console.error(`Porta ${PORT} já está em uso. Pare o processo que usa a porta ou escolha outra porta.`);
-        console.error(`No Windows, use: set PORT=3001 && npm start`);
-        process.exit(1);
-    }
-    console.error('Erro ao iniciar o servidor:', err);
-    process.exit(1);
-});
-
+// Iniciar servidor somente após o banco estar pronto (evita SQLITE_BUSY no login do PDV)
+const server = http.createServer(app);
 module.exports = server;
+
+db.whenReady((readyErr) => {
+    if (readyErr) {
+        console.error('Servidor não iniciado: banco indisponível.', readyErr.message);
+        process.exit(1);
+        return;
+    }
+
+    server.listen(PORT, () => {
+        console.log(`Servidor rodando na porta ${PORT}`);
+        console.log(`Acesse: http://localhost:${PORT}/login`);
+        console.log('Configuração avançada:', configService.getRecursos());
+    });
+
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`Porta ${PORT} já está em uso. Pare o processo que usa a porta ou escolha outra porta.`);
+            console.error(`No Windows, use: set PORT=3001 && npm start`);
+            process.exit(1);
+        }
+        console.error('Erro ao iniciar o servidor:', err);
+        process.exit(1);
+    });
+});

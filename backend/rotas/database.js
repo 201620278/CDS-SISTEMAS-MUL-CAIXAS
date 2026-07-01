@@ -522,8 +522,13 @@ function inserirConfiguracoesPadrao() {
     ['fiscal_ws_autorizacao_homologacao', 'https://nfce-homologacao.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx', 'string', 'WS autorização homologação'],
     ['fiscal_ws_retorno_homologacao', 'https://nfce-homologacao.svrs.rs.gov.br/ws/NFeRetAutorizacao/NFeRetAutorizacao4.asmx', 'string', 'WS retorno homologação'],
     ['fiscal_ws_status_homologacao', 'https://nfce-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NFeStatusServico4.asmx', 'string', 'WS status homologação'],
-    ['fiscal_csc_qrcode_url_homologacao', 'http://nfceh.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Base QR Code homologação CE']
+    ['fiscal_csc_qrcode_url_homologacao', 'http://nfceh.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Base QR Code homologação CE'],
     ['fiscal_consulta_chave_url_homologacao', 'http://nfceh.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Consulta chave homologação CE'],
+    ['fiscal_ws_autorizacao_producao', 'https://nfce.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx', 'string', 'WS autorização produção'],
+    ['fiscal_ws_retorno_producao', 'https://nfce.svrs.rs.gov.br/ws/NFeRetAutorizacao/NFeRetAutorizacao4.asmx', 'string', 'WS retorno produção'],
+    ['fiscal_ws_status_producao', 'https://nfce.svrs.rs.gov.br/ws/NfeStatusServico/NFeStatusServico4.asmx', 'string', 'WS status produção'],
+    ['fiscal_csc_qrcode_url_producao', 'https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Base QR Code produção CE'],
+    ['fiscal_consulta_chave_url_producao', 'https://nfce.sefaz.ce.gov.br/pages/ShowNFCe.html', 'string', 'Consulta chave produção CE'],
     ['fiscal_tp_imp', '4', 'number', 'Tipo impressão DANFE NFC-e'],
     ['fiscal_municipio_codigo', '2307304', 'string', 'Código município emitente'],
     ['fiscal_municipio_nome', 'Juazeiro do Norte', 'string', 'Nome município emitente'],
@@ -548,13 +553,21 @@ function inserirConfiguracoesPadrao() {
 }
 
 function seedUsuarioAdmin() {
-  const hash = bcrypt.hashSync('pdb100623', 10);
-  db.run(`
-    INSERT OR IGNORE INTO usuarios (username, password_hash, role)
-    VALUES ('Diego', ?, 'admin')
-  `, [hash], (err) => {
-    if (err) console.error('Erro ao criar usuário administrador padrão:', err);
-    else console.log('Usuário administrador padrão verificado (Diego)');
+  db.get('SELECT COUNT(*) AS total FROM usuarios', [], (countErr, countRow) => {
+    if (countErr || (countRow?.total || 0) > 0) return;
+
+    const crypto = require('crypto');
+    const senhaInicial = process.env.ADMIN_SEED_PASSWORD || crypto.randomBytes(12).toString('base64url');
+    const hash = bcrypt.hashSync(senhaInicial, 10);
+    db.run(`
+      INSERT INTO usuarios (username, password_hash, role)
+      VALUES ('Diego', ?, 'admin')
+    `, [hash], (err) => {
+      if (err) console.error('Erro ao criar usuário administrador padrão:', err);
+      else if (!process.env.ADMIN_SEED_PASSWORD) {
+        console.warn('[SEGURANÇA] Admin inicial Diego — senha temporária:', senhaInicial);
+      }
+    });
   });
 }
 

@@ -7,7 +7,23 @@
   },
   "files": [
     "**/*",
-    "!dist/**"
+    "!dist/**",
+    "!dist-*/**",
+    "!release/**",
+    "!out/**",
+    "!tests/**",
+    "!scripts/**",
+    "!dados/**",
+    "!**/.git/**",
+    "!**/.cursor/**",
+    "!**/*.md",
+    "!**/{.DS_Store,Thumbs.db,Desktop.ini}",
+    "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+    "!**/node_modules/.bin/**"
+  ],
+  "asarUnpack": [
+    "**/node_modules/sqlite3/**",
+    "**/node_modules/usb/**"
   ],
   "extraMetadata": {
     "main": "electron-pdv.js"
@@ -15,7 +31,9 @@
   "win": {
     "target": "nsis",
     "icon": "assets/icon.ico",
-    "publisherName": "CDS Sistemas"
+    "signtoolOptions": {
+      "publisherName": "CDS Sistemas"
+    }
   },
   "nsis": {
     "oneClick": false,

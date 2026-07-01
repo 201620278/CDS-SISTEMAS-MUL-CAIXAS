@@ -1435,6 +1435,7 @@ function toggleProdutosCategoriaMenu(categoriaId, categoriaNome) {
                                 <tr>
                                     <th>Nome</th>
                                     <th>Código</th>
+                                    <th>Categoria</th>
                                     <th>Unidade</th>
                                     <th>Preço Compra</th>
                                     <th>Preço Venda</th>
