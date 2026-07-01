@@ -1,4 +1,18 @@
 const db = require('../../database');
+const {
+  onlyDigits,
+  normalizarTokenCsc,
+  normalizarIdCsc,
+  extrairUrlHttps
+} = require('./utils');
+
+async function persistirConfiguracaoSeAlterada(chave, valorAtual, valorNovo, tipo = 'string', descricao = '') {
+  if (!valorNovo || String(valorAtual || '') === String(valorNovo)) {
+    return;
+  }
+
+  await setConfiguracao(chave, String(valorNovo), tipo, descricao);
+}
 
 function getConfiguracoes(chaves) {
   return new Promise((resolve, reject) => {
@@ -82,19 +96,30 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     autorizacao: cfg.fiscal_ws_autorizacao_homologacao || '',
     retorno: cfg.fiscal_ws_retorno_homologacao || '',
     status: cfg.fiscal_ws_status_homologacao || '',
-    consultaQr: cfg.fiscal_csc_qrcode_url_homologacao || '',
-    consultaChave: cfg.fiscal_consulta_chave_url_homologacao || ''
+    consultaQr: extrairUrlHttps(cfg.fiscal_csc_qrcode_url_homologacao || ''),
+    consultaChave: extrairUrlHttps(cfg.fiscal_consulta_chave_url_homologacao || '')
   };
 
   const urlsProducao = {
     autorizacao: cfg.fiscal_ws_autorizacao_producao || '',
     retorno: cfg.fiscal_ws_retorno_producao || '',
     status: cfg.fiscal_ws_status_producao || '',
-    consultaQr: cfg.fiscal_csc_qrcode_url_producao || '',
-    consultaChave: cfg.fiscal_consulta_chave_url_producao || ''
+    consultaQr: extrairUrlHttps(cfg.fiscal_csc_qrcode_url_producao || ''),
+    consultaChave: extrairUrlHttps(cfg.fiscal_consulta_chave_url_producao || '')
   };
 
   const urlsSelecionadas = ambienteFiscal === 1 ? urlsProducao : urlsHomologacao;
+
+  const tokenCscLimpo = normalizarTokenCsc(cfg.fiscal_token_csc || '');
+  const idCscLimpo = normalizarIdCsc(cfg.fiscal_id_csc || '1');
+
+  await persistirConfiguracaoSeAlterada(
+    'fiscal_token_csc',
+    cfg.fiscal_token_csc,
+    tokenCscLimpo,
+    'string',
+    'Token CSC'
+  );
 
   if (validarUrls && !urlsSelecionadas.autorizacao) {
     throw new Error(
@@ -110,8 +135,8 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     codigoUf: String(cfg.fiscal_codigo_uf || '23'),
     serie: Number(cfg.fiscal_serie || 1),
     numeroAtual: Number(cfg.fiscal_numero_atual || 1),
-    tokenCSC: cfg.fiscal_token_csc || '',
-    idCSC: cfg.fiscal_id_csc || '',
+    tokenCSC: tokenCscLimpo,
+    idCSC: idCscLimpo,
     certificadoPath: cfg.fiscal_certificado_path || '',
     certificadoSenha: cfg.fiscal_certificado_senha || '',
     crt: String(cfg.fiscal_regime_tributario || '1'),
@@ -119,7 +144,7 @@ async function getFiscalConfig({ validarUrls = true } = {}) {
     im: cfg.fiscal_im || '',
     cnae: cfg.fiscal_cnae || '',
     nomeEmpresa: cfg.nome_empresa || '',
-    cnpj: cfg.cnpj || '',
+    cnpj: onlyDigits(cfg.cnpj || ''),
     telefone: cfg.telefone || '',
     email: cfg.email || '',
     endereco: cfg.endereco || '',
@@ -175,11 +200,12 @@ async function incrementaNumeroFiscal() {
       if (err) return reject(err);
 
       const maiorBanco = Number(row?.maior || 0);
+      const baseBanco = maiorBanco + 1;
 
-      const numeroSeguro = Math.max(
-        numeroConfig,
-        maiorBanco + 1
-      );
+      // Evita saltos absurdos quando fiscal_numero_atual ficou corrompido (ex.: 499 sem notas).
+      const numeroSeguro = numeroConfig > baseBanco + 50
+        ? baseBanco
+        : Math.max(numeroConfig, baseBanco);
 
       try {
         await setConfiguracao(

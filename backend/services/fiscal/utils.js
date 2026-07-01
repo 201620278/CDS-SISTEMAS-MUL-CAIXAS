@@ -4,6 +4,29 @@ function onlyDigits(value) {
   return String(value || '').replace(/\D+/g, '');
 }
 
+function normalizarTokenCsc(token) {
+  return String(token || '')
+    .replace(/^CSC\s*:\s*/i, '')
+    .trim();
+}
+
+function normalizarIdCsc(idCSC) {
+  const digits = String(idCSC || '1').replace(/\D/g, '');
+  if (!digits) {
+    return '1';
+  }
+  return String(Number(digits));
+}
+
+function extrairUrlHttps(valor) {
+  const texto = String(valor || '').trim();
+  const match = texto.match(/https?:\/\/[^\s"'<>]+/i);
+  if (match) {
+    return match[0].replace(/\/+$/, '');
+  }
+  return texto.replace(/\/+$/, '');
+}
+
 function padLeft(value, size, char = '0') {
   return String(value == null ? '' : value).padStart(size, char);
 }
@@ -74,6 +97,14 @@ function sha1Hex(value) {
   return crypto.createHash('sha1').update(value).digest('hex');
 }
 
+function extrairNumeroNFeDaChave(chave) {
+  const digits = onlyDigits(chave);
+  if (digits.length !== 44) {
+    return null;
+  }
+  return Number(digits.substring(25, 34));
+}
+
 function xmlEscape(value) {
   return String(value == null ? '' : value)
     .replace(/&/g, '&amp;')
@@ -136,6 +167,9 @@ function extrairChaveEProtocoloAutorizados(xmlRetorno) {
 
 module.exports = {
   onlyDigits,
+  normalizarTokenCsc,
+  normalizarIdCsc,
+  extrairUrlHttps,
   padLeft,
   round2,
   formatNumber,
@@ -144,6 +178,7 @@ module.exports = {
   gerarCodigoNumerico,
   gerarChaveAcesso,
   sha1Hex,
+  extrairNumeroNFeDaChave,
   xmlEscape,
   compactarXml,
   normalizarXmlParaSefaz,

@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const multer = require('multer');
 const { getFiscalConfig, setConfiguracao } = require('../services/fiscal/configService');
+const { normalizarTokenCsc, normalizarIdCsc } = require('../services/fiscal/utils');
 const { carregarCertificadoPfx } = require('../services/fiscal/certificateService');
 const { emitirPorVendaId } = require('../services/fiscal/emissor');
 const cancelarNfce = require('../services/fiscal/cancelarNfce');
@@ -133,12 +134,22 @@ router.put('/config', carregarPerfilUsuario, async (req, res) => {
     }
 
     const entries = Object.entries(payload);
-    console.log(`[FISCAL CONFIG PUT] Salvando ${entries.length} configurações:`, JSON.stringify(payload, null, 2));
+    console.log(`[FISCAL CONFIG PUT] Salvando ${entries.length} configurações`);
 
     for (const [chave, valor] of entries) {
-      console.log(`[FISCAL CONFIG PUT] Salvando: ${chave} = ${valor}`);
-      await setConfiguracao(chave, String(valor ?? ''), 'string', `Configuração fiscal: ${chave}`);
-      console.log(`[FISCAL CONFIG PUT] Salvo com sucesso: ${chave}`);
+      let valorFinal = valor;
+
+      if (chave === 'fiscal_token_csc') {
+        valorFinal = normalizarTokenCsc(valor);
+      }
+
+      if (chave === 'fiscal_id_csc') {
+        const digits = String(valor || '1').replace(/\D/g, '') || '1';
+        valorFinal = String(Number(digits)).padStart(6, '0');
+      }
+
+      console.log(`[FISCAL CONFIG PUT] Salvando: ${chave}`);
+      await setConfiguracao(chave, String(valorFinal ?? ''), 'string', `Configuração fiscal: ${chave}`);
     }
     console.log('[FISCAL CONFIG PUT] Todas as configurações salvas com sucesso');
     res.json({ message: 'Configurações fiscais atualizadas com sucesso.' });

@@ -11,7 +11,7 @@ const {
 } = require('./utils');
 
 const { gerarQRCodeNFCe } = require('./qrcode');
-const { extrairNomeEmpresaDoCertificado } = require('./certificateService');
+const { extrairNomeEmpresaDoCertificado, extrairCnpjDoCertificado } = require('./certificateService');
 const { normalizarUnidadeComercialFiscal } = require('./unidadeFiscal');
 
 function normalizarCsosn(valor, padrao = '102') {
@@ -502,17 +502,23 @@ function buildNfceXml({ config, venda, itens, numero }) {
 
   const enderecoLivre = splitEnderecoLivre(config.endereco);
 
-  // Try to get company name from certificate
   let nomeEmpresaCertificado = null;
+  let cnpjCertificado = null;
   if (config.certificadoPath && config.certificadoSenha) {
     try {
       nomeEmpresaCertificado = extrairNomeEmpresaDoCertificado(config.certificadoPath, config.certificadoSenha);
+      cnpjCertificado = extrairCnpjDoCertificado(config.certificadoPath, config.certificadoSenha);
     } catch (error) {
-      console.error('Erro ao extrair nome do certificado, usando nome da configuração:', error);
+      console.error('Erro ao extrair dados do certificado, usando configuração:', error);
     }
   }
 
   const nomeEmpresa = nomeEmpresaCertificado || config.nomeEmpresa || 'EMPRESA NAO INFORMADA';
+  const cnpjEmitente = onlyDigits(config.cnpj || cnpjCertificado || '');
+
+  if (!cnpjEmitente || cnpjEmitente.length !== 14) {
+    throw new Error('CNPJ do emitente inválido. Preencha nas configurações ou use um certificado com CNPJ.');
+  }
   
   // Generate xFant by removing corporate suffixes (LTDA, EIRELI, ME, etc.)
   const xFant = nomeEmpresa
@@ -522,7 +528,7 @@ function buildNfceXml({ config, venda, itens, numero }) {
   const emit = {
     xNome: nomeEmpresa,
     xFant: xFant,
-    CNPJ: onlyDigits(config.cnpj),
+    CNPJ: cnpjEmitente,
     IE: onlyDigits(config.ie),
     CRT: config.crt,
     enderEmit: {
@@ -543,11 +549,13 @@ function buildNfceXml({ config, venda, itens, numero }) {
       ).trim(),
 
       cMun: String(
+        config.municipioCodigo ||
         config.codigo_municipio ||
         '2307304'
       ).trim(),
 
       xMun: String(
+        config.municipioNome ||
         config.municipio ||
         config.cidade ||
         'JUAZEIRO DO NORTE'

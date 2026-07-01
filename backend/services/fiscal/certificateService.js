@@ -122,6 +122,54 @@ function carregarCertificadoPfx(certificadoPath, senha) {
   };
 }
 
+function limparNomeEmpresaCertificado(nome) {
+  return String(nome || '')
+    .replace(/:\d{14}$/, '')
+    .trim();
+}
+
+function extrairCnpjDoCertificado(certificadoPath, senha) {
+  try {
+    const pfx = carregarCertificadoPfx(certificadoPath, senha);
+    const cert = forge.pki.certificateFromPem(pfx.certPem);
+    const subject = cert.subject;
+
+    if (!subject?.attributes) {
+      return null;
+    }
+
+    const cnpjOid = subject.attributes.find((attr) =>
+      attr.type === '2.16.76.1.3.3' ||
+      attr.name === '2.16.76.1.3.3'
+    );
+
+    if (cnpjOid?.value) {
+      const cnpj = String(cnpjOid.value).replace(/\D/g, '');
+      if (cnpj.length === 14) {
+        return cnpj;
+      }
+    }
+
+    const cnAttribute = subject.attributes.find((attr) =>
+      attr.name === 'commonName' ||
+      attr.shortName === 'CN' ||
+      attr.type === '2.5.4.3'
+    );
+
+    if (cnAttribute?.value) {
+      const match = String(cnAttribute.value).match(/:(\d{14})$/);
+      if (match) {
+        return match[1];
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Erro ao extrair CNPJ do certificado:', error);
+    return null;
+  }
+}
+
 function extrairNomeEmpresaDoCertificado(certificadoPath, senha) {
   try {
     const pfx = carregarCertificadoPfx(certificadoPath, senha);
@@ -137,7 +185,7 @@ function extrairNomeEmpresaDoCertificado(certificadoPath, senha) {
       );
       
       if (cnAttribute && cnAttribute.value) {
-        return cnAttribute.value;
+        return limparNomeEmpresaCertificado(cnAttribute.value);
       }
       
       const orgAttribute = subject.attributes.find(attr => 
@@ -147,7 +195,7 @@ function extrairNomeEmpresaDoCertificado(certificadoPath, senha) {
       );
       
       if (orgAttribute && orgAttribute.value) {
-        return orgAttribute.value;
+        return limparNomeEmpresaCertificado(orgAttribute.value);
       }
     }
     
@@ -158,4 +206,9 @@ function extrairNomeEmpresaDoCertificado(certificadoPath, senha) {
   }
 }
 
-module.exports = { carregarCertificadoPfx, extrairNomeEmpresaDoCertificado };
+module.exports = {
+  carregarCertificadoPfx,
+  extrairNomeEmpresaDoCertificado,
+  extrairCnpjDoCertificado,
+  limparNomeEmpresaCertificado
+};

@@ -2,14 +2,14 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../../database');
 const { getFiscalConfig, incrementaNumeroFiscal, setConfiguracao } = require('./configService');
-const { carregarCertificadoPfx } = require('./certificateService');
+const { carregarCertificadoPfx, extrairCnpjDoCertificado } = require('./certificateService');
 const {
   buildNfceXml
 } = require('./xmlBuilder');
 const { gerarQRCodeNFCe } = require('./qrcode');
 const { assinarNFe } = require('./signer');
 const { montarLote, enviarLote } = require('./soapClient');
-const { compactarXml, extrairChaveEProtocoloAutorizados } = require('./utils');
+const { compactarXml, extrairChaveEProtocoloAutorizados, onlyDigits, extrairUrlHttps, normalizarTokenCsc, extrairNumeroNFeDaChave } = require('./utils');
 const { validarItensFiscal } = require('./validadorFiscal');
 const { gerarDanfeHtml } = require('./danfe');
 const { getFiscalSubDir } = require('./paths');
@@ -255,11 +255,35 @@ async function emitirPorVendaId(vendaId) {
     });
   });
 
+  const notaDuplicidadeAnterior = await new Promise((resolve, reject) => {
+    db.get(`
+      SELECT *
+      FROM nfce_notas
+      WHERE venda_id = ?
+        AND status = 'rejeitada_duplicidade'
+      ORDER BY id DESC
+      LIMIT 1
+    `, [vendaId], (err, row) => {
+      if (err) return reject(err);
+      resolve(row || null);
+    });
+  });
+
   const config = await getFiscalConfig();
+
+  if ((!config.cnpj || config.cnpj.length !== 14) && config.certificadoPath && fs.existsSync(config.certificadoPath)) {
+    const cnpjCertificado = extrairCnpjDoCertificado(config.certificadoPath, config.certificadoSenha);
+    if (cnpjCertificado) {
+      config.cnpj = cnpjCertificado;
+    }
+  }
 
   let numero;
 
-  if (notaPendenteAnterior && notaPendenteAnterior.numero) {
+  if (notaDuplicidadeAnterior) {
+    numero = await incrementaNumeroFiscal();
+    console.log(`DUPLICIDADE ANTERIOR: usando novo número ${numero}`);
+  } else if (notaPendenteAnterior && notaPendenteAnterior.numero) {
     numero = notaPendenteAnterior.numero;
     console.log(`REUTILIZANDO NÚMERO FISCAL DA TENTATIVA ANTERIOR: ${numero}`);
   } else {
@@ -267,7 +291,7 @@ async function emitirPorVendaId(vendaId) {
     console.log(`NÚMERO FISCAL GERADO: ${numero} (MAX no banco + 1)`);
   }
 
-  if (!config.nomeEmpresa || !config.cnpj || !config.ie) {
+  if (!config.nomeEmpresa || !config.cnpj || config.cnpj.length !== 14 || !config.ie) {
     const notaId = await salvarNota({
       venda_id: vendaId,
       numero,
@@ -304,6 +328,25 @@ async function emitirPorVendaId(vendaId) {
       notaId,
       status: 'configuracao_pendente',
       message: `Certificado A1/PFX não encontrado em: ${caminhoInfo}`
+    };
+  }
+
+  if (!normalizarTokenCsc(config.tokenCSC)) {
+    const notaId = await salvarNota({
+      venda_id: vendaId,
+      numero,
+      serie: config.serie,
+      chave_acesso: '',
+      ambiente: config.ambiente,
+      status: 'configuracao_pendente',
+      xml_retorno: 'Token CSC não configurado. Gere o CSC no portal da SEFAZ-CE (homologação) e informe apenas o código, sem o prefixo "CSC:".'
+    });
+
+    return {
+      success: false,
+      notaId,
+      status: 'configuracao_pendente',
+      message: 'Token CSC não configurado.'
     };
   }
 
@@ -362,12 +405,14 @@ async function emitirPorVendaId(vendaId) {
       chave: xmlBase.chave,
       ambiente: config.ambiente,
       idCSC: config.idCSC,
-      CSC: config.tokenCSC
+      CSC: config.tokenCSC,
+      consultaQrUrl: config.urls.consultaQr
     });
 
-    const urlConsulta = Number(config.ambiente) === 1
-      ? 'https://nfce.sefaz.ce.gov.br/pages/consultaNota.jsf'
-      : 'https://nfceh.sefaz.ce.gov.br/pages/consultaNota.jsf';
+    const urlConsulta =
+      config.urls.consultaChave ||
+      extrairUrlHttps(config.urls.consultaQr) ||
+      '';
 
     const infNFeSupl = `<infNFeSupl><qrCode><![CDATA[${qrCodeUrl}]]></qrCode><urlChave>${urlConsulta}</urlChave></infNFeSupl>`;
 
@@ -467,19 +512,24 @@ async function emitirPorVendaId(vendaId) {
       } else if (authSefaz?.protocolo) {
         soapResponse.protocolo = authSefaz.protocolo;
       }
+    } else if (raw.includes('<cStat>464</cStat>')) {
+      status = 'rejeitada';
+      soapResponse.message = 'Hash do QR-Code não confere com o CSC cadastrado na SEFAZ. Verifique ID CSC e Token CSC de HOMOLOGAÇÃO no portal da SEFAZ-CE e salve novamente nas configurações fiscais.';
     } else if (raw.includes('<cStat>539</cStat>')) {
       status = 'rejeitada_duplicidade';
 
       const match = raw.match(/\[chNFe:(\d{44})\]/);
 
       if (match) {
-        const chave = match[1];
-        const numeroDuplicado = Number(chave.substring(25, 34));
-        const proximo = numeroDuplicado + 1;
+        const chaveDuplicada = match[1];
+        const numeroDuplicado = extrairNumeroNFeDaChave(chaveDuplicada);
 
-        await setConfiguracao('fiscal_numero_atual', String(proximo));
-
-        console.warn(`Corrigido automaticamente para número ${proximo}`);
+        if (numeroDuplicado) {
+          const proximo = numeroDuplicado + 1;
+          await setConfiguracao('fiscal_numero_atual', String(proximo));
+          soapResponse.proximoNumeroSugerido = proximo;
+          console.warn(`Duplicidade NFC-e nº ${numeroDuplicado}. Próximo número ajustado para ${proximo}.`);
+        }
       }
     } else if (raw.includes('<cStat>') || /rejeic/i.test(raw)) {
       status = 'rejeitada';
@@ -510,7 +560,11 @@ async function emitirPorVendaId(vendaId) {
   if (assinaturaErro) {
     message = assinaturaErro.message;
   } else if (!autorizada) {
-    message = soapResponse?.message || `NFC-e não autorizada (status: ${status}).`;
+    if (status === 'rejeitada_duplicidade' && soapResponse?.proximoNumeroSugerido) {
+      message = `NFC-e número já utilizado na SEFAZ. Tente emitir novamente — o sistema usará o número ${soapResponse.proximoNumeroSugerido}.`;
+    } else {
+      message = soapResponse?.message || `NFC-e não autorizada (status: ${status}).`;
+    }
   }
 
   return {
