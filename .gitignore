@@ -48,6 +48,7 @@ backend/services/fiscal/debug/
 # Build / distribuicao
 dist/
 dist-*/
+dist30-06/
 release/
 out/
 
